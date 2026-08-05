@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+
+# Claude Code 로컬 설정 (머신별)
+.claude/settings.local.json
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+tests/samples/generated/
+.assets/
+
+# 검증용 실문서는 저장소에 포함하지 않는다 (테스트가 루트에서 자동 탐색)
+*.hwp
+*.db
+*.sqlite3
+.chroma/

@@ -1,0 +1,12 @@
+[project]
+name = "offline-rag-search"
+version = "0.1.0"
+description = "오프라인 문서 검색 시스템 - RAG와 sLM 활용"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["parser*"]
