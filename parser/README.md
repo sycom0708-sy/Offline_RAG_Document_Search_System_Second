@@ -90,6 +90,10 @@ pytest -q
 python -m venv .venv && ./.venv/Scripts/python.exe -m pip install -r requirements.txt
 ```
 
-**검증된 조합**: Python 3.10.6 / PyMuPDF 1.28.0 / lxml 6.1.1 / Pillow 12.3.0 / chardet 7.4.3
+**개발 환경 기준: Python 3.14.6** / PyMuPDF 1.28.0 / lxml 6.1.1 / Pillow 12.3.0 / chardet 7.4.3
 
-Python 버전이 다르면 컴파일된 패키지(lxml·Pillow·chardet)의 해당 버전 wheel이 필요하다. PyMuPDF·cryptography는 `abi3` wheel이라 상위 호환된다. 설치 로그에 `Building wheel for lxml...`처럼 **소스 빌드**가 뜨면 맞는 wheel이 없다는 뜻이며, Windows에서는 빌드 도구가 없어 대개 실패한다 — 이 경우 Python 3.10을 별도 설치해 venv를 만드는 편이 빠르다.
+Python 3.10.6에서도 동일하게 126 passed를 확인했고 **설치되는 패키지 버전도 같다**. 다만 3.10은 2026년 10월 EOL이므로 3.14를 기준으로 삼는다. `pyproject.toml`의 `requires-python`은 코드가 실제로 요구하는 하한선(3.10)을 그대로 둔다 — 기준 버전과 호환 하한선은 다른 값이다.
+
+Python 버전이 다르면 컴파일된 패키지(lxml·Pillow·chardet)의 해당 버전 wheel이 필요하다. PyMuPDF·cryptography는 `abi3` wheel이라 상위 호환된다. 설치 로그에 `Building wheel for lxml...`처럼 **소스 빌드**가 뜨면 맞는 wheel이 없다는 뜻이며, Windows에서는 빌드 도구가 없어 대개 실패한다 — 이 경우 동작이 확인된 버전(3.14.6 또는 3.10.6)을 별도 설치해 venv를 만드는 편이 빠르다.
+
+> `pyhwp`는 순수 파이썬(`py3-none-any`) 패키지라 설치 시 `Building wheel for pyhwp`가 뜨는 것이 정상이며, C 컴파일이 아니므로 실패 신호가 아니다.

@@ -6,9 +6,13 @@
 
 ## 개발 환경
 
+**Python 3.14.6 기준.** venv 재생성이 필요하면 `py -3.14 -m venv .venv` 후 `requirements.txt`를 설치한다.
+
 ```bash
 ./.venv/Scripts/python.exe -m pytest -q
 ```
+
+전체 통과 시 **126 passed**. LibreOffice나 `.hwp` 샘플이 없는 환경에서는 일부가 스킵되며, 이는 실패가 아니다 (환경별 예상 결과는 `parser/README.md` 참고).
 
 ## 진행 상황
 
