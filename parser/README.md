@@ -69,3 +69,27 @@ HWP의 `BinData` 항목은 확장자가 `.tmp`로 저장되므로 파일명이 �
 ```bash
 pytest -q
 ```
+
+### 환경별 예상 결과
+
+스킵은 실패가 아니라 **환경 의존 테스트**가 사유를 출력하고 넘어가는 것이다.
+
+| 환경 | 결과 |
+|---|---|
+| LibreOffice 없음 + `.hwp` 없음 | 113 passed / 13 skipped |
+| LibreOffice 없음 + `.hwp` 있음 | 118 passed / 8 skipped |
+| 둘 다 갖춤 | **126 passed / 0 skipped** |
+
+`.hwp` 파싱에 **한/글 설치는 불필요하다** — pyhwp가 단독으로 동작하므로 `.hwp` 파일만 있으면 된다.
+
+### 다른 PC로 옮길 때
+
+`.venv`는 절대 경로가 박혀 있어 이식되지 않는다. 압축에서 제외하고 옮긴 PC에서 새로 만든다.
+
+```bash
+python -m venv .venv && ./.venv/Scripts/python.exe -m pip install -r requirements.txt
+```
+
+**검증된 조합**: Python 3.10.6 / PyMuPDF 1.28.0 / lxml 6.1.1 / Pillow 12.3.0 / chardet 7.4.3
+
+Python 버전이 다르면 컴파일된 패키지(lxml·Pillow·chardet)의 해당 버전 wheel이 필요하다. PyMuPDF·cryptography는 `abi3` wheel이라 상위 호환된다. 설치 로그에 `Building wheel for lxml...`처럼 **소스 빌드**가 뜨면 맞는 wheel이 없다는 뜻이며, Windows에서는 빌드 도구가 없어 대개 실패한다 — 이 경우 Python 3.10을 별도 설치해 venv를 만드는 편이 빠르다.
