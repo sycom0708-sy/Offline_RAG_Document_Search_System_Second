@@ -1,6 +1,8 @@
 # CLAUDE.md — 오프라인 RAG 문서 검색 시스템
 
-기획 문서: `PRD_오프라인RAG시스템.md`(제품 요구사항) / `TECH_오프라인RAG시스템.md`(기술 설계) / `TASK_오프라인RAG시스템.md`(작업 분해·진행 상황) / `DESIGN_오프라인RAG시스템.md`(UI 디자인 명세, 목업 v3 기준 — Phase 4~5 구현 기준 문서)
+기획 문서: `PRD_오프라인RAG시스템.md`(제품 요구사항) / `TECH_오프라인RAG시스템.md`(기술 설계) / `TASK_오프라인RAG시스템.md`(작업 분해·진행 상황) / `DESIGN_오프라인RAG시스템.md`(UI 디자인 명세, 목업 v3 기준 — Phase 4~5 구현 기준 문서) / `PLAN_오프라인RAG시스템.md`(Phase별 실행 계획·계획 대비 결과 누적 기록)
+
+**Phase 착수 시 `PLAN` 문서를 먼저 확인한다.** 각 Phase의 모듈 구조·선결 결정 사항·이전 Phase에서 넘어온 과제가 정리되어 있다. Phase 완료 시 해당 Phase의 "실행 결과" 절을 채우고 다음 Phase 계획을 갱신한다.
 
 ## 개발 환경
 
