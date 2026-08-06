@@ -7,6 +7,9 @@ chardet>=5.2.0
 pyhwp>=0.1b15
 six>=1.16.0  # pyhwp가 선언하지 않은 런타임 의존성
 
+# Phase 2: FTS5 키워드 인덱싱 의존성
+kss>=6.0.0  # 한국어 문장 분리. numpy/scipy/networkx/pecab 등 약 15개 의존성을 끌고 옴 (Phase 9 패키징 재검토 대상)
+
 # 테스트
 pytest>=7.4.0
 reportlab>=4.0.0
