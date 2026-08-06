@@ -11,13 +11,22 @@ import json
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime, timezone
+from typing import Callable
 
 from indexer.chunker import chunk_text
 from parser.schema import Chunk, ChunkType, ParsedDocument
 
 
-def store_document(conn: sqlite3.Connection, document: ParsedDocument) -> None:
+def store_document(
+    conn: sqlite3.Connection,
+    document: ParsedDocument,
+    count_tokens: Callable[[str], int] | None = None,
+) -> None:
     """document를 저장한다. 같은 doc_id가 이미 있으면 통째로 교체한다.
+
+    `count_tokens`를 넘기면 청크를 **토큰 수** 기준으로 자른다. 임베딩을 만들
+    인덱스라면 반드시 넘겨야 한다 — 문자 수 기준으로 자르면 임베딩 모델의
+    입력 한계를 넘겨 뒷부분이 조용히 잘린다 (`indexer/chunker.py` 참고).
 
     chunks 삭제는 documents 삭제에 딸린 ON DELETE CASCADE로 처리되고,
     FTS 인덱스는 schema.py의 트리거가 함께 정리한다 (증분 갱신은 Phase 8 소관 —
@@ -43,7 +52,7 @@ def store_document(conn: sqlite3.Connection, document: ParsedDocument) -> None:
     )
 
     for chunk in document.chunks:
-        _store_chunk(conn, chunk)
+        _store_chunk(conn, chunk, count_tokens)
 
     conn.commit()
 
@@ -56,7 +65,11 @@ def _table_caption_text(chunk: Chunk) -> str:
     return " ".join(p for p in parts if p)
 
 
-def _store_chunk(conn: sqlite3.Connection, chunk: Chunk) -> None:
+def _store_chunk(
+    conn: sqlite3.Connection,
+    chunk: Chunk,
+    count_tokens: Callable[[str], int] | None = None,
+) -> None:
     keywords_text = " ".join(chunk.keywords)
     caption_text = _table_caption_text(chunk)
     table_json = json.dumps(asdict(chunk.table), ensure_ascii=False) if chunk.table else None
@@ -64,7 +77,7 @@ def _store_chunk(conn: sqlite3.Connection, chunk: Chunk) -> None:
 
     if chunk.type is ChunkType.TEXT:
         # 문장 경계를 지키며 검색에 적당한 크기로 재분할한다 (T2.4).
-        pieces = chunk_text(chunk.content) or [chunk.content]
+        pieces = chunk_text(chunk.content, count_tokens=count_tokens) or [chunk.content]
     else:
         # table/image는 구조·참조가 있어 재분할하지 않는다 (TECH 3.1절).
         pieces = [chunk.content]

@@ -10,6 +10,10 @@ venv/
 tests/samples/generated/
 .assets/
 
+# 임베딩 모델 — 용량이 커서 저장소에 넣지 않는다.
+# `python -m indexer.vector.download`로 받거나, 오프라인 PC에는 폴더째 복사한다.
+models/
+
 # 검증용 실문서는 저장소에 포함하지 않는다 (테스트가 루트에서 자동 탐색)
 *.hwp
 *.db

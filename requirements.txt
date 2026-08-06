@@ -10,6 +10,13 @@ six>=1.16.0  # pyhwp가 선언하지 않은 런타임 의존성
 # Phase 2: FTS5 키워드 인덱싱 의존성
 kss>=6.0.0  # 한국어 문장 분리. numpy/scipy/networkx/pecab 등 약 15개 의존성을 끌고 옴 (Phase 9 패키징 재검토 대상)
 
+# Phase 3: 임베딩 + 벡터 재순위 의존성 (런타임)
+# torch는 의도적으로 제외한다 — 사용하는 모델이 int8 ONNX를 이미 제공하므로
+# 추론에 torch가 필요 없고, torch만으로 117MB가 늘어 인스톨러 예산(TECH 9.2)을 압박한다.
+onnxruntime>=1.17.0
+tokenizers>=0.15.0
+numpy>=1.24.0
+
 # 테스트
 pytest>=7.4.0
 reportlab>=4.0.0

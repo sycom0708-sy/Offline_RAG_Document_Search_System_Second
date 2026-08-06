@@ -72,13 +72,13 @@ pytest -q
 
 ### 환경별 예상 결과
 
-스킵은 실패가 아니라 **환경 의존 테스트**가 사유를 출력하고 넘어가는 것이다.
+스킵은 실패가 아니라 **환경 의존 테스트**가 사유를 출력하고 넘어가는 것이다. 전체를 갖추면 **233 passed / 0 skipped**이며, 아래 항목이 빠지면 그만큼 스킵된다.
 
-| 환경 | 결과 |
-|---|---|
-| LibreOffice 없음 + `.hwp` 없음 | 113 passed / 13 skipped |
-| LibreOffice 없음 + `.hwp` 있음 | 118 passed / 8 skipped |
-| 둘 다 갖춤 | **126 passed / 0 skipped** |
+| 빠진 것 | 스킵되는 테스트 | 갖추는 방법 |
+|---|---|---|
+| LibreOffice | doc/xls/ppt 변환, 벡터 도형 캡처 (8건) | 설치 후 `SOFFICE_PATH` 지정(기본 경로는 자동 탐색) |
+| `.hwp` 샘플 | hwp 실문서 파싱 (5건) | 프로젝트 루트에 `.hwp` 파일 두기 |
+| 임베딩 모델 | 임베딩·하이브리드 검색 (22건) | `python -m indexer.vector.download` |
 
 `.hwp` 파싱에 **한/글 설치는 불필요하다** — pyhwp가 단독으로 동작하므로 `.hwp` 파일만 있으면 된다.
 

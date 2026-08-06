@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
 
+-- 벡터는 별도 테이블에 둔다 (Phase 3).
+-- TECH 5.1은 ChromaDB를 지정했으나, 이 파이프라인은 ANN을 쓰지 않고 FTS5가 좁힌
+-- 후보의 벡터만 chunk_id로 꺼내 직접 코사인을 계산한다. 그 용도에는 SQLite가
+-- 더 정확히 부합하고(같은 트랜잭션·같은 쿼리로 조회), 의존성이 79개 늘지 않는다.
+CREATE TABLE IF NOT EXISTS chunk_vectors (
+    chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    model    TEXT NOT NULL,      -- 어떤 모델로 만든 벡터인지 (교체 시 무효화 판단)
+    dim      INTEGER NOT NULL,
+    vector   BLOB NOT NULL       -- float32 little-endian, L2 정규화 완료 상태
+);
+
 -- content='chunks' → chunks 테이블의 원문을 그대로 참조 (중복 저장 없음)
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content, file_name, keywords, caption,

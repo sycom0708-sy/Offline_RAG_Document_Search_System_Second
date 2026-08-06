@@ -14,11 +14,19 @@
 ./.venv/Scripts/python.exe -m pytest -q
 ```
 
-전체 통과 시 **177 passed**. LibreOffice나 `.hwp` 샘플이 없는 환경에서는 일부가 스킵되며, 이는 실패가 아니다 (환경별 예상 결과는 `parser/README.md` 참고).
+전체 통과 시 **233 passed**. LibreOffice·`.hwp` 샘플·임베딩 모델이 없는 환경에서는 일부가 스킵되며, 이는 실패가 아니다 (환경별 예상 결과는 `parser/README.md` 참고).
+
+임베딩 모델은 용량 때문에 저장소에 없다. 인터넷이 되는 PC에서 한 번 받아둔다:
+
+```bash
+./.venv/Scripts/python.exe -m indexer.vector.download
+```
 
 ## 진행 상황
 
 - **Phase 1 (문서 파서 모듈) — 완료 (DoD 충족)**: 9종 형식 파서(`parser/`)를 TECH 4.2절 공통 청크 스키마로 통일해 구현, 표는 행·열 구조 보존 + 이미지는 삽입/렌더링 캡처 구분해 텍스트와 분리 저장. 테스트 126 passed / 0 skipped, 9종 전부 실검증(hwp는 실문서, doc·xls·ppt는 LibreOffice 실변환). 실환경 검증에서 버그 3건(HWP 이미지 전량 누락, 단일행 표 데이터 소실, soffice CP949 출력 유실)을 잡았다.
 - **알려진 성능 이슈**: 구버전 포맷은 건당 2.47초(순정 0.01초) — Phase 9 패키징 시 배치 변환 검토 필요. 상세는 `parser/README.md`.
 - **Phase 2 (FTS5 키워드 인덱싱) — 완료 (DoD 충족)**: `indexer/` 모듈로 폴더 스캔→청킹(kss+정규식 폴백)→FTS5 저장(external content 트리거 동기화)→BM25 검색까지 구현. "대/소문자 구분"은 원문 보존 후처리 필터링으로, "일치되는 단어"는 접두(`"어절"*`)/완전 토큰 매치 전환으로 해결(둘 다 DESIGN §4.2 토글과 실제 연동 확인). 표 청크는 캡션·헤더를 별도 컬럼에 담아 BM25 가중치 5배로 상위 노출. `IndexingThread`로 백그라운드 인덱싱 + 진행 콜백. 임시 CLI(`python -m indexer.cli index|search`)로 실검증. 테스트 51건 추가(누적 177 passed / 0 skipped). 상세는 `PLAN_오프라인RAG시스템.md` Phase 2 절 참고.
-- **Phase 3 (임베딩 연동 + 벡터 재순위) — 다음 차례**: `indexer/fts5/search.py`의 BM25 후보군 위에 코사인 유사도 재순위를 얹는다. `chunks.chunk_id`가 ChromaDB 조인 키로 이미 설계되어 있다.
+- **Phase 3 (임베딩 연동 + 벡터 재순위) — 완료 (DoD 충족)**: `ko-sroberta-multitask` int8 ONNX(111MB)로 torch 없이 추론(`indexer/vector/`), FTS5 후보 → 코사인 재순위(`search/hybrid_search.py`). **벡터 저장소는 ChromaDB 대신 SQLite BLOB** — ANN을 안 써서 ID 조회만 필요한데 ChromaDB는 79개 패키지를 끌고 오기 때문(TECH 5.1 정정 완료). 검색 지연 7~14ms. 테스트 233 passed / 0 skipped.
+- **Phase 3에서 Phase 2 결함 2건 발견·수정**: ① `kss`가 53자/초로 실사용 불가(8,267자에 157초) → 정규식 분리로 전환 ② 자연어 질의가 0건 반환(AND 조건 + 한국어 조사 미처리) → 조사 제거 + OR 폴백. 청킹도 문자 수 → **토큰 수** 기준으로 변경(자/토큰 비율이 0.50~2.70으로 흔들려 문자 수로는 모델 한계를 지킬 수 없음).
+- **Phase 4 (추출형 검색 UI) — 다음 차례**: `search.hybrid_search()`를 백엔드로 쓴다. 착수 전 **T4.0 UI 프레임워크 확정**과 **DESIGN §8 불일치 4건** 해소가 필요하다 (PLAN 문서 참고).

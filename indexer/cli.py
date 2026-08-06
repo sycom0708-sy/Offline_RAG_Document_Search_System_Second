@@ -26,16 +26,23 @@ def _cmd_index(args: argparse.Namespace) -> int:
         name = path.name[:40].ljust(40)
         print(f"\r[{bar}] {done}/{total} {name}", end="", file=sys.stderr, flush=True)
 
-    failures = index_folder(conn, args.folder, on_progress=on_progress)
+    report = index_folder(conn, args.folder, on_progress=on_progress, embed=not args.no_embed)
     print(file=sys.stderr)
 
     doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    print(f"인덱싱 완료: 문서 {doc_count}개, 청크 {chunk_count}개 -> {args.db}")
+    vector_count = conn.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0]
+    print(
+        f"인덱싱 완료: 문서 {doc_count}개, 청크 {chunk_count}개, "
+        f"벡터 {vector_count}개 -> {args.db}"
+    )
 
-    if failures:
-        print(f"\n실패 {len(failures)}건:")
-        for path, message in failures:
+    for warning in report.warnings:
+        print(f"\n[안내] {warning}")
+
+    if report.failures:
+        print(f"\n실패 {len(report.failures)}건:")
+        for path, message in report.failures:
             print(f"  - {path}: {message}")
 
     conn.close()
@@ -44,28 +51,74 @@ def _cmd_index(args: argparse.Namespace) -> int:
 
 def _cmd_search(args: argparse.Namespace) -> int:
     conn = connect(args.db)
+    types = args.types.split(",") if args.types else None
+
+    if args.hybrid or args.compare:
+        from search.hybrid_search import hybrid_search
+
+        hybrid = hybrid_search(
+            conn,
+            args.query,
+            case_sensitive=args.case_sensitive,
+            exact_word=args.exact_word,
+            types=types,
+            limit=args.limit,
+        )
+    if args.hybrid and not args.compare:
+        _print_hybrid(hybrid)
+        conn.close()
+        return 0
+
     results = search(
         conn,
         args.query,
         case_sensitive=args.case_sensitive,
         exact_word=args.exact_word,
-        types=args.types.split(",") if args.types else None,
+        types=types,
         limit=args.limit,
     )
 
-    if not results:
-        print("검색 결과가 없습니다.")
+    if args.compare:
+        print("=== 키워드 단독 (BM25) ===")
+        _print_keyword(results)
+        print("\n=== 하이브리드 (벡터 재순위) ===")
+        _print_hybrid(hybrid)
         conn.close()
         return 0
 
-    for i, r in enumerate(results, start=1):
-        location = f"p.{r.page_or_slide}" if r.page_or_slide is not None else "-"
-        excerpt = r.content[:120].replace("\n", " ")
-        print(f"[{i}] {r.file_name} ({r.type.value}, {location}, score={r.score:.3f})")
-        print(f"    {excerpt}")
-
+    _print_keyword(results)
     conn.close()
     return 0
+
+
+def _location(page_or_slide) -> str:
+    return f"p.{page_or_slide}" if page_or_slide is not None else "-"
+
+
+def _print_keyword(results) -> None:
+    if not results:
+        print("검색 결과가 없습니다.")
+        return
+    for i, r in enumerate(results, start=1):
+        excerpt = r.content[:120].replace("\n", " ")
+        print(f"[{i}] {r.file_name} ({r.type.value}, {_location(r.page_or_slide)}, bm25={r.score:.3f})")
+        print(f"    {excerpt}")
+
+
+def _print_hybrid(results) -> None:
+    if not results:
+        print("검색 결과가 없습니다.")
+        return
+    for i, h in enumerate(results, start=1):
+        excerpt = h.content[:120].replace("\n", " ")
+        if h.similarity is None:
+            score = "유사도 없음(벡터 미생성)"
+        else:
+            score = f"유사도={h.similarity:+.3f}"
+            if h.is_low_relevance:
+                score += " [관련성 낮음]"
+        print(f"[{i}] {h.file_name} ({h.type.value}, {_location(h.page_or_slide)}, {score})")
+        print(f"    {excerpt}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +128,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_index = sub.add_parser("index", help="폴더를 스캔해 인덱싱한다")
     p_index.add_argument("folder", help="인덱싱할 대상 폴더")
+    p_index.add_argument(
+        "--no-embed", action="store_true", help="벡터 임베딩 없이 키워드 인덱싱만 수행"
+    )
     p_index.set_defaults(func=_cmd_index)
 
     p_search = sub.add_parser("search", help="키워드로 검색한다")
@@ -85,6 +141,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_search.add_argument("--types", help="쉼표로 구분된 청크 타입 필터 (예: text,table)")
     p_search.add_argument("--limit", type=int, default=20)
+    p_search.add_argument("--hybrid", action="store_true", help="벡터 재순위를 적용해 검색")
+    p_search.add_argument(
+        "--compare", action="store_true", help="키워드 단독과 하이브리드 결과를 나란히 출력"
+    )
     p_search.set_defaults(func=_cmd_search)
 
     return parser

@@ -43,6 +43,27 @@ def sample_hwp() -> Path:
 
 
 @pytest.fixture(scope="session")
+def embedder():
+    """임베딩 모델은 용량이 커서 저장소에 없다 — 없으면 사유와 함께 스킵한다.
+
+    LibreOffice·hwp 샘플과 같은 방식이다(Phase 1 패턴). 세션당 한 번만 만들어
+    ONNX 세션 생성 비용을 나눠 쓴다.
+    """
+    from config.settings import get_profile
+
+    profile = get_profile()
+    if not profile.is_installed():
+        pytest.skip(
+            f"임베딩 모델 미설치 ({profile.local_dir}) — "
+            f"`python -m indexer.vector.download` 실행 후 재시도"
+        )
+
+    from indexer.vector.embedder import Embedder
+
+    return Embedder(profile)
+
+
+@pytest.fixture(scope="session")
 def sample_txt(samples) -> Path:
     return samples["sample.txt"]
 
