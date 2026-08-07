@@ -19,8 +19,8 @@
 | **Phase 2** | 폴더 스캔 + FTS5 키워드 인덱싱 | ✅ **완료** | 테스트 177 passed (누적). *Phase 3에서 결함 2건 발견·수정* |
 | **Phase 3** | 임베딩 연동 + 벡터 재순위 | ✅ **완료** | 테스트 233 passed / 0 skipped (누적), 검색 지연 7~14ms |
 | **Phase 4** | 추출형 검색 UI | ✅ **완료** | 테스트 358 passed / 0 skipped (누적). **MVP 완료 지점** |
-| Phase 5 | 표/이미지 카드 렌더러 | ⏭️ **다음 차례** | — |
-| Phase 6 | sLM 후보군 실측 검증 | 대기 | — |
+| **Phase 5** | 표/이미지 카드 렌더러 | ✅ **완료** | 테스트 376 passed / 0 skipped (누적) |
+| Phase 6 | sLM 후보군 실측 검증 | ⏭️ **다음 차례** | — |
 | Phase 7 | sLM 답변 생성 옵션 모드 | 대기 | — |
 | Phase 8 | 증분 인덱싱 / 폴더 감시 | 대기 | — |
 | Phase 9 | exe 패키징 및 배포 테스트 | 대기 | — |
@@ -503,6 +503,42 @@ Phase 1의 `from_rows()`는 1행짜리 표에서 헤더를 비워 둔다(데이�
 - 썸네일 캐시 300px (TECH 4.4) — Phase 8 증분 갱신과 연동
 - `ImageData.origin`으로 삽입 이미지/렌더링 캡처 구분 가능
 - 벡터 캡처 전 페이지 문제(Phase 1 이월)를 이 시점에 재검토
+
+## 5-B. 실행 결과 — 계획 대비 변경점
+
+**결과: DoD 충족.** 테스트 **376 passed / 0 skipped**(Phase 1~4의 358 + 이번 18). 실제로 text/table/image가 섞인 문서를 인덱싱해 검색 → 3종 카드 동시 렌더링을 `QWidget.grab()` 스크린샷으로 시각 검증했다.
+
+### ① 위 "놓치기 쉬운 2가지"는 계획대로 처리됨
+
+- xlsx 시트명(①)은 `card_common.format_location()`이 `TableData.caption`을 우선 사용하도록 구현 — 실제 화면에서 "Sheet2"로 정확히 표시됨을 확인(스크린샷). `page_or_slide`만 봤다면 "1페이지"로 잘못 나왔을 지점.
+- 헤더 없는 표(②)는 `TableCard`가 `header_row`가 비었으면 `horizontalHeader().setVisible(False)`로 처리 — 데이터만 그려지고 깨지지 않음을 테스트로 확인.
+
+### ② 카드 공통부는 상속 대신 빌더 함수로 공유 (계획대로)
+
+`ui/widgets/card_common.py`에 `format_location`/`parse_table_data`/`parse_image_data`/`build_card_header`/`open_source_file`을 모아, 텍스트·표·이미지 카드가 각자 `QFrame`을 상속하되 헤더 조립만 공유한다. `ResultCard`(텍스트)도 이 모듈을 쓰도록 리팩터링했다 — 세 카드 모두 `objectName("ResultCard")`를 공유해 QSS 스타일과 `ResultList.card_count()` 집계가 타입 구분 없이 동작한다.
+
+### ③ 🔴 실측에서만 드러난 버그 — `QTableWidget` 높이 계산이 화면 부착 전/후로 달라짐
+
+`ResultList`가 이미 세로 스크롤을 담당하므로 표 내부 스크롤은 끄고 콘텐츠 높이에 `setFixedHeight()`로 고정하는 계획이었는데, **위젯 생성 시점(부모 창에 붙어 화면에 표시되기 전)에 계산한 헤더 높이가 실제 표시 시점보다 작게 나와** 마지막 행이 잘렸다(실측: 헤더 높이가 24px→34px로, 부모 계층에 붙어 실제 화면에 그려진 뒤에야 커짐 — DPI 스케일링이 적용된 화면에 연결되기 전엔 폰트 메트릭이 더 작게 잡히는 것으로 추정). pytest-qt 자동화 테스트는 위젯을 실제로 화면에 표시하지 않고도 통과했던 지점이라 — Phase 4에서 반복된 패턴처럼, **`grab()` 스크린샷 시각 검증에서만 잡혔다.**
+
+수정: 생성 시점 계산은 최선 추정치로 남겨두고, `TableCard.showEvent()`에서 실제 표시 직전에 `_fix_grid_height()`를 다시 호출해 그때의 정확한 메트릭으로 재확정하도록 변경. 부수적으로, QSS `font-size`가 폴리시 이전엔 반영되지 않는 문제도 같이 있어(Phase 4의 `StyledCheckbox`와 동일한 종류의 함정) 폰트를 코드에서 직접 지정해두었다.
+
+### ④ 이미지 "확대" 동작은 문서에 스펙이 없어 자체 판단으로 구현 [제안]
+
+목업·TECH 어디에도 확대 버튼의 정확한 동작(팝업 크기, 팬/줌 여부)이 없었다 — 화면의 80% 이내로 스케일한 원본을 `QDialog`로 띄우는, 가장 단순하고 자연스러운 해석을 택했다. 별도 확정 사항으로 남기지 않고 계획서에 제안으로 기록한 그대로 구현했다.
+
+### ⑤ 썸네일 캐시는 Pillow 없이 `QImage`만으로 구현 (계획대로)
+
+`ui/thumbnail_cache.py`가 `data/thumbnails/<chunk_id>.png`에 폭 300px 축소판을 캐시한다. 새 의존성 없이 PySide6 내장 기능만 썼다. 무효화 로직은 계획대로 이번 범위에서 다루지 않음(청크 재생성 시 chunk_id가 바뀌어 자연 무효화, 명시적 mtime 무효화는 Phase 8 대상).
+
+### 다음 Phase로 넘긴 과제
+
+| 과제 | 넘긴 곳 | 내용 |
+|---|---|---|
+| 썸네일 캐시 명시적 무효화 | Phase 8 | mtime 기반 증분 인덱싱에서 다룰 것 (지금은 chunk_id 교체로 자연 무효화) |
+| 폴더·기간 필터 UI | Phase 5 이후(미배정) | 검색 함수 파라미터는 열려 있음(Phase 4 4-A ②), UI만 없음 |
+
+**산출물**: `ui/widgets/{card_common,table_card,image_card}.py`, `ui/thumbnail_cache.py`, `result_card.py`/`result_list.py` 리팩터링, 테스트 18건(`test_ui_table_image_cards.py` 15건 + `test_ui_result_card.py`/`test_ui_main_window.py` 확장 3건)
 
 ---
 

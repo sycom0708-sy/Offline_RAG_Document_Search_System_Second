@@ -129,6 +129,48 @@ QMainWindow, #CentralWidget {
     text-decoration: underline;
 }
 
+#ResultCardCopyButton {
+    border: none;
+    background: transparent;
+    color: #2563EB;
+    font-size: 12px;
+    padding: 2px 4px;
+}
+
+#ResultCardCopyButton:hover {
+    text-decoration: underline;
+}
+
+/* 표 카드 (§5.4) */
+#TableCardGrid {
+    border: 1px solid #E5E7EB;
+    gridline-color: #E5E7EB;
+    font-size: 13px;
+    color: #1F2937;
+    background: #FFFFFF;
+}
+
+#TableCardGrid QHeaderView::section {
+    background: #F1F2F4;
+    color: #1F2937;
+    font-weight: 700;
+    font-size: 12px;
+    border: 1px solid #E5E7EB;
+    padding: 4px 6px;
+}
+
+/* 이미지 카드 (§5.5) */
+#ImageCardThumbnail {
+    border: 1px solid #E5E7EB;
+    border-radius: 4px;
+    background: #F7F8F9;
+}
+
+#ImageCardNotice {
+    color: #9CA3AF;
+    font-size: 13px;
+}
+
 /* ---------- 상태바 (§6) ---------- */
 
 #StatusBar {

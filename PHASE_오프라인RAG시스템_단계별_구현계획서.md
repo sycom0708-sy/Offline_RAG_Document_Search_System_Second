@@ -4,6 +4,88 @@
 
 ---
 
+# Phase 5: 표 카드 / 이미지 카드 렌더러 구현 계획
+
+## Context
+
+Phase 4(추출형 검색 UI, 358 passed)가 완료돼 텍스트 청크 검색·카드 렌더링까지는 동작한다. 하지만 백엔드는 이미 표(`type=table`)·이미지(`type=image`) 청크까지 인덱싱·검색하고 있는데(Phase 1~3), UI는 `ResultCard`(텍스트 전용)만 있어 표·이미지 결과가 검색되더라도 화면에 제대로 표현되지 못한다. 이번 Phase는 TECH §6.3의 "청크 타입 기반 동적 라우팅"을 완성해, 검색 로직은 그대로 두고 **렌더링 단계에서만 3종 카드로 분기**한다(DESIGN §5.7).
+
+DESIGN §8의 문서 간 불일치 4건은 이미 Phase 4에서 전부 확정됐다 — 이미지 카드·관련성 낮음 카드 모두 "원문 열기"를 병기하기로 했으므로(§8 확정 3·4), 이번 Phase에서 새로 결정할 디자인 이슈는 없다. 목업(DESIGN §5.4·5.5)이 표/이미지 카드 형태를 이미 확정해뒀고, 백엔드 데이터(`SearchResult.table_json`/`image_json`)도 이미 준비돼 있어 순수 UI 구현 작업이다.
+
+## 백엔드 확인 사항 (읽기 전용 검증 완료)
+
+- `indexer/fts5/search.py`의 `SearchResult`는 이미 `type`(ChunkType enum), `table_json`, `image_json`을 담고 있다 — 스키마 변경 불필요.
+- `parser/schema.py`의 `TableData`(`rows`, `header_row`, `caption`)·`ImageData`(`image_path`, `caption`, `width`, `height`, `origin`)는 `asdict()`로 직렬화된 그대로라 `TableData(**json.loads(...))`로 바로 역직렬화된다.
+- 이미지 원본은 파싱 시점에 이미 `.assets/<문서명>/` 아래 실파일로 추출·저장되어 있다(`parser/base.py`의 `asset_dir_for`) — 카드가 그릴 때 별도 추출 작업이 필요 없고 파일 존재만 확인하면 된다.
+- **놓치기 쉬운 함정 2가지** (PLAN 문서가 이미 경고해둔 것, 실제로 코드로 확인함):
+  1. xlsx 표의 위치 표기는 `page_or_slide`(시트 **인덱스**)가 아니라 `TableData.caption`(시트 **이름**, `XlsxParser`가 `sheet.title`을 넣어둠)이어야 한다.
+  2. `TableData.from_rows()`는 1행짜리 표에서 `header_row`를 비워 둔다(데이터 소실 방지) — 렌더러가 헤더 없는 표를 반드시 처리해야 한다.
+
+## 설계 결정
+
+### ① 카드 공통 헤더를 함수로 공유 (상속 대신)
+
+현재 `ui/widgets/result_card.py`의 `ResultCard`(텍스트 카드)는 헤더 구성(파일명·구분점·위치·관련성 라벨·원문 열기 버튼)을 직접 짜고 있다. 표·이미지 카드도 같은 헤더가 필요하지만 뒤에 붙는 버튼이 다르다(표: "표 복사", 이미지: "확대"). `QFrame` 다중상속보다 단순한 **빌더 함수**로 공유한다.
+
+새 파일 `ui/widgets/card_common.py`:
+- `format_location(result: SearchResult) -> str` — 기존 `result_card.py`에서 이동 + xlsx 표는 `TableData.caption`(시트명) 우선 사용하도록 확장
+- `parse_table_data(result: SearchResult) -> TableData | None` / `parse_image_data(result: SearchResult) -> ImageData | None` — `table_json`/`image_json` 역직렬화, 파싱 실패 시 `None`(카드가 방어적으로 처리)
+- `build_card_header(hybrid_result, extra_buttons: Sequence[QPushButton] = ()) -> tuple[QHBoxLayout, QPushButton]` — 파일명/위치/관련성라벨/부가버튼/원문열기버튼을 조립하고, `open_button`은 호출부가 클릭 시그널을 연결할 수 있게 반환
+- `open_source_file(file_path: str) -> str | None` — 성공 시 `None`, 실패 시 사유 문자열(기존 `ResultCard._open_source`의 로직을 공유 함수로 추출)
+
+`ui/widgets/result_card.py`는 `format_location` 재노출 없이 `card_common`에서 import해서 쓰도록 수정(`tests/test_ui_result_card.py`의 `from ui.widgets.result_card import ResultCard, format_location` 임포트를 `card_common`으로 옮기는 테스트 수정 포함).
+
+### ② 표 카드 — `QTableWidget` (T5.2)
+
+새 파일 `ui/widgets/table_card.py`의 `TableCard(QFrame)`:
+- `objectName("ResultCard")`로 텍스트 카드와 동일한 프레임 스타일(QSS `#ResultCard` 규칙) 재사용
+- 본문은 `QTableWidget` — 헤더 행은 `setHorizontalHeaderLabels()`(있을 때만, 없으면 `horizontalHeader().setVisible(False)`), 데이터는 `QTableWidgetItem`(읽기 전용 플래그)
+- **중첩 스크롤 방지**: `ResultList`가 이미 세로 스크롤을 담당하므로 `QTableWidget` 내부 스크롤바는 끄고(`ScrollBarAlwaysOff`), `resizeRowsToContents()` 이후 실제 행 높이 합으로 `setFixedHeight()`를 계산해 표 전체가 항상 펼쳐진 채로 보이게 한다
+- "표 복사" 버튼(`build_card_header`의 `extra_buttons`) → TSV(탭 구분, DESIGN §5.4 제안)로 `QGuiApplication.clipboard().setText()`
+- 위치 표시는 `format_location`이 xlsx는 시트명을, 그 외 표는 페이지/슬라이드 번호를 반환
+
+### ③ 이미지 카드 — 썸네일 캐시 + `QDialog` 확대 (T5.3~T5.5)
+
+새 파일 `ui/thumbnail_cache.py`:
+- `get_thumbnail_path(chunk_id: str, source_path: Path) -> Path | None` — `data/thumbnails/<safe(chunk_id)>.png` 캐시. 있으면 즉시 반환(TECH 4.4 "캐시만 조회 → 속도 확보"), 없으면 `QImage`로 원본을 열어 폭 300px로 축소 후 저장(PySide6 내장 기능만 사용, Pillow 등 신규 의존성 불필요). 원본이 없으면 `None`
+- 캐시 무효화는 이번 Phase 범위 밖(Phase 8 증분 인덱싱이 mtime 기반으로 다룰 문제) — `chunk_id`가 키이므로 문서가 재인덱싱되어 chunk_id가 바뀌면 자연히 새 캐시가 생긴다는 점만 문서화
+
+새 파일 `ui/widgets/image_card.py`의 `ImageCard(QFrame)`:
+- 좌측 고정 크기 썸네일(`QLabel` + `QPixmap`, 캐시 300px 원본을 카드에 맞는 표시 크기로 축소), 우측 안내 문구 `"이미지 내 텍스트는 인식되지 않았습니다."`(DESIGN §5.5 확정 문구, T5.4)
+- 원본을 찾을 수 없으면 썸네일 자리에 대체 텍스트("미리보기를 표시할 수 없습니다" 등) — 예외로 카드 자체가 깨지지 않게 방어
+- "확대" 버튼(`build_card_header`의 `extra_buttons`) → `QDialog`에 원본 이미지를 화면의 80% 이내로 스케일해 표시(목업·TECH 어디에도 확대 동작의 세부 스펙이 없어 **[제안]**으로 가장 자연스러운 해석을 택함 — 별도 확대/축소 인터랙션 없이 크게 보여주기만)
+
+### ④ 타입 기반 라우팅 (T5.1, T5.6)
+
+`ui/widgets/result_list.py`의 `show_results()`에 팩토리 분기 추가:
+```python
+def _make_card(result: HybridResult, query, case_sensitive, exact_word) -> QWidget:
+    if result.type is ChunkType.TABLE:
+        return TableCard(result)
+    if result.type is ChunkType.IMAGE:
+        return ImageCard(result)
+    return ResultCard(result, query, case_sensitive, exact_word)
+```
+`card_count()`는 현재 `isinstance(widget, ResultCard)`로 세는데, 세 타입 모두 `objectName("ResultCard")`를 공유하므로 `widget.objectName() == "ResultCard"` 비교로 바꿔 세 타입을 모두 카운트한다.
+
+## 테스트 전략
+
+- `card_common.py`의 `format_location`(xlsx 시트명 케이스 추가) / `parse_table_data` / `parse_image_data`는 Qt 없는 순수 유닛 테스트
+- `TableCard`/`ImageCard`는 `pytest-qt`로 헤더 요소(파일명·위치·부가버튼·원문열기) 존재, 헤더 없는 표 처리, 원본 없는 이미지 처리(방어 코드) 검증
+- `test_ui_result_card.py`의 기존 텍스트 카드 테스트는 import 경로만 `card_common`으로 수정, 나머지 그대로 유지(회귀 확인용)
+- T5.6: `tests/test_ui_main_window.py`에 text/table/image가 섞인 인덱스로 검색해 `ResultList`에 3종 카드가 함께 렌더링되는 통합 테스트 추가
+- 기존 358개 테스트가 그대로 통과하는지 먼저 확인(회귀 없음 확인)
+
+## 검증 방법
+
+1. `pytest -q` 전체 통과 (기존 358 + 신규)
+2. 실제 데모 폴더(표·이미지가 포함된 실 문서)로 재인덱싱 → 표/이미지가 포함된 질의로 검색 → 텍스트·표·이미지 카드가 한 리스트에 섞여 나오는지 `QWidget.grab()` 스크린샷으로 시각 검증(자동화 테스트만으로는 실제 UI 버그를 못 잡은 전례가 Phase 4에 있었음)
+3. 표 카드: 헤더 음영, "표 복사" 클릭 후 클립보드에 TSV가 담기는지 확인
+4. 이미지 카드: 썸네일 표시, "확대" 클릭 시 원본 크기로 뜨는지, 원본이 없는 케이스의 방어 동작 확인
+5. 완료 후 TASK 체크박스(T5.1~T5.6), PLAN §5-B 실행 결과, CLAUDE.md 갱신, `PHASE_오프라인RAG시스템_단계별_구현계획서.md`에 이 계획 원문 이어붙이기, 로컬 커밋
+
+---
+
 # Phase 4: 추출형 검색 UI 구현 계획
 
 ## Context

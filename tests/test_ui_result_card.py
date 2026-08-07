@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 from PySide6.QtWidgets import QLabel, QPushButton
 
-from parser.schema import ChunkType
+from parser.schema import ChunkType, TableData
 from indexer.fts5.search import SearchResult
 from search.hybrid_search import HybridResult
-from ui.widgets.result_card import ResultCard, format_location
+from ui.widgets.card_common import format_location
+from ui.widgets.result_card import ResultCard
 from ui.widgets.result_list import ResultList
 
 
@@ -46,6 +49,40 @@ class TestFormatLocation:
 
     def test_missing_location_shows_dash(self):
         assert format_location(_search_result(file_name="x.txt", page_or_slide=None)) == "-"
+
+    def test_xlsx_table_shows_sheet_name_not_page_number(self):
+        """DESIGN §5.2: xlsx는 page_or_slide(시트 인덱스)가 아니라
+        TableData.caption(시트 이름)을 써야 한다."""
+        table = TableData(rows=[["1", "2"]], caption="Sheet2")
+        result = SearchResult(
+            chunk_id="c1",
+            doc_id="d1",
+            file_path="x.xlsx",
+            file_name="x.xlsx",
+            type=ChunkType.TABLE,
+            page_or_slide=1,  # 시트 인덱스 — 이 값이 노출되면 버그
+            content="",
+            caption="",
+            score=-1.0,
+            table_json=json.dumps(table.__dict__),
+        )
+        assert format_location(result) == "Sheet2"
+
+    def test_table_without_caption_falls_back_to_page_number(self):
+        table = TableData(rows=[["1", "2"]], caption="")
+        result = SearchResult(
+            chunk_id="c1",
+            doc_id="d1",
+            file_path="x.xlsx",
+            file_name="x.xlsx",
+            type=ChunkType.TABLE,
+            page_or_slide=2,
+            content="",
+            caption="",
+            score=-1.0,
+            table_json=json.dumps(table.__dict__),
+        )
+        assert format_location(result) == "2페이지"
 
 
 class TestResultCard:

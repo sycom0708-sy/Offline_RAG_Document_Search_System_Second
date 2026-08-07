@@ -12,7 +12,7 @@ import pytest
 from indexer.fts5.schema import connect
 from indexer.fts5.store import store_document
 from indexer.vector.store import embed_missing
-from parser.schema import Chunk, ChunkType, ParsedDocument
+from parser.schema import Chunk, ChunkType, ImageData, ParsedDocument, TableData
 from ui.main_window import MainWindow
 from ui.state import AppState
 
@@ -208,3 +208,72 @@ class TestReindexFlow:
 
         assert win.state.target_folder == source_folder
         assert len(win.sidebar.format_filter._format_checkboxes) > 0
+
+
+class TestMixedResultTypes:
+    """T5.6: text/table/image가 한 결과 리스트에 자연스럽게 섞여야 한다."""
+
+    def test_search_renders_text_table_and_image_cards_together(self, qtbot, tmp_path, embedder):
+        from PySide6.QtGui import QImage
+
+        from ui.widgets.image_card import ImageCard
+        from ui.widgets.result_card import ResultCard
+        from ui.widgets.table_card import TableCard
+
+        db_path = tmp_path / "mixed.sqlite3"
+        conn = connect(db_path)
+
+        image_path = tmp_path / "capture.png"
+        QImage(20, 20, QImage.Format.Format_RGB32).save(str(image_path))
+
+        document = ParsedDocument(doc_id="m1", file_path="혼합.pdf", file_name="혼합.pdf", title="t")
+        document.chunks.append(
+            Chunk(
+                chunk_id="m1_text",
+                doc_id="m1",
+                file_path="혼합.pdf",
+                file_name="혼합.pdf",
+                type=ChunkType.TEXT,
+                page_or_slide=1,
+                content="예산 기준 안내",
+            )
+        )
+        table = TableData(rows=[["예산", "100만원"]], header_row=["항목", "값"])
+        document.chunks.append(
+            Chunk(
+                chunk_id="m1_table",
+                doc_id="m1",
+                file_path="혼합.pdf",
+                file_name="혼합.pdf",
+                type=ChunkType.TABLE,
+                page_or_slide=2,
+                content=table.to_text(),
+                table=table,
+            )
+        )
+        image = ImageData(image_path=str(image_path), origin="extracted")
+        document.chunks.append(
+            Chunk(
+                chunk_id="m1_image",
+                doc_id="m1",
+                file_path="혼합.pdf",
+                file_name="혼합.pdf",
+                type=ChunkType.IMAGE,
+                page_or_slide=3,
+                content="예산 흐름도",
+                image=image,
+            )
+        )
+        store_document(conn, document, count_tokens=embedder.count_tokens)
+        embed_missing(conn, embedder)
+        conn.close()
+
+        win = MainWindow(db_path=db_path, state=AppState())
+        qtbot.addWidget(win)
+
+        win.search_bar.set_text("예산")
+        qtbot.waitUntil(lambda: win.result_list.card_count() >= 3, timeout=SEARCH_TIMEOUT_MS)
+
+        assert win.result_list.findChild(ResultCard) is not None
+        assert win.result_list.findChild(TableCard) is not None
+        assert win.result_list.findChild(ImageCard) is not None

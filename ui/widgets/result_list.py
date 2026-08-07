@@ -8,8 +8,11 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
+from parser.schema import ChunkType
 from search.hybrid_search import HybridResult
+from ui.widgets.image_card import ImageCard
 from ui.widgets.result_card import ResultCard
+from ui.widgets.table_card import TableCard
 
 INITIAL_MESSAGE = "검색어를 입력해 문서를 찾아보세요."
 SEARCHING_MESSAGE = "검색 중…"
@@ -83,12 +86,30 @@ class ResultList(QScrollArea):
     ) -> None:
         self._clear()
         for result in results:
-            card = ResultCard(result, query, case_sensitive, exact_word)
+            card = _make_card(result, query, case_sensitive, exact_word)
             self._layout.insertWidget(self._layout.count() - 1, card)
 
     def card_count(self) -> int:
+        """텍스트/표/이미지 세 카드 타입 모두 `objectName("ResultCard")`를
+        공유한다(DESIGN §5.1 공통 프레임) — 타입별 isinstance 대신 이걸로 센다."""
         return sum(
             1
             for i in range(self._layout.count())
-            if isinstance(self._layout.itemAt(i).widget(), ResultCard)
+            if (widget := self._layout.itemAt(i).widget()) is not None
+            and widget.objectName() == "ResultCard"
         )
+
+
+def _make_card(
+    result: HybridResult,
+    query: str,
+    case_sensitive: bool,
+    exact_word: bool,
+) -> QWidget:
+    """청크 타입에 따라 카드를 분기한다 (T5.1, DESIGN §5.7) — 검색 로직은
+    타입과 무관하게 동일하고, 렌더링 단계에서만 갈린다."""
+    if result.type is ChunkType.TABLE:
+        return TableCard(result)
+    if result.type is ChunkType.IMAGE:
+        return ImageCard(result)
+    return ResultCard(result, query, case_sensitive, exact_word)
