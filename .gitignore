@@ -10,9 +10,14 @@ venv/
 tests/samples/generated/
 .assets/
 
-# 임베딩 모델 — 용량이 커서 저장소에 넣지 않는다.
-# `python -m indexer.vector.download`로 받거나, 오프라인 PC에는 폴더째 복사한다.
+# 임베딩 모델·sLM(GGUF) — 용량이 커서 저장소에 넣지 않는다.
+# `python -m indexer.vector.download` / `python -m slm.download`로 받거나,
+# 오프라인 PC에는 폴더째 복사한다.
 models/
+
+# 번들 바이너리 (LibreOffice 포터블, llama.cpp) — 용량이 크고 플랫폼 종속적이다.
+# `python -m scripts.setup_llamacpp`로 받는다.
+vendor/
 
 # 앱 실행 시 생성되는 인덱스 DB·상태 파일 (개인 대상 폴더에 종속적)
 data/
