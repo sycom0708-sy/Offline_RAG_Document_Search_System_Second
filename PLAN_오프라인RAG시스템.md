@@ -24,6 +24,7 @@
 | Phase 7 | sLM 답변 생성 옵션 모드 | 대기 | — |
 | Phase 8 | 증분 인덱싱 / 폴더 감시 | 대기 | — |
 | Phase 9 | exe 패키징 및 배포 테스트 | 대기 | — |
+| Phase 10 | 배포 후 개선 백로그 (todo list) | 대기(상시 누적) | — |
 
 **커밋 이력**
 ```
@@ -537,6 +538,7 @@ Phase 1의 `from_rows()`는 1행짜리 표에서 헤더를 비워 둔다(데이�
 |---|---|---|
 | 썸네일 캐시 명시적 무효화 | Phase 8 | mtime 기반 증분 인덱싱에서 다룰 것 (지금은 chunk_id 교체로 자연 무효화) |
 | 폴더·기간 필터 UI | Phase 5 이후(미배정) | 검색 함수 파라미터는 열려 있음(Phase 4 4-A ②), UI만 없음 |
+| **"원문 열기" 시 페이지/슬라이드/시트 위치로 딥링크** | **Phase 10 T10.1** | 지금은 `QDesktopServices.openUrl(QUrl.fromLocalFile(...))`로 파일만 열고 위치 이동은 안 됨. Word/PowerPoint/Excel COM(PowerShell 서브프로세스)으로 실현 가능함을 실측 검증까지 완료 — 상세 조사 내용은 Phase 10 절 참고 |
 
 **산출물**: `ui/widgets/{card_common,table_card,image_card}.py`, `ui/thumbnail_cache.py`, `result_card.py`/`result_list.py` 리팩터링, 테스트 18건(`test_ui_table_image_cards.py` 15건 + `test_ui_result_card.py`/`test_ui_main_window.py` 확장 3건)
 
@@ -605,18 +607,41 @@ DESIGN §4.2의 placeholder 토글을 실제 동작으로 교체한다(T4.7 → 
 
 ---
 
+# Phase 10: 배포 후 개선 백로그 (todo list)
+
+**성격**: 이 절은 다른 Phase와 달리 "완료 후 다음으로 넘어가는" 절이 아니라 **상시 누적되는 todo list**다. Phase 1~9 진행 중 "지금 당장은 아니지만 언젠가 하면 좋을" 아이디어가 나올 때마다 여기에 항목을 추가한다. 착수는 Phase 9(정식 배포) 완료 후, 그 시점에 우선순위를 다시 매긴다.
+
+## T10.1 "원문 열기" 시 페이지/슬라이드/시트 위치로 딥링크
+
+**현재 상태**: `card_common.open_source_file()`이 `QDesktopServices.openUrl(QUrl.fromLocalFile(...))`로 파일만 열고, 검색이 걸린 위치로 이동하지는 않는다. 애초에 PRD/TECH/DESIGN 어디에도 이 기능이 요구사항으로 명시된 적은 없다(원문 열기 항목은 처음부터 `chunk.file_path`만 데이터 출처로 규정).
+
+**조사 결과 (2026-08-07, 이 PC 기준 실측 — Word 16.0/PowerPoint 16.0/Excel 16.0 설치 환경)**:
+
+- **기술적으로 실현 가능함을 실측 확인**. PowerShell 서브프로세스로 Word COM을 띄워 `Documents.Open()` → `Range.Find.Execute(검색어)` → `Range.Select()` → `ActiveWindow.ScrollIntoView()`까지 실행 — 실제 문서에서 검색어를 찾아 정확한 페이지(6페이지)를 보고하고 해당 위치를 선택했다. pywin32(별도 패키징 의존성) 없이 PowerShell만으로 되므로, 이 프로젝트가 지금까지 지켜온 최소 의존성 원칙(onnxruntime>torch, SQLite BLOB>ChromaDB 등)과 결이 같다.
+- **docx는 위치 인덱스가 아니라 텍스트 검색으로 이동해야 한다**. Word의 `Range.Text` 단락 구분자는 `\r`이지 우리 청커가 쓰는 `\n`이 아니다 — 청크 텍스트를 `"\n"`으로 이어붙인 채로 그대로 검색하면 **실패한다**(실측 확인, `Find.Execute()`가 `False` 반환). 검색어를 점점 짧게 줄여가며 재시도하는 사다리(needle ladder, 예: 180→90→40→20자)식 접근이 우회책이 아니라 필수다. 표 청크도 같은 이유(Word가 셀 사이에 우리 `TableData.to_text()`의 `" | "`와 다른 내부 구분자를 씀)로 가장 긴 셀 하나만 검색어로 써야 한다.
+- **pptx는 더 단순하게 될 수 있다**. `pptx_parser.py`가 이미 모든 청크(text/table/image)에 정확한 `slide_index`를 기록해두고 있다(docx는 텍스트 청크에 위치를 아예 안 남긴다 — `page_or_slide=None`). `PowerPoint.Application`의 `View.GotoSlide(n)`만으로 될 가능성이 있어, 굳이 docx와 같은 텍스트 검색 방식으로 통일할 필요는 없어 보인다. 착수 시 재검토.
+- **xlsx**는 `TableData.caption`에 정확한 시트명이 이미 있으므로 `Worksheets(시트명).Activate()` 후 `Range.Find()`로 셀을 찾는 방식이 자연스럽다.
+- **hwp/hwpx는 미검증**. 이 PC엔 한글(HWP)이 설치돼 있지 않아 `HwpFrame.Hwp` COM ProgID 생성이 실패했다(`Class not registered`). 이 프로젝트의 실데모 데이터가 hwp 시험 문서 위주라는 점을 감안하면, **한글이 설치된 PC에서 별도 검증이 꼭 필요**하다. 한글도 자체 COM 자동화(HwpCtrl OLE)를 지원한다고 알려져 있으나 이 환경에서 직접 확인하지 못했다.
+- **실측 지연시간**: 전체 흐름(Word 프로세스 기동→문서 열기→검색→선택) 약 **2.4초**, 대부분 Word 프로세스 기동(약 1초)과 최초 검색(약 0.7초)에 걸린다. `QDesktopServices.openUrl()`(즉시 반환)보다 눈에 띄게 느리므로, 메인 스레드를 막지 않도록 백그라운드 스레드로 돌려야 한다(`SearchWorker`/`_start_embedder_warmup`과 같은 패턴 재사용 가능).
+- **핵심 제약 — 순수 점진적 개선으로 설계할 것**: 이 기능은 사용자 PC에 실제 MS Office(또는 한글)가 설치돼 있어야만 동작한다. 파싱 파이프라인은 LibreOffice를 인스톨러에 내장해 Office 설치 여부와 무관하게 동작하도록 설계돼 있는데(TECH 9.2), 이 기능은 그와 다른 전제를 요구하는 첫 사례다. COM 사용 가능 여부를 런타임에 감지하고, 안 되면(Office 미설치, 또는 다운로드 출처 표시로 인한 "보호된 보기" 등 보안 프롬프트로 Find가 막히는 경우) 지금처럼 파일만 여는 것으로 조용히 폴백해야 한다 — 검색 결과 자체를 못 쓰게 만들면 안 된다.
+
+**착수 시 필요한 결정**: 읽기 전용으로 열지 편집 가능하게 열지, hwp 실검증 결과에 따라 hwp/hwpx도 같은 아키텍처를 쓸지 별도 처리할지.
+
+---
+
 ## 부록: Phase 간 의존관계
 
 ```
 Phase 1 (파서) ✅
-   └─▶ Phase 2 (FTS5 인덱싱) ⏭️
-          └─▶ Phase 3 (벡터 재순위)
-                 └─▶ Phase 4 (추출형 UI) ◀── MVP 완료
-                        ├─▶ Phase 5 (표/이미지 카드)  ◀── Phase 1 결과물도 필요
-                        ├─▶ Phase 6 (sLM 검증)
+   └─▶ Phase 2 (FTS5 인덱싱) ✅
+          └─▶ Phase 3 (벡터 재순위) ✅
+                 └─▶ Phase 4 (추출형 UI) ✅ ◀── MVP 완료
+                        ├─▶ Phase 5 (표/이미지 카드) ✅  ◀── Phase 1 결과물도 필요
+                        ├─▶ Phase 6 (sLM 검증) ⏭️
                         │      └─▶ Phase 7 (sLM 옵션 모드)
                         └─▶ Phase 8 (증분 인덱싱)  ◀── Phase 2, 5 결과물도 필요
                                └─▶ Phase 9 (패키징/배포)  ◀── 전체 Phase 선행
+                                      └─▶ Phase 10 (배포 후 개선 백로그)  ◀── todo list, 상시 누적
 ```
 
 ## 부록: 미해결 결정 사항 (전체)
