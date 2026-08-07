@@ -1,0 +1,94 @@
+"""결과 리스트 — 스크롤 + 상태별 화면 (T4.15, DESIGN §7).
+
+검색바·사이드바·상태바는 고정하고 이 영역만 스크롤한다 (DESIGN §2.3).
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
+
+from search.hybrid_search import HybridResult
+from ui.widgets.result_card import ResultCard
+
+INITIAL_MESSAGE = "검색어를 입력해 문서를 찾아보세요."
+SEARCHING_MESSAGE = "검색 중…"
+NO_INDEX_MESSAGE = "먼저 대상 폴더를 지정해 주세요."
+NO_RESULTS_MESSAGE = "검색 결과가 없습니다."
+ERROR_MESSAGE_PREFIX = "검색 중 오류가 발생했습니다: "
+
+
+class ResultList(QScrollArea):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setObjectName("ResultList")
+        self.setFrameShape(self.Shape.NoFrame)
+
+        self._container = QWidget()
+        self._layout = QVBoxLayout(self._container)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(12)  # DESIGN §10.5 카드 간 간격
+        self._layout.addStretch()
+        self.setWidget(self._container)
+
+        self.show_initial()
+
+    def _clear(self) -> None:
+        """이전 카드·메시지를 치운다.
+
+        `deleteLater()`만 부르면 실제 파괴는 다음 이벤트 루프까지 미뤄져,
+        그 사이엔 같은 objectName의 이전 위젯이 `findChild` 등으로 여전히
+        붙잡힌다(실측 확인). `setParent(None)`으로 자식 트리에서 즉시
+        떼어낸 뒤 파괴를 예약한다.
+        """
+        while self._layout.count() > 1:  # 마지막 stretch는 남긴다
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _show_message(self, text: str) -> None:
+        self._clear()
+        label = QLabel(text)
+        label.setObjectName("ResultListMessage")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setWordWrap(True)
+        self._layout.insertWidget(0, label)
+
+    def show_initial(self) -> None:
+        self._show_message(INITIAL_MESSAGE)
+
+    def show_searching(self) -> None:
+        self._show_message(SEARCHING_MESSAGE)
+
+    def show_no_index(self) -> None:
+        self._show_message(NO_INDEX_MESSAGE)
+
+    def show_error(self, message: str) -> None:
+        self._show_message(f"{ERROR_MESSAGE_PREFIX}{message}")
+
+    def show_empty(self, hint: str | None = None) -> None:
+        """DESIGN §7: 형식 필터·검색 옵션이 원인일 수 있어 완화 힌트를 함께 준다."""
+        text = NO_RESULTS_MESSAGE if not hint else f"{NO_RESULTS_MESSAGE}\n{hint}"
+        self._show_message(text)
+
+    def show_results(
+        self,
+        results: list[HybridResult],
+        query: str,
+        case_sensitive: bool = False,
+        exact_word: bool = False,
+    ) -> None:
+        self._clear()
+        for result in results:
+            card = ResultCard(result, query, case_sensitive, exact_word)
+            self._layout.insertWidget(self._layout.count() - 1, card)
+
+    def card_count(self) -> int:
+        return sum(
+            1
+            for i in range(self._layout.count())
+            if isinstance(self._layout.itemAt(i).widget(), ResultCard)
+        )

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 _DDL = """
@@ -84,10 +85,50 @@ END;
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    """스키마가 적용된 커넥션을 반환한다. DB 파일이 없으면 새로 만든다."""
+    """스키마가 적용된 커넥션을 반환한다. DB 파일이 없으면 새로 만든다.
+
+    WAL 저널 모드를 켠다 — Phase 4부터 백그라운드 인덱싱(쓰기)과 UI 검색(읽기)이
+    동시에 일어날 수 있는데, 기본 롤백 저널 모드는 쓰기 중 모든 읽기를 막는다.
+    WAL은 읽기가 쓰기와 동시에 진행되도록 해준다. `:memory:` DB에는 적용되지
+    않고 조용히 "memory" 모드로 남는다(실측 확인 — 예외 없이 무시됨).
+    """
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # busy_timeout 없이는 락 경합 시 기본값(0ms)이라 즉시 "database is locked"를
+    # 던진다. WAL이 동시 읽기/쓰기를 허용해도 전환 순간의 경합은 남는다.
+    conn.execute("PRAGMA busy_timeout = 5000")
+    _ensure_wal_mode(conn)
     conn.executescript(_DDL)
     conn.commit()
     return conn
+
+
+def _ensure_wal_mode(conn: sqlite3.Connection) -> None:
+    """journal_mode를 WAL로 맞춘다. 이미 WAL이면 재설정을 건너뛴다.
+
+    WAL "설정"(값이 이미 wal이어도)은 내부적으로 배타적 잠금을 짧게 요구해,
+    다른 연결이 마침 같은 순간 접속·초기화 중이면 `busy_timeout`이 있어도
+    "database is locked"가 난다 (실측 재현됨). 반면 "조회"는 잠금이 필요
+    없으므로, 이미 WAL이면 SET을 아예 시도하지 않는다 — DB 파일 최초 생성
+    이후에는 모든 connect()가 조회만 하게 되어 이 문제를 비켜간다.
+
+    다만 파일이 아예 처음 만들어지는 순간에는 여러 연결이 동시에 "아직 WAL
+    아님"을 보고 동시에 SET을 시도하는 경합이 남는다 — 그 창구를 메우기
+    위해 SET만 짧게 재시도한다.
+    """
+    current = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    if current.lower() == "wal":
+        return
+
+    last_error: sqlite3.OperationalError | None = None
+    for _ in range(10):
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            last_error = exc
+            time.sleep(0.1)
+    raise last_error

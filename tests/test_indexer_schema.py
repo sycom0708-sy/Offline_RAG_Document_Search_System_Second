@@ -95,3 +95,91 @@ def test_connect_creates_file_backed_db(tmp_path):
     reconnected = connect(db_path)
     assert reconnected.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
     reconnected.close()
+
+
+def test_file_backed_db_uses_wal_journal_mode(tmp_path):
+    """Phase 4부터 백그라운드 인덱싱(쓰기)과 UI 검색(읽기)이 동시에 일어난다.
+    기본 롤백 저널은 쓰기 중 모든 읽기를 막으므로 WAL이 필요하다."""
+    conn = connect(tmp_path / "index.sqlite3")
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert mode.lower() == "wal"
+
+
+def test_memory_db_ignores_wal_without_error():
+    """`:memory:` DB는 WAL을 지원하지 않지만 예외 없이 조용히 무시돼야 한다
+    (기존 테스트 다수가 :memory:를 쓴다)."""
+    conn = connect(":memory:")
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    conn.close()
+    assert mode.lower() == "memory"
+
+
+def test_concurrent_reads_succeed_during_write(tmp_path):
+    """WAL 전환 실측 검증 — 쓰기 스레드가 도는 동안 읽기가 락 없이 성공해야 한다."""
+    import threading
+    import time
+
+    db_path = tmp_path / "index.sqlite3"
+    connect(db_path).close()  # 파일 최초 생성
+
+    errors: list[str] = []
+    read_count = [0]
+    stop = threading.Event()
+
+    def reader() -> None:
+        conn = connect(db_path)
+        while not stop.is_set():
+            try:
+                conn.execute("SELECT COUNT(*) FROM chunks").fetchone()
+                read_count[0] += 1
+            except Exception as exc:  # noqa: BLE001
+                errors.append(str(exc))
+            time.sleep(0.002)
+        conn.close()
+
+    def writer() -> None:
+        conn = connect(db_path)
+        for i in range(50):
+            conn.execute(
+                "INSERT INTO documents(doc_id, file_path, file_name, title, status, indexed_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (f"d{i}", "x", "x.txt", "t", "ok", "now"),
+            )
+            conn.commit()
+        conn.close()
+
+    reader_thread = threading.Thread(target=reader)
+    reader_thread.start()
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    writer_thread.join(timeout=30)
+    stop.set()
+    reader_thread.join(timeout=5)
+
+    assert errors == []
+    assert read_count[0] > 0
+
+
+def test_concurrent_fresh_file_creation_does_not_raise(tmp_path):
+    """DB 파일이 아예 없는 상태에서 여러 커넥션이 동시에 처음 열리면,
+    WAL 전환 SET이 겹쳐 "database is locked"가 날 수 있었다 (실측 재현됨).
+    지금은 SET을 재시도로 흡수한다."""
+    import threading
+
+    db_path = tmp_path / "brand_new.sqlite3"
+    errors: list[str] = []
+
+    def opener() -> None:
+        try:
+            connect(db_path).close()
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+
+    threads = [threading.Thread(target=opener) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert errors == []

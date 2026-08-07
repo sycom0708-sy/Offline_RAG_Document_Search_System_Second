@@ -18,8 +18,8 @@
 | **Phase 1** | 문서 파서 모듈 | ✅ **완료** | 테스트 126 passed / 0 skipped, 9종 전부 실검증 |
 | **Phase 2** | 폴더 스캔 + FTS5 키워드 인덱싱 | ✅ **완료** | 테스트 177 passed (누적). *Phase 3에서 결함 2건 발견·수정* |
 | **Phase 3** | 임베딩 연동 + 벡터 재순위 | ✅ **완료** | 테스트 233 passed / 0 skipped (누적), 검색 지연 7~14ms |
-| Phase 4 | 추출형 검색 UI | ⏭️ **다음 차례** | **MVP 완료 지점** |
-| Phase 5 | 표/이미지 카드 렌더러 | 대기 | — |
+| **Phase 4** | 추출형 검색 UI | ✅ **완료** | 테스트 358 passed / 0 skipped (누적). **MVP 완료 지점** |
+| Phase 5 | 표/이미지 카드 렌더러 | ⏭️ **다음 차례** | — |
 | Phase 6 | sLM 후보군 실측 검증 | 대기 | — |
 | Phase 7 | sLM 답변 생성 옵션 모드 | 대기 | — |
 | Phase 8 | 증분 인덱싱 / 폴더 감시 | 대기 | — |
@@ -438,6 +438,52 @@ DESIGN §3.1의 placeholder인 "계약서 검토 기준이 뭐였지"로 검색�
 **결정 2 — KURE-v1 실다운로드는 이번에 구현하지 않는다**: 허깅페이스 레포에 ONNX가 전혀 없다(`safetensors`만 제공, Phase 4 착수 전 재확인). `config/settings.py`의 `HEAVY.files`가 `onnx/model_int8.onnx`를 가리키는 건 **존재하지 않는 파일**이라, 지금 다운로드 버튼을 만들면 그대로 실패한다. Phase 4에서는 모델 관리에 KURE-v1 행을 넣되 **"준비 중" 배지 + 비활성 버튼**으로만 노출한다. safetensors→ONNX 변환 파이프라인(Phase 3에서 미룬 T3.2에 해당) 구현은 별도 Phase로 재검토한다.
 
 **TASK 문서 반영**: T4.11a/T4.11b 신설(모델 관리 임베딩 섹션 + 재인덱싱 트리거를 Phase 4로 앞당김), T7.6~T7.7 각주 갱신, TECH 9.3 문구 정정.
+
+## 4-D. 실행 결과 — 계획 대비 변경점
+
+**결과: DoD 충족.** 테스트 **358 passed / 0 skipped**(Phase 1~3의 233 + 이번 125). 실제 데모 폴더(실 `.hwp` 문서 포함)로 검색→필터/토글 교차→하이라이트→원문 열기 흐름을 `QWidget.grab()` 스크린샷으로 시각 검증했다.
+
+### ① SQLite WAL 모드 — 계획대로지만 레이스 컨디션 1건 발견
+
+계획한 대로 `PRAGMA journal_mode=WAL`을 추가했으나, **매 `connect()`마다 무조건 재설정**하는 최초 구현은 새 DB 파일을 여러 스레드가 동시에 처음 여는 순간 `database is locked`를 냈다(8스레드 스트레스 테스트로 재현). 현재 모드를 먼저 조회해 이미 WAL이면 건너뛰고, 잠금 시 0.1초 간격으로 10회 재시도하는 `_ensure_wal_mode()`로 교체해 해결. `busy_timeout=5000`도 함께 추가했다.
+
+### ② 목업 대조 스크린샷에서 실제 UI 버그 2건 발견 (자동화 테스트로는 못 잡음)
+
+`QWidget.grab()`으로 초기 화면을 캡처해 DESIGN §4.2 목업과 대조하다가:
+- **토글 스위치 순서 뒤바뀜**: `QCheckBox`의 인디케이터가 텍스트보다 먼저 렌더링돼 목업(`AI 요약 보기      ( ●)  OFF`, 라벨이 왼쪽)과 반대로 나왔다. `QLabel` + 인디케이터 전용 `QCheckBox`를 조합한 합성 위젯으로 재작성해 순서를 고정하고, 클릭 영역도 행 전체로 넓혔다.
+- **PC 성능 콤보 텍스트 잘림**: 사이드바 폭(220px)에서 `경량 모드 (최소 사양) · 설치됨` 전체 문구가 잘렸다. DESIGN §4.3이 스스로 지목한 "목업 결함"이었다 — 레이블을 `경량 모드`로 축약하고 전체 문구는 툴팁으로 남기는 방식을 택했다(사이드바 폭 확장은 다른 블록과의 비례를 깨서 제외).
+
+두 버그 모두 pytest-qt 로직 테스트는 통과한 상태였다 — 실제로 창을 띄워보지 않았다면 놓쳤을 것이다.
+
+### ③ 🔴 안전 사고 — OS 레벨 스크린샷이 무관한 창을 캡처함 (즉시 시정)
+
+앱을 시각 검증하려고 PowerShell의 `SetForegroundWindow` + `GetWindowRect` + `Graphics.CopyFromScreen` 방식을 시도했다. 백그라운드로 띄운 프로세스는 Windows 보안 정책상 `SetForegroundWindow`가 조용히 실패할 수 있는데, 이후 화면 캡처는 실패 여부와 무관하게 그대로 진행돼 **그 순간 화면에 실제로 떠 있던 무관한 IDE 창(사용자의 다른 프로젝트 소스 코드)을 캡처**했다.
+
+즉시 사용자에게 문제를 알리고, 캡처 파일을 삭제하고, 내용을 더 이상 보거나 활용하지 않았다. 이후로는 `QWidget.grab()`(Qt가 위젯을 메모리에서 직접 렌더링 — 실제 화면 버퍼를 건드리지 않음)만 사용했다. **교훈: 백그라운드 프로세스의 시각 검증에는 OS 레벨 화면 캡처를 쓰지 않는다.**
+
+### ④ 테스트 가능성을 위한 설계 개선 — `MainWindow` 의존성 주입
+
+`AppState.load()`의 기본 인자(`path: Path = STATE_PATH`)와 `main_window.py`의 `from ui.state import DB_PATH`는 둘 다 정의 시점에 값이 고정돼, 테스트에서 `ui.state.STATE_PATH`/`DB_PATH`를 monkeypatch해도 반영되지 않았다. `MainWindow.__init__(db_path=None, state=None)`으로 선택적 주입 파라미터를 추가하고 내부 참조를 전부 `self.db_path`로 바꿔 해결 — 실제 배포 시엔 기존과 동일하게 동작하고, 테스트만 임시 경로를 주입한다.
+
+### ⑤ 통합 테스트에서 발견한 실제 버그 3건
+
+- **`ResultList._clear()` 잔상 위젯**: `deleteLater()`만으로는 다음 이벤트 루프까지 QObject 부모-자식 트리에서 안 빠져 `findChild()`가 옛 위젯을 돌려줄 수 있었다. `setParent(None)`을 먼저 호출해 즉시 분리하도록 수정 — 빠른 연속 검색 시 실제로 겪을 수 있는 버그였다.
+- **상태바 UTC/로컬 타임존 혼선**: `datetime.fromisoformat(ts).astimezone(timezone.utc).replace(tzinfo=None)`로 naive-UTC로 만든 뒤 naive-local인 `datetime.now()`와 비교해 사용자의 UTC 오프셋만큼 "N분 전" 표시가 어긋났다. tz-aware 상태를 유지하고 `format_relative_time`이 같은 타임존 기준으로 "지금"을 구하도록 수정.
+- **`_ModelRow` 포커스 무반응**: 기본 `QWidget`의 `focusPolicy`가 `NoFocus`라 `setFocus()`가 조용히 무시됐다. `setFocusPolicy(StrongFocus)` 추가로 해결 — 콤보에서 미설치 프로파일 선택 시 모델 관리 팝업이 열려도 해당 행에 포커스가 안 가는 버그였다.
+
+### ⑥ T4.11b — KURE-v1 부재로 종단 검증 불가 (계획대로 이월)
+
+재인덱싱 트리거 코드(`embed_missing()` 재사용)는 연결해뒀으나, KURE-v1이 실제로 설치될 수 없어(4-C 결정 2) **고성능 모드로 전환 후 재검토가 실제로 도는지는 이번 Phase에서 확인 못 했다**. 코드 경로만 존재하는 상태 — Phase 7 이후 KURE-v1 변환 파이프라인이 생기면 그때 종단 검증이 필요하다.
+
+### 다음 Phase로 넘긴 과제
+
+| 과제 | 넘긴 곳 | 내용 |
+|---|---|---|
+| T4.11b 종단 검증 | Phase 7 이후 | KURE-v1 변환 파이프라인 구현 시 고성능 전환→재인덱싱 실제 동작 확인 |
+| 폴더/기간 필터 UI | Phase 5 이후 | 검색 함수 파라미터는 열려 있음(4-A ②), UI만 없음 |
+| 표/이미지 카드 | Phase 5 | 이번 Phase는 텍스트 카드만 |
+
+**산출물**: `ui/` 전체(레이아웃·위젯·검색 워커·하이라이트·상태), `ui/qss/app.qss`, `data/` 런타임 상태(gitignore 대상), 테스트 125건(`test_qt_smoke`, `test_ui_state`, `test_ui_highlight`, `test_ui_widgets_basic`, `test_ui_widgets_options`, `test_ui_result_card`, `test_ui_status_bar`, `test_ui_main_window`)
 
 ---
 
