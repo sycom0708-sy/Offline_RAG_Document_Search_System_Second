@@ -1,8 +1,10 @@
 # CLAUDE.md — 오프라인 RAG 문서 검색 시스템
 
-기획 문서: `PRD_오프라인RAG시스템.md`(제품 요구사항) / `TECH_오프라인RAG시스템.md`(기술 설계) / `TASK_오프라인RAG시스템.md`(작업 분해·진행 상황) / `DESIGN_오프라인RAG시스템.md`(UI 디자인 명세, 목업 v3 기준 — Phase 4~5 구현 기준 문서) / `PLAN_오프라인RAG시스템.md`(Phase별 실행 계획·계획 대비 결과 누적 기록) / `PROMPTS_오프라인RAG시스템.md`(Phase별 실행 프롬프트 + 모델 추천)
+기획 문서: `PRD_오프라인RAG시스템.md`(제품 요구사항) / `TECH_오프라인RAG시스템.md`(기술 설계) / `TASK_오프라인RAG시스템.md`(작업 분해·진행 상황) / `DESIGN_오프라인RAG시스템.md`(UI 디자인 명세, 목업 v3 기준 — Phase 4~5 구현 기준 문서) / `PLAN_오프라인RAG시스템.md`(Phase별 실행 계획·계획 대비 결과 누적 기록) / `PROMPTS_오프라인RAG시스템.md`(Phase별 실행 프롬프트 + 모델 추천) / `PHASE_오프라인RAG시스템_단계별_구현계획서.md`(Claude Code plan 모드 계획 원문 아카이브 — 승인 시점 스냅샷, 보고서 작성용)
 
 **Phase 착수 시 `PLAN` 문서를 먼저 확인한다.** 각 Phase의 모듈 구조·선결 결정 사항·이전 Phase에서 넘어온 과제가 정리되어 있다. Phase 완료 시 해당 Phase의 "실행 결과" 절을 채우고 다음 Phase 계획을 갱신한다.
+
+**Phase 완료 시마다 plan 모드 계획 파일(`~/.claude/plans/*.md`, plan 모드 진입 시 시스템 리마인더에 경로가 나온다)의 해당 Phase 원문을 `PHASE_오프라인RAG시스템_단계별_구현계획서.md` 맨 위에 그대로 이어붙이고 git으로 커밋한다.** plan 파일 자체는 프로젝트 저장소 밖(로컬 PC 전용)에 있어 다른 PC로 옮기거나 버전관리가 안 되므로, 이 저장소 안에 사본을 남겨야 나중에 보고서를 쓸 때 착수 시점 계획 원문을 참조할 수 있다. TASK/PLAN/CLAUDE.md 갱신과 함께 Phase 완료 체크리스트의 일부로 취급한다.
 
 **Phase 착수 직전에는 `PROMPTS` 문서의 "모델 추천" 표를 확인해 사용자에게 알려준다.** 해당 Phase에 Opus 5 전환이 권장되는 결정 지점이 있으면 먼저 짚어주고, 그 결정 이후 구현은 Sonnet 5로 이어가도록 안내한다.
 
