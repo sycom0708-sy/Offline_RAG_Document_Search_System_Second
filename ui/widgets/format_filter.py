@@ -9,7 +9,9 @@ DESIGN §4.1 — "전체"의 상호작용 규칙(제안, 목업에 동작 정의
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+from ui.widgets.styled_checkbox import StyledCheckbox
 
 ALL_LABEL = "전체"
 
@@ -28,12 +30,12 @@ class FormatFilter(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setSpacing(4)
 
-        self._all_checkbox = QCheckBox(ALL_LABEL)
+        self._all_checkbox = StyledCheckbox(ALL_LABEL)
         self._all_checkbox.setChecked(True)
         self._all_checkbox.toggled.connect(self._on_all_toggled)
         self._layout.addWidget(self._all_checkbox)
 
-        self._format_checkboxes: dict[str, QCheckBox] = {}
+        self._format_checkboxes: dict[str, StyledCheckbox] = {}
         self._updating = False  # 상호 배타 로직이 서로를 재귀 호출하지 않도록
 
     def set_available_formats(self, extensions: list[str]) -> None:
@@ -44,7 +46,7 @@ class FormatFilter(QWidget):
         self._format_checkboxes.clear()
 
         for ext in sorted(extensions):
-            cb = QCheckBox(ext.lstrip("."))
+            cb = StyledCheckbox(ext.lstrip("."))
             cb.toggled.connect(self._on_format_toggled)
             self._layout.addWidget(cb)
             self._format_checkboxes[ext] = cb

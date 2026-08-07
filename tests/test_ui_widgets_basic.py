@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 
 from ui.widgets.format_filter import FormatFilter
 from ui.widgets.search_bar import DEBOUNCE_MS, SearchBar
-from ui.widgets.toggle_switch import ToggleSwitch
+from ui.widgets.toggle_switch import ToggleSwitch, _SwitchIndicator
 
 
 class TestToggleSwitch:
@@ -29,13 +29,12 @@ class TestToggleSwitch:
         qtbot.mouseClick(toggle, Qt.MouseButton.LeftButton)
         assert toggle.isChecked() is False
 
-    def test_variant_property_set_on_inner_checkbox_for_qss_targeting(self, qtbot):
-        """QSS 선택자 `QCheckBox[variant="switch"]`가 실제 QCheckBox에 걸려야
-        한다 — 합성 위젯(ToggleSwitch) 자체는 QCheckBox가 아니라 선택자가
-        안 먹는다."""
+    def test_inner_control_is_custom_painted_switch(self, qtbot):
+        """알약 배경 + 슬라이딩 손잡이는 QSS `::indicator`로 표현할 수 없어
+        `_SwitchIndicator`가 직접 페인팅한다 — 내부 컨트롤이 그 타입인지 확인."""
         toggle = ToggleSwitch()
         qtbot.addWidget(toggle)
-        assert toggle._checkbox.property("variant") == "switch"
+        assert isinstance(toggle._checkbox, _SwitchIndicator)
 
     def test_label_comes_before_switch_matching_design_mockup(self, qtbot):
         """DESIGN §4.2: `AI 요약 보기      ( ●)  OFF` — 라벨이 왼쪽, 스위치가 오른쪽."""
