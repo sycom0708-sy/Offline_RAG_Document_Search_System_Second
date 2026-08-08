@@ -145,7 +145,11 @@ SLM_CANDIDATES: tuple[SlmProfile, ...] = (
         repo_id="unsloth/Qwen3.5-4B-GGUF",
         gguf_file="Qwen3.5-4B-Q4_K_M.gguf",
         size_gb=2.74,
-        note="Apache 2.0. thinking 모드가 켜져 있으면 CPU에서 매우 느려 측정 전 확인 필요",
+        note="Apache 2.0. thinking 모드가 기본 활성이라 --reasoning off로 끈다",
+        # 실측: 끄지 않으면 300토큰을 전부 사고에 쓰고 130초 만에 **빈 응답**을
+        # 돌려준다. `--reasoning-budget 0`은 효과가 없었고 `--reasoning off`만
+        # 통했다(템플릿에 빈 <think></think>가 삽입되며 8토큰으로 정상 응답).
+        extra_server_args=("--reasoning", "off"),
     ),
     SlmProfile(
         key="exaone-3.5-7.8b",

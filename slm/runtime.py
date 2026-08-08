@@ -20,6 +20,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +83,97 @@ def find_free_port() -> int:
         return sock.getsockname()[1]
 
 
+def process_memory_mb(pid: int) -> tuple[float, float] | None:
+    """다른 프로세스의 (현재, 최대) 워킹셋 MB. 측정 못 하면 None.
+
+    T6.6의 메모리 지표는 **llama-server 쪽**을 재야 한다 — 파이썬 프로세스는
+    HTTP 요청만 보내므로 자기 자신을 재면 모델 크기가 전혀 안 잡힌다.
+    `scripts/benchmark_search.py`의 `_memory_mb()`가 자기 프로세스용이라
+    여기서는 PID를 열어서 같은 구조체를 읽는다.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        class PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ("cb", ctypes.wintypes.DWORD),
+                ("PageFaultCount", ctypes.wintypes.DWORD),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+            ]
+
+        _PROCESS_QUERY_INFORMATION = 0x0400
+        _PROCESS_VM_READ = 0x0010
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, pid
+        )
+        if not handle:
+            return None
+        try:
+            counters = PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(counters)
+            if not ctypes.windll.psapi.GetProcessMemoryInfo(
+                handle, ctypes.byref(counters), counters.cb
+            ):
+                return None
+            return counters.WorkingSetSize / 1e6, counters.PeakWorkingSetSize / 1e6
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def available_ram_gb() -> float | None:
+    """시스템 여유 RAM(GB). 측정 조건 기록용 — 이 PC는 최소 사양이라 특히 중요하다."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return status.ullAvailPhys / 2**30
+    except Exception:
+        return None
+
+
+@dataclass
+class ServerHandle:
+    """기동된 llama-server 한 대."""
+
+    port: int
+    # 프로세스 기동부터 `/health` 통과까지 — T6.6의 "모델 로딩 시간" 지표.
+    load_seconds: float
+    pid: int
+
+    def memory_mb(self) -> tuple[float, float] | None:
+        return process_memory_mb(self.pid)
+
+
 def _health_ok(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2):
@@ -99,11 +191,7 @@ def llama_server(
     startup_timeout: int = DEFAULT_STARTUP_TIMEOUT_SEC,
     extra_args: list[str] | None = None,
 ):
-    """llama-server를 띄우고 `(port, load_seconds)`를 넘긴다. 블록을 벗어나면 종료한다.
-
-    `load_seconds`는 프로세스 기동부터 `/health`가 통과할 때까지의 시간 —
-    T6.6의 "모델 로딩 시간" 지표로 쓴다.
-    """
+    """llama-server를 띄우고 `ServerHandle`을 넘긴다. 블록을 벗어나면 종료한다."""
     exe = find_llama_server()
     if exe is None:
         raise LlamaServerNotFoundError(
@@ -155,7 +243,11 @@ def llama_server(
                 )
             time.sleep(_HEALTH_POLL_INTERVAL_SEC)
 
-        yield port, time.perf_counter() - started
+        yield ServerHandle(
+            port=port,
+            load_seconds=time.perf_counter() - started,
+            pid=process.pid,
+        )
     finally:
         _terminate(process)
 

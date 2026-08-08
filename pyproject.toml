@@ -7,6 +7,11 @@ requires-python = ">=3.10"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    # sLM 종단 테스트 — 모델을 실제로 올리므로 수십 초가 걸린다.
+    # 빼고 돌리려면: pytest -m "not slow"
+    "slow: 실제 모델을 기동하는 느린 테스트",
+]
 
 [tool.setuptools.packages.find]
 include = ["parser*"]

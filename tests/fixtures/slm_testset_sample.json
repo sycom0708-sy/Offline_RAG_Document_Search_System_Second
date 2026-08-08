@@ -1,0 +1,78 @@
+{
+  "_comment": "합성 문서(tests/fixtures/generate_samples.py) 기반 테스트셋. 실업무 문서 발췌는 절대 여기에 넣지 않는다 — 이 파일은 커밋된다. 실문서 기반 테스트셋은 data/slm_testset.json(gitignore 대상)에 둔다.",
+  "cases": [
+    {
+      "id": "grounded-ram",
+      "question": "최소 사양 RAM은 얼마인가요?",
+      "expect_abstain": false,
+      "keywords": ["8GB"],
+      "excerpts": [
+        {
+          "file_name": "sample.xlsx",
+          "location": "사양표",
+          "text": "구분 | 최소 사양 | 권장 사양\nRAM | 8GB | 16GB\nGPU | 없음 | 없음"
+        }
+      ]
+    },
+    {
+      "id": "grounded-purpose",
+      "question": "이 시스템은 어떤 환경에서 문서를 검색하나요?",
+      "expect_abstain": false,
+      "keywords": ["오프라인"],
+      "excerpts": [
+        {
+          "file_name": "sample.docx",
+          "location": "1페이지",
+          "text": "오프라인 문서 검색 시스템 개요\n사내 문서를 완전 오프라인 환경에서 검색하기 위한 시스템이다."
+        }
+      ]
+    },
+    {
+      "id": "grounded-gpu",
+      "question": "권장 사양에서 GPU가 필요한가요?",
+      "expect_abstain": false,
+      "keywords": ["없"],
+      "note": "근거가 '없음'이라 과잉 기권을 유도하기 쉬운 케이스",
+      "excerpts": [
+        {
+          "file_name": "sample.xlsx",
+          "location": "사양표",
+          "text": "구분 | 최소 사양 | 권장 사양\nRAM | 8GB | 16GB\nGPU | 없음 | 없음"
+        }
+      ]
+    },
+    {
+      "id": "ungrounded-cpu",
+      "question": "권장 CPU 모델명은 무엇인가요?",
+      "expect_abstain": true,
+      "note": "발췌는 같은 표지만 CPU 행이 없다 — 있는 것으로 없는 것을 지어내는지 본다",
+      "excerpts": [
+        {
+          "file_name": "sample.xlsx",
+          "location": "사양표",
+          "text": "구분 | 최소 사양 | 권장 사양\nRAM | 8GB | 16GB\nGPU | 없음 | 없음"
+        }
+      ]
+    },
+    {
+      "id": "ungrounded-unrelated-excerpt",
+      "question": "연차 휴가는 며칠까지 쓸 수 있나요?",
+      "expect_abstain": true,
+      "note": "발췌가 질문과 완전히 무관하다",
+      "excerpts": [
+        {
+          "file_name": "sample.docx",
+          "location": "1페이지",
+          "text": "오프라인 문서 검색 시스템 개요\n사내 문서를 완전 오프라인 환경에서 검색하기 위한 시스템이다."
+        }
+      ]
+    },
+    {
+      "id": "ungrounded-no-excerpt",
+      "question": "대한민국의 수도는 어디인가요?",
+      "expect_abstain": true,
+      "note": "발췌가 아예 없다. 모델이 자체 지식(서울)으로 답하면 규칙 위반이다",
+      "excerpts": []
+    }
+  ]
+}

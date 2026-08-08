@@ -94,12 +94,15 @@ def download_file(url: str, dest: Path, *, quiet: bool = False, resume: bool = T
 
 
 def _print_progress(name: str, done: int, total: int | None) -> None:
+    # GGUF는 GB 단위지만 이 함수는 18MB짜리 llama.cpp 바이너리도 받는다
+    # (`scripts/setup_llamacpp.py`) — 단위를 크기에 맞춘다.
+    scale, unit = (1e9, "GB") if (total or done) >= 1e9 else (1e6, "MB")
     if total:
         pct = done / total * 100
-        print(f"\r  {name}: {done/1e9:5.2f} / {total/1e9:.2f} GB ({pct:5.1f}%)",
+        print(f"\r  {name}: {done/scale:6.2f} / {total/scale:.2f} {unit} ({pct:5.1f}%)",
               end="", file=sys.stderr, flush=True)
     else:
-        print(f"\r  {name}: {done/1e9:5.2f} GB", end="", file=sys.stderr, flush=True)
+        print(f"\r  {name}: {done/scale:6.2f} {unit}", end="", file=sys.stderr, flush=True)
 
 
 def download_slm(profile: SlmProfile, *, force: bool = False, quiet: bool = False) -> Path:
