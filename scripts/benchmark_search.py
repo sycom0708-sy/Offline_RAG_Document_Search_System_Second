@@ -60,7 +60,15 @@ def _memory_mb() -> float | None:
 
         counters = PROCESS_MEMORY_COUNTERS()
         counters.cb = ctypes.sizeof(counters)
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
+
+        # restype을 지정하지 않으면 ctypes가 반환 핸들을 32비트 int로 받는다.
+        # GetCurrentProcess()는 의사 핸들 -1을 주는데, 그대로 넘기면 포인터
+        # 폭이 안 맞아 호출이 **조용히 실패**한다(반환 0, GetLastError도 0).
+        # Phase 3부터 메모리 지표가 계속 비어 있던 원인이다.
+        kernel32 = ctypes.windll.kernel32
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        handle = ctypes.c_void_p(kernel32.GetCurrentProcess())
+
         if not ctypes.windll.psapi.GetProcessMemoryInfo(
             handle, ctypes.byref(counters), counters.cb
         ):

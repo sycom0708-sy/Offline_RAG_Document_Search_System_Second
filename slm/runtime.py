@@ -113,11 +113,17 @@ def process_memory_mb(pid: int) -> tuple[float, float] | None:
 
         _PROCESS_QUERY_INFORMATION = 0x0400
         _PROCESS_VM_READ = 0x0010
-        handle = ctypes.windll.kernel32.OpenProcess(
+        kernel32 = ctypes.windll.kernel32
+        # restype을 지정하지 않으면 핸들이 32비트로 잘린다. 지금까지는 핸들 값이
+        # 작아서 우연히 동작했다 — `scripts/benchmark_search.py`의 같은 코드는
+        # 의사 핸들(-1) 때문에 실제로 실패하고 있었다.
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(
             _PROCESS_QUERY_INFORMATION | _PROCESS_VM_READ, False, pid
         )
         if not handle:
             return None
+        handle = ctypes.c_void_p(handle)
         try:
             counters = PROCESS_MEMORY_COUNTERS()
             counters.cb = ctypes.sizeof(counters)
