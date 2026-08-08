@@ -26,6 +26,11 @@ from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar import StatusBar
 
 
+# 창을 닫을 때 실행 중인 스레드를 기다리는 한계. 무한정 기다리면 창이 안 닫히고,
+# 안 기다리면 실행 중인 QThread가 파괴되며 크래시한다.
+_THREAD_SHUTDOWN_WAIT_MS = 5000
+
+
 class _IndexingBridge(QObject):
     """백그라운드 인덱싱 스레드(`threading.Thread`)의 콜백을 Qt 신호로 옮긴다.
 
@@ -55,7 +60,11 @@ class MainWindow(QMainWindow):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._request_seq = 0
-        self._active_worker: SearchWorker | None = None
+        # 실행 중인 워커를 **전부** 붙들고 있어야 한다. 한 자리에만 두면 다음
+        # 검색이 그 참조를 덮어쓰는 순간, 아직 돌고 있는 QThread가 파이썬 GC에
+        # 수거되면서 앱이 통째로 죽는다(0xC0000409 실측). 결과를 버리는 것은
+        # `request_id` 비교가 이미 해주므로, 여기서는 살려두기만 하면 된다.
+        self._active_workers: set[SearchWorker] = set()
         self._embedder = None  # 백그라운드 워밍업 완료 전까지 None
         self._last_query = ""
         self._indexing_thread: IndexingThread | None = None
@@ -146,7 +155,8 @@ class MainWindow(QMainWindow):
         worker.succeeded.connect(self._on_search_succeeded)
         worker.failed.connect(self._on_search_failed)
         worker.finished.connect(worker.deleteLater)
-        self._active_worker = worker
+        worker.finished.connect(lambda w=worker: self._active_workers.discard(w))
+        self._active_workers.add(worker)
         worker.start()
 
     def _on_search_succeeded(self, request_id: int, results: list) -> None:
@@ -166,6 +176,22 @@ class MainWindow(QMainWindow):
         if request_id != self._request_seq:
             return
         self.result_list.show_error(message)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        """실행 중인 스레드를 정리하고 닫는다.
+
+        검색 도중 창을 닫으면 실행 중인 QThread가 파괴되면서 앱이 죽는다 —
+        `_active_workers`가 막아주는 것과 같은 종류의 크래시다. 인덱싱은 길 수
+        있어 `stop_event`로 중단을 먼저 요청한다.
+        """
+        if self._indexing_thread is not None and self._indexing_thread.isRunning():
+            self._indexing_thread.stop_event.set()
+            self._indexing_thread.wait(_THREAD_SHUTDOWN_WAIT_MS)
+
+        for worker in list(self._active_workers):
+            worker.wait(_THREAD_SHUTDOWN_WAIT_MS)
+
+        super().closeEvent(event)
 
     def _empty_result_hint(self) -> str | None:
         """DESIGN §7: 형식 필터·옵션이 원인일 수 있으니 완화를 제안한다."""

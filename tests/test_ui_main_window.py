@@ -75,6 +75,34 @@ class TestEndToEndSearch:
 
         assert window.result_list.card_count() == 0
 
+    def test_second_search_does_not_drop_running_worker(self, qtbot, window):
+        """실행 중인 워커의 참조를 잃으면 QThread가 GC되며 앱이 통째로 죽는다.
+
+        워커를 한 자리(`_active_worker`)에만 붙들던 시절 실제로 크래시했다
+        (0xC0000409). 결과를 버리는 것은 `request_id` 비교가 하므로, 여기서는
+        끝날 때까지 살려두기만 하면 된다.
+        """
+        import gc
+
+        window._on_search_requested("계약서")
+        window._on_search_requested("리눅스")
+
+        # 두 번째 검색이 시작된 시점에 첫 워커가 아직 참조돼 있어야 한다.
+        assert len(window._active_workers) == 2
+        gc.collect()  # 참조를 잃었다면 여기서 수거되고, 아래 접근이 죽는다
+        assert all(isinstance(w.isRunning(), bool) for w in window._active_workers)
+
+        # 끝나면 스스로 빠져나가야 한다 — 안 그러면 무한정 쌓인다.
+        qtbot.waitUntil(lambda: not window._active_workers, timeout=SEARCH_TIMEOUT_MS)
+
+    def test_close_waits_for_running_search(self, qtbot, window):
+        """검색 도중 창을 닫아도 같은 종류의 크래시가 난다."""
+        window._on_search_requested("계약서")
+        assert window._active_workers
+
+        window.close()  # closeEvent가 워커를 기다린다
+        assert all(w.isFinished() for w in window._active_workers)
+
     def test_no_matching_query_shows_empty_state(self, qtbot, window):
         window.search_bar.set_text("전혀관련없는외계어단어조합")
         qtbot.wait(400)
