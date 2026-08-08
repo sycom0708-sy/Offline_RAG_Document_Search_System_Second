@@ -110,13 +110,29 @@ def test_identical_text_scores_near_one(embedder):
     assert float(a @ b) == pytest.approx(1.0, abs=1e-4)
 
 
-def test_batching_gives_practically_equivalent_vectors(embedder):
-    """배치 크기가 달라도 사실상 같은 벡터여야 한다.
+def test_same_path_encoding_is_deterministic(embedder):
+    """같은 입력을 같은 경로로 넣으면 **비트 단위로 같아야** 한다.
 
-    int8 동적 양자화 모델이라 **완전히 일치하지는 않는다** — 활성값 스케일을
-    배치 단위로 잡기 때문에 길이가 같은 입력이어도 약 0.02 수준의 차이가 난다
-    (패딩 때문이 아니다). 자기 자신과의 코사인 유사도가 0.98 이상이면
-    검색 순위를 뒤집지 않는 수준이다.
+    양자화 편차는 배치 구성에서 오지, 실행마다 흔들리는 것이 아니다. 이게
+    깨지면 아래 편차 테스트의 전제 자체가 무너진다.
+    """
+    text = "계약서 검토 시 기준이 되는 조항"
+    assert np.array_equal(embedder.encode([text]), embedder.encode([text]))
+
+
+def test_batching_deviation_stays_within_known_bounds(embedder):
+    """배치로 만든 벡터와 단건 벡터의 편차가 알려진 범위 안인지 (회귀 감지용).
+
+    **이 값은 CPU에 따라 크게 다르다 — 품질 기준으로 읽으면 안 된다.**
+    int8 동적 양자화라 활성값 스케일을 배치 텐서 전체로 잡기 때문에, 같은
+    문장이라도 어떤 배치에 실렸느냐로 벡터가 달라진다. 패딩 탓이 아니다 —
+    패딩이 0인 문장도 갈리고, 패딩을 늘리면 오히려 편차가 줄었다(실측).
+
+    실측 하한: AVX-512/VNNI가 있는 Ultra 5 125U에서는 0.98대, VNNI가 없는
+    i5-8265U(최소 사양 기준기)에서는 실문서 300청크 기준 최소 0.868이다.
+    그래서 하한을 0.85로 두되, **품질 보증은 아래 순위 테스트가 한다** —
+    실제로 중요한 성질은 "순위가 뒤집히지 않는가"이고, 실문서 300청크·질의
+    4건에서 top1은 전부 동일, top10 겹침은 8~10/10이었다(PLAN Phase 3 참고).
     """
     texts = ["짧은 문장", "이것은 조금 더 긴 문장이며 토큰 수가 다르다", "중간 길이 문장이다"]
 
@@ -124,7 +140,7 @@ def test_batching_gives_practically_equivalent_vectors(embedder):
     one_by_one = np.vstack([embedder.encode([t]) for t in texts])
 
     self_similarity = [float(batched[i] @ one_by_one[i]) for i in range(len(texts))]
-    assert min(self_similarity) > 0.98
+    assert min(self_similarity) > 0.85
 
 
 def test_batching_does_not_change_ranking(embedder):
