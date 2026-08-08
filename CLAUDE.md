@@ -4,7 +4,14 @@
 
 **Phase 착수 시 `PLAN` 문서를 먼저 확인한다.** 각 Phase의 모듈 구조·선결 결정 사항·이전 Phase에서 넘어온 과제가 정리되어 있다. Phase 완료 시 해당 Phase의 "실행 결과" 절을 채우고 다음 Phase 계획을 갱신한다.
 
-**Phase 완료 시마다 plan 모드 계획 파일(`~/.claude/plans/*.md`, plan 모드 진입 시 시스템 리마인더에 경로가 나온다)의 해당 Phase 원문을 `PHASE_오프라인RAG시스템_단계별_구현계획서.md` 맨 위에 그대로 이어붙이고 git으로 커밋한다.** plan 파일 자체는 프로젝트 저장소 밖(로컬 PC 전용)에 있어 다른 PC로 옮기거나 버전관리가 안 되므로, 이 저장소 안에 사본을 남겨야 나중에 보고서를 쓸 때 착수 시점 계획 원문을 참조할 수 있다. TASK/PLAN/CLAUDE.md 갱신과 함께 Phase 완료 체크리스트의 일부로 취급한다.
+**Phase 완료 시마다 plan 모드 계획 파일(`~/.claude/plans/*.md`)의 해당 Phase 원문을 `PHASE_오프라인RAG시스템_단계별_구현계획서.md` 맨 위에 이어붙이고 git으로 커밋한다.** plan 파일 자체는 프로젝트 저장소 밖(로컬 PC 전용)에 있어 다른 PC로 옮기거나 버전관리가 안 되므로, 이 저장소 안에 사본을 남겨야 나중에 보고서를 쓸 때 착수 시점 계획 원문을 참조할 수 있다. TASK/PLAN/CLAUDE.md 갱신과 함께 Phase 완료 체크리스트의 일부로 취급한다.
+
+```bash
+python -m scripts.archive_plan --list   # 후보 + 출처 판정
+python -m scripts.archive_plan --all    # 판정을 통과한 것만 아카이브
+```
+
+**🔴 손으로 복사하지 말고 위 스크립트를 쓴다.** `~/.claude/plans/`는 **전 프로젝트 공용**이고 파일명이 무작위(`linked-hugging-clover.md` 같은 식)다. 이 PC에는 **같은 주제(오프라인 RAG)의 다른 프로젝트**가 있어 계획서가 섞여 쌓이는데, 제목이나 주제로는 구분되지 않는다 — 둘 다 "표 청크", "임베딩 128토큰" 같은 말을 쓴다. 실제로 갈리는 것은 **구조**다(`indexing/` vs `indexer/`, `content_original` vs `content`). 스크립트가 계획서에 나온 파일 경로가 이 저장소에 실제로 있는지 대조해 남의 것이면 막는다. 판정이 틀렸다고 확신하면 `--force`.
 
 **Phase 착수 직전에는 `PROMPTS` 문서의 "모델 추천" 표를 확인해 사용자에게 알려준다.** 해당 Phase에 Opus 5 전환이 권장되는 결정 지점이 있으면 먼저 짚어주고, 그 결정 이후 구현은 Sonnet 5로 이어가도록 안내한다.
 
