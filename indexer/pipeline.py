@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass, field
@@ -30,6 +31,7 @@ class IndexReport:
     warnings: list[str] = field(default_factory=list)
     indexed: int = 0
     embedded: int = 0
+    pruned: int = 0  # 대상 폴더 밖 문서를 지운 개수 (T10.5, "새 폴더로 교체")
 
     @property
     def ok(self) -> bool:
@@ -37,6 +39,45 @@ class IndexReport:
 
 
 DoneCallback = Callable[[IndexReport], None]
+
+
+def _prune_stale_documents(conn: sqlite3.Connection, files: list[Path]) -> int:
+    """이번 스캔에서 발견되지 않은 문서를 지우고 지운 개수를 반환한다.
+
+    "사용자당 대상 폴더 하나"가 제품 전제다(PRD 4장). 그런데 대상 폴더를
+    바꿔 재인덱싱해도 이전 폴더의 문서가 지워지지 않아 계속 쌓였다 — 다른
+    PC·다른 세션에서 인덱싱한 흔적이 남은 채 검색 결과에 섞여 나오는 것을
+    실사용 중 실제로 겪었다(2026-08-09). **이번 스캔 결과로 완전히
+    교체한다**(사용자 확정).
+
+    처음엔 "대상 폴더 바깥이면 지운다"(경로 접두사 비교)로 짰는데, **같은
+    폴더 안에서 파일이 서브폴더로 옮겨진 경우**를 못 잡는다는 게 바로 다음
+    실사용에서 드러났다 — 옮겨진 파일의 옛 경로도 여전히 "폴더 안"이라
+    접두사 비교로는 안 지워지고, DB에 존재 안 하는 파일 경로만 유령처럼
+    남았다. 그래서 접두사가 아니라 **이번에 실제로 스캔된 파일 목록 자체와
+    대조**한다 — 폴더가 통째로 바뀐 경우와 폴더 안에서 파일이 옮겨지거나
+    지워진 경우를 한 번에 잡는다. Phase 8의 "변경 안 된 파일은 건드리지
+    않는다"(mtime/해시로 스킵)와는 다른 문제다 — 이건 전체 재파싱은 그대로
+    두고 "지금 없는 문서만 지운다"는 절반만 한다.
+
+    경로 비교는 대소문자를 접어서(`os.path.normcase`) 한다 — Windows는
+    대소문자를 구분하지 않는데 문자열 그대로 비교하면 같은 파일도 대소문자가
+    다르면 "사라졌다"고 오판할 수 있다.
+    """
+    scanned = {os.path.normcase(os.path.normpath(str(p.resolve()))) for p in files}
+
+    stale_ids = []
+    for doc_id, file_path in conn.execute("SELECT doc_id, file_path FROM documents"):
+        candidate = os.path.normcase(os.path.normpath(file_path))
+        if candidate not in scanned:
+            stale_ids.append(doc_id)
+
+    if stale_ids:
+        conn.executemany(
+            "DELETE FROM documents WHERE doc_id = ?", [(doc_id,) for doc_id in stale_ids]
+        )
+        conn.commit()  # ON DELETE CASCADE로 chunks·chunk_vectors도 함께 지워진다
+    return len(stale_ids)
 
 
 def index_folder(
@@ -55,10 +96,20 @@ def index_folder(
     (문자 기준으로 자르면 임베딩이 잘린다), 저장이 끝난 뒤 벡터를 계산한다.
     모델이 없으면 키워드 인덱싱만 하고 `warnings`에 남긴다 — 벡터가 없어도
     키워드 검색은 정상 동작하므로 실패로 취급하지 않는다.
+
+    스캔하자마자, 파싱을 시작하기 전에 이번 스캔에 없는 문서부터 지운다 —
+    대상 폴더가 바뀌었든, 같은 폴더 안에서 파일이 옮겨지거나 지워졌든
+    "지금 없는 건 지운다"(사용자 확정, "새 폴더로 완전히 교체"). 파일 하나
+    파싱 전에 지우므로 이번 실행이 중간에 취소돼도(`stop_event`) 이미 지운
+    항목 + 아직 처리 못 한 항목이 둘 다 "없음"으로 보이는 정도지, 지우다 만
+    상태로 반쯤 섞이지는 않는다.
     """
-    files = list(scan_folder(root))
+    root_path = Path(root)
+    files = list(scan_folder(root_path))
     total = len(files)
+
     report = IndexReport()
+    report.pruned = _prune_stale_documents(conn, files)
 
     embedder = None
     count_tokens = None

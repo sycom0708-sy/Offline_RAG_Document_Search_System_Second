@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+from pathlib import Path
 
 from indexer.fts5.schema import connect
 from indexer.pipeline import IndexingThread, index_folder
@@ -23,6 +24,93 @@ def test_index_folder_stores_all_documents(samples, tmp_path):
     assert report.indexed == len(samples)
     doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
     assert doc_count == len(samples)
+
+
+def test_reindexing_a_new_folder_removes_previous_folder_documents(tmp_path, sample_txt):
+    """T10.5: 대상 폴더를 바꾸면 이전 폴더 문서를 완전히 교체한다(사용자 확정).
+
+    다른 PC·다른 세션에서 인덱싱한 흔적이 계속 쌓여 검색 결과에 섞여
+    나오던 것을 실사용 중 실제로 겪었다(2026-08-09).
+    """
+    old_folder = tmp_path / "old"
+    old_folder.mkdir()
+    shutil.copy(sample_txt, old_folder / "old.txt")
+
+    new_folder = tmp_path / "new"
+    new_folder.mkdir()
+    shutil.copy(sample_txt, new_folder / "new.txt")
+
+    conn = connect(":memory:")
+    index_folder(conn, old_folder, embed=False)
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+
+    report = index_folder(conn, new_folder, embed=False)
+
+    names = [r[0] for r in conn.execute("SELECT file_name FROM documents")]
+    assert names == ["new.txt"]  # old.txt는 지워졌다
+    assert report.pruned == 1
+    assert report.indexed == 1
+
+
+def test_reindexing_the_same_folder_does_not_prune_its_own_documents(tmp_path, sample_txt):
+    """같은 폴더를 다시 인덱싱할 때는 그 안의 문서를 지우면 안 된다."""
+    folder = tmp_path / "work"
+    folder.mkdir()
+    shutil.copy(sample_txt, folder / "a.txt")
+    shutil.copy(sample_txt, folder / "b.txt")
+
+    conn = connect(":memory:")
+    index_folder(conn, folder, embed=False)
+    report = index_folder(conn, folder, embed=False)  # 같은 폴더 재실행
+
+    assert report.pruned == 0
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
+
+
+def test_file_moved_to_subfolder_prunes_its_old_path(tmp_path, sample_txt):
+    """T10.5 실측 함정: 같은 대상 폴더 **안에서** 파일이 서브폴더로 옮겨진 경우.
+
+    처음 짠 버전은 "대상 폴더 바깥이면 지운다"(경로 접두사 비교)였는데,
+    옮겨진 파일의 옛 경로도 여전히 "폴더 안"이라 접두사 비교로는 안
+    지워지고 유령 문서로 남았다 — 재인덱싱 직후 실사용에서 실제로 겪었다
+    (파일 10개인데 문서 17개로 나옴). 이번 스캔 결과와 직접 대조하도록
+    고쳐서 해결했다.
+    """
+    root = tmp_path / "root"
+    root.mkdir()
+    original = root / "문서.txt"
+    shutil.copy(sample_txt, original)
+
+    conn = connect(":memory:")
+    index_folder(conn, root, embed=False)
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+
+    sub = root / "sub1"
+    sub.mkdir()
+    original.rename(sub / "문서.txt")  # 같은 root 안에서 서브폴더로 이동
+
+    report = index_folder(conn, root, embed=False)
+
+    paths = [r[0] for r in conn.execute("SELECT file_path FROM documents")]
+    assert len(paths) == 1
+    assert "sub1" in paths[0]  # 새 위치의 문서만 남아야 한다
+    assert report.pruned == 1  # 옛 경로의 유령 문서가 지워졌다
+
+
+def test_prune_ignores_case_on_windows_style_paths(tmp_path, sample_txt):
+    """Windows는 경로 대소문자를 구분하지 않는다 — 같은 폴더인데 대소문자만
+    다르다고 "바깥"으로 오판하면 매번 재인덱싱마다 자기 자신을 지운다."""
+    folder = tmp_path / "MyFolder"
+    folder.mkdir()
+    shutil.copy(sample_txt, folder / "a.txt")
+
+    conn = connect(":memory:")
+    index_folder(conn, folder, embed=False)
+
+    differently_cased = Path(str(folder).replace("MyFolder", "myfolder"))
+    report = index_folder(conn, differently_cased, embed=False)
+
+    assert report.pruned == 0
 
 
 def test_index_folder_isolates_broken_file(tmp_path, sample_txt):

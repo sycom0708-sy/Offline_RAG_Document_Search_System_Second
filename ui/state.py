@@ -25,9 +25,28 @@ class AppState:
     target_folder: str | None = None
     model_profile: str = LIGHT.key
 
+    def __post_init__(self) -> None:
+        # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자
+        # 없이 불렀을 때 어디에 쓸지 기억하는 용도다. load()가 이 값을
+        # 실제 읽은 경로로 덮어쓴다.
+        self._path = STATE_PATH
+
     @classmethod
     def load(cls, path: Path = STATE_PATH) -> "AppState":
-        """저장된 상태를 읽는다. 파일이 없거나 손상됐으면 기본값으로 시작한다."""
+        """저장된 상태를 읽는다. 파일이 없거나 손상됐으면 기본값으로 시작한다.
+
+        반환된 인스턴스는 `path`를 기억해 뒀다가 `save()`를 인자 없이 불러도
+        같은 파일에 저장한다 — 테스트가 격리된 경로로 `load()`해놓고
+        `save()`만 인자 없이 부르면 실제 `STATE_PATH`를 덮어쓰던 문제를
+        막는다(실측 확인: 테스트 스위트가 진짜 `data/app_state.json`을
+        pytest 임시 경로로 오염시켰다).
+        """
+        instance = cls._load_raw(path)
+        instance._path = path
+        return instance
+
+    @classmethod
+    def _load_raw(cls, path: Path) -> "AppState":
         if not path.is_file():
             return cls()
         try:
@@ -42,6 +61,7 @@ class AppState:
         except TypeError:
             return cls()
 
-    def save(self, path: Path = STATE_PATH) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")
+    def save(self, path: Path | None = None) -> None:
+        target = path if path is not None else self._path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(asdict(self), ensure_ascii=False, indent=2), encoding="utf-8")

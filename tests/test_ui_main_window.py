@@ -54,8 +54,8 @@ def indexed_db(tmp_path, embedder):
 
 
 @pytest.fixture
-def window(qtbot, indexed_db):
-    win = MainWindow(db_path=indexed_db, state=AppState())
+def window(qtbot, indexed_db, tmp_path):
+    win = MainWindow(db_path=indexed_db, state=AppState.load(path=tmp_path / "state.json"))
     qtbot.addWidget(win)
     return win
 
@@ -149,7 +149,7 @@ class TestEndToEndSearch:
 class TestNoIndexState:
     def test_empty_database_shows_no_index_message(self, qtbot, tmp_path):
         empty_db = tmp_path / "empty.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         win.search_bar.set_text("아무 질의")
@@ -243,7 +243,7 @@ class TestSidebarOptionsAffectResults:
 class TestReindexFlow:
     def test_reindexing_updates_status_bar_and_format_filter(self, qtbot, tmp_path, samples):
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         source_folder = str(next(iter(samples.values())).parent)
@@ -259,7 +259,7 @@ class TestReindexFlow:
     def test_shows_non_modal_progress_dialog_while_indexing(self, qtbot, tmp_path, samples):
         """T10.4: TECH 4.6("메인 UI가 멈추지 않도록")을 지키는 비모달 팝업."""
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         source_folder = str(next(iter(samples.values())).parent)
@@ -272,7 +272,7 @@ class TestReindexFlow:
 
     def test_cancel_button_sets_stop_event(self, qtbot, tmp_path, samples):
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         source_folder = str(next(iter(samples.values())).parent)
@@ -287,7 +287,7 @@ class TestReindexFlow:
     def test_starting_reindex_twice_does_not_spawn_second_thread(self, qtbot, tmp_path, samples):
         """같은 DB에 인덱싱 스레드 두 개가 동시에 쓰면 위험하다 — 도는 중이면 무시한다."""
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         source_folder = str(next(iter(samples.values())).parent)
@@ -308,7 +308,7 @@ class TestReindexFlow:
         겪음).
         """
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         win.status_bar_widget.set_warning("이전 원문 열기 실패 메시지")
@@ -326,7 +326,7 @@ class TestReindexFlow:
         is_alive()/join(초)로 고쳤다.
         """
         empty_db = tmp_path / "fresh.sqlite3"
-        win = MainWindow(db_path=empty_db, state=AppState())
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         source_folder = str(next(iter(samples.values())).parent)
@@ -445,7 +445,7 @@ class TestMixedResultTypes:
         embed_missing(conn, embedder)
         conn.close()
 
-        win = MainWindow(db_path=db_path, state=AppState())
+        win = MainWindow(db_path=db_path, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
         win.search_bar.set_text("예산")
