@@ -80,6 +80,25 @@ class TestStatusBar:
         bar.set_idle(10, None)
         assert bar._progress.isVisibleTo(bar) is False
 
+    def test_warning_hidden_by_default(self, qtbot):
+        bar = StatusBar()
+        qtbot.addWidget(bar)
+        assert bar._warning_label.isVisibleTo(bar) is False
+
+    def test_set_warning_shows_message(self, qtbot):
+        bar = StatusBar()
+        qtbot.addWidget(bar)
+        bar.set_warning("구버전 문서를 변환하지 못했습니다.")
+        assert bar._warning_label.isVisibleTo(bar) is True
+        assert "구버전 문서" in bar._warning_label.text()
+
+    def test_set_warning_none_hides_it_again(self, qtbot):
+        bar = StatusBar()
+        qtbot.addWidget(bar)
+        bar.set_warning("문제 발생")
+        bar.set_warning(None)
+        assert bar._warning_label.isVisibleTo(bar) is False
+
     def test_folder_button_exists(self, qtbot):
         bar = StatusBar()
         qtbot.addWidget(bar)

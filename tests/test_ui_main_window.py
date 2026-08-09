@@ -238,6 +238,57 @@ class TestReindexFlow:
         assert len(win.sidebar.format_filter._format_checkboxes) > 0
 
 
+class TestLibreOfficeWarning:
+    """T10.2: LibreOffice 미설치로 구버전 문서가 조용히 빠지면 사용자에게 안내한다."""
+
+    def test_missing_libreoffice_failure_produces_warning(self, qtbot, window):
+        from pathlib import Path
+
+        from indexer.pipeline import IndexReport
+
+        report = IndexReport(failures=[(
+            Path("규정.doc"),
+            "LibreOffice(soffice)를 찾을 수 없습니다. "
+            "LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요. "
+            "(또는 SOFFICE_PATH 환경변수로 실행 파일 경로를 지정하세요)",
+        )])
+
+        message = window._libreoffice_warning(report)
+        assert message is not None
+        assert "규정.doc" in message
+        assert "vendor/LibreOfficePortable" in message
+
+    def test_unrelated_failure_produces_no_warning(self, window):
+        from pathlib import Path
+
+        from indexer.pipeline import IndexReport
+
+        report = IndexReport(failures=[(Path("broken.pdf"), "손상된 PDF입니다")])
+        assert window._libreoffice_warning(report) is None
+
+    def test_on_indexing_done_surfaces_warning_to_status_bar(self, window):
+        from pathlib import Path
+
+        from indexer.pipeline import IndexReport
+
+        report = IndexReport(failures=[(
+            Path("규정.doc"),
+            "LibreOffice(soffice)를 찾을 수 없습니다. "
+            "LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요.",
+        )])
+
+        window._on_indexing_done(report)
+        assert window.status_bar_widget._warning_label.isVisibleTo(window.status_bar_widget)
+
+    def test_clean_run_clears_previous_warning(self, window):
+        """LibreOffice를 설치한 뒤 재인덱싱하면 안내가 사라져야 한다."""
+        from indexer.pipeline import IndexReport
+
+        window.status_bar_widget.set_warning("이전 실행의 경고")
+        window._on_indexing_done(IndexReport())
+        assert not window.status_bar_widget._warning_label.isVisibleTo(window.status_bar_widget)
+
+
 class TestMixedResultTypes:
     """T5.6: text/table/image가 한 결과 리스트에 자연스럽게 섞여야 한다."""
 

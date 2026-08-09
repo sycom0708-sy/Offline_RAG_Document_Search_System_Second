@@ -306,7 +306,7 @@
   - 상세 조사 근거는 대화 로그 참고, 착수 시 PLAN 문서에 계획 절 신설
   - **[2026-08-08 추가]** 구버전 포맷 **변환**(파싱 단계, T1.9)은 Office COM 대신 LibreOffice 포터블 동봉으로 확정했다(TECH 9.1절). 이 항목(딥링크)은 그와 별개 — 원문을 정확한 위치로 **여는** 기능은 LibreOffice로 대체 불가해 COM이 유일한 경로다
 
-- [ ] T10.2 **구버전 포맷 변환 실패를 사용자에게 안내** — `LegacyOfficeParser`가 변환 실패를 `IndexReport.failures`에 담지만 UI가 표시하지 않는다. `soffice`(LibreOffice 포터블)를 못 찾으면 `.doc`/`.xls`/`.ppt`가 **오류 없이 조용히 0청크로 누락**된다(Phase 3 재측정 중 실제로 겪음, 2026-08-08). **[사용자 확정]** 앱이 자동으로 다운로드·설치하지 않는다(완전 오프라인·무관리자권한 전제와 배치) — "LibreOffice 포터블을 직접 받아 `vendor/LibreOfficePortable/`에 넣으라"는 **정적 안내만** 보여준다. 상세는 PLAN Phase 10 절
+- [x] T10.2 **구버전 포맷 변환 실패를 사용자에게 안내** — ✅ **완료 (2026-08-09)**. 근본 원인은 `LegacyOfficeParser`가 예외를 던지지 않고 `document.status=FAILED`만 남겨 `IndexReport.failures`가 애초에 채워지지 않던 것(`indexer/pipeline.py` 수정). `soffice`(LibreOffice 포터블)를 못 찾으면 상태바에 "구버전 문서를 변환하지 못했습니다(파일명). LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요." **정적 안내**를 표시한다(자동 다운로드·설치 없음, 사용자 확정). CLI(`indexer.cli`)도 같은 수정으로 실패 목록을 정상 출력하게 됐다. 테스트 9건 추가, 전체 469 passed. 상세는 PLAN Phase 10 절
 
 ---
 

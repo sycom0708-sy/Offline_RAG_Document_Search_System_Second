@@ -40,6 +40,33 @@ def test_index_folder_isolates_broken_file(tmp_path, sample_txt):
     assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
 
 
+def test_legacy_conversion_failure_is_reported_not_swallowed(tmp_path, monkeypatch):
+    """T10.2: LegacyOfficeParser는 예외를 던지지 않고 document.errors에만 담는다.
+
+    그대로 두면 `report.failures`가 비어 있어 인덱싱이 조용히 "성공"한 것처럼
+    보인다 — 실제로 겪은 버그다(Phase 3 재측정 중 LibreOffice 미배치 상태에서
+    .doc/.xls가 0청크로 조용히 빠짐).
+    """
+    from parser.utils.libreoffice import is_missing_libreoffice_error
+
+    (tmp_path / "legacy.doc").write_bytes(b"not a real doc")
+    monkeypatch.setattr(
+        "parser.utils.libreoffice.find_soffice", lambda: None
+    )
+
+    conn = connect(":memory:")
+    report = index_folder(conn, tmp_path, embed=False)
+
+    assert len(report.failures) == 1
+    path, message = report.failures[0]
+    assert path.name == "legacy.doc"
+    assert is_missing_libreoffice_error(message)
+    # 실패해도 문서 자체는 저장된다(status='failed', 0청크) — 재인덱싱 시
+    # 그대로 재시도된다.
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 0
+
+
 def test_missing_embedding_model_is_warning_not_failure(tmp_path, sample_txt, monkeypatch):
     """모델이 없어 벡터를 못 만든 것은 '파일 인덱싱 실패'가 아니다.
 

@@ -41,6 +41,13 @@ class StatusBar(QWidget):
         self._info_label = QLabel(IDLE_NO_DOCS_MESSAGE)
         self._info_label.setObjectName("StatusBarInfo")
 
+        # T10.2: LibreOffice 미설치로 구버전 문서(.doc/.xls/.ppt)가 조용히
+        # 0청크로 빠지는 것을 안내한다. 정적 안내만 보여준다(사용자 확정) —
+        # 자동 다운로드·재시도 버튼은 없다.
+        self._warning_label = QLabel("")
+        self._warning_label.setObjectName("StatusBarWarning")
+        self._warning_label.hide()
+
         self._progress = QProgressBar()
         self._progress.setObjectName("StatusBarProgress")
         self._progress.setTextVisible(False)
@@ -53,6 +60,7 @@ class StatusBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 6, 16, 6)
         layout.addWidget(self._info_label)
+        layout.addWidget(self._warning_label)
         layout.addWidget(self._progress)
         layout.addStretch()
         layout.addWidget(self.folder_button)
@@ -67,6 +75,19 @@ class StatusBar(QWidget):
         if last_indexed_at is not None:
             text += f" · 마지막 갱신 {format_relative_time(last_indexed_at)}"
         self._info_label.setText(text)
+
+    def set_warning(self, message: str | None) -> None:
+        """인덱싱 완료 후 안내가 있으면 보여주고, 없으면 숨긴다.
+
+        다음 인덱싱이 끝날 때까지 그대로 남아 있는다 — 검색·필터 조작으로는
+        지워지지 않는다(상태바를 다시 그리는 지점이 인덱싱 완료뿐이라 자연히
+        그렇게 된다).
+        """
+        if message:
+            self._warning_label.setText(message)
+            self._warning_label.show()
+        else:
+            self._warning_label.hide()
 
     def set_indexing_progress(self, done: int, total: int) -> None:
         self._info_label.setText(f"인덱싱 중… {done:,}/{total:,}")

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
 from config.settings import get_profile
 from indexer.fts5.schema import connect
 from indexer.pipeline import IndexingThread, IndexReport
+from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
 from ui.widgets.folder_dialog import FolderDialog
@@ -270,8 +271,21 @@ class MainWindow(QMainWindow):
     def _on_indexing_done(self, report: IndexReport) -> None:
         self._refresh_format_filter_options()
         self._refresh_status_bar()
+        self.status_bar_widget.set_warning(self._libreoffice_warning(report))
         if self._last_query:
             self._run_search(self._last_query)
+
+    def _libreoffice_warning(self, report: IndexReport) -> str | None:
+        """T10.2: LibreOffice가 없어 구버전 문서가 조용히 빠졌다면 안내한다."""
+        missing = [path for path, message in report.failures
+                   if is_missing_libreoffice_error(message)]
+        if not missing:
+            return None
+
+        names = ", ".join(path.name for path in missing[:2])
+        if len(missing) > 2:
+            names += f" 외 {len(missing) - 2}건"
+        return f"구버전 문서를 변환하지 못했습니다({names}). {INSTALL_HINT}"
 
     # --- 상태바 --------------------------------------------------
 

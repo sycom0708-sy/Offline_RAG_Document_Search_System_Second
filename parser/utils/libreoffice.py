@@ -16,6 +16,11 @@ from parser.base import ParserError
 
 DEFAULT_TIMEOUT_SEC = 120
 
+# 앱이 자동으로 내려받아 설치하지는 않는다 — PRD 4장의 완전 오프라인·무관리자권한
+# 전제와 배치된다(앱 내 다운로드는 인터넷을, 정식 설치본은 관리자 권한을 요구한다).
+# 직접 설치 안내만 보여준다(사용자 확정, PLAN Phase 10 T10.2).
+INSTALL_HINT = "LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요."
+
 # PATH에 없을 때 확인할 Windows 기본 설치 경로 + 포터블 배포 시의 상대 경로 (TECH 9.1절).
 _CANDIDATE_PATHS = (
     Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
@@ -62,6 +67,18 @@ def is_available() -> bool:
     return find_soffice() is not None
 
 
+def is_missing_libreoffice_error(message: str) -> bool:
+    """오류 문자열이 "LibreOffice를 못 찾음"인지 판별한다.
+
+    `LegacyOfficeParser`는 예외를 문자열로만 `document.errors`에 남기므로,
+    변환 실패(soffice는 있는데 이 파일에서 오류)와 미설치(soffice 자체가 없음)를
+    UI 단에서 되짚으려면 문자열로 구분해야 한다. `INSTALL_HINT`는
+    `LibreOfficeNotFoundError`의 메시지에만 실리므로 이 부분 문자열이 있는지만
+    보면 된다 — 안내 문구를 바꿔도 이 판별 로직은 그대로 따라간다.
+    """
+    return INSTALL_HINT in message
+
+
 def convert(
     source: str | Path,
     target_ext: str,
@@ -75,8 +92,8 @@ def convert(
     soffice = find_soffice()
     if soffice is None:
         raise LibreOfficeNotFoundError(
-            "LibreOffice(soffice)를 찾을 수 없습니다. "
-            "설치하거나 SOFFICE_PATH 환경변수로 실행 파일 경로를 지정하세요."
+            f"LibreOffice(soffice)를 찾을 수 없습니다. {INSTALL_HINT} "
+            "(또는 SOFFICE_PATH 환경변수로 실행 파일 경로를 지정하세요)"
         )
 
     source_path = Path(source).resolve()

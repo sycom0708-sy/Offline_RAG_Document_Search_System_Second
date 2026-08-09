@@ -887,16 +887,19 @@ DESIGN §4.2의 placeholder 토글을 실제 동작으로 교체한다(T4.7 → 
 
 > **[2026-08-08 추가]** T9.1과 같은 결에서 나온 결정: 구버전 포맷 **변환**(파싱 단계)은 Office COM 대신 LibreOffice 포터블 동봉으로 확정했다(TECH 9.1절). 다만 이 항목(T10.1, "원문 열기" **딥링크**)은 성격이 달라 COM 조사 결과를 그대로 살려둔다 — 파일을 정확한 위치로 **여는** 기능은 LibreOffice 헤드리스 변환으로는 대체할 수 없고 Office COM이 유일한 실현 경로이기 때문이다.
 
-## T10.2 구버전 포맷 변환 실패를 사용자에게 안내
+## T10.2 구버전 포맷 변환 실패를 사용자에게 안내 — ✅ 완료 (2026-08-09)
 
-**현재 상태**: `LegacyOfficeParser`가 `LibreOfficeError`를 잡아 `IndexReport.failures`에 담지만, `MainWindow._on_indexing_done()`이 이를 화면에 표시하지 않는다. `soffice`를 못 찾으면(포터블 미배치 등) `.doc`/`.xls`/`.ppt`가 **오류 없이 조용히 0청크로 인덱싱에서 빠진다** — 실제로 이 상태에서 Phase 3 재측정을 한 번 진행했다가 뒤늦게 발견했다(2026-08-08).
+**있었던 문제**: `LegacyOfficeParser`는 `LibreOfficeError`를 잡아도 예외를 다시 던지지 않고 `document.status = ParseStatus.FAILED`만 남긴 채 조용히 반환한다. `indexer/pipeline.py`의 `index_folder()`는 `ParserError` 예외만 `report.failures`에 담았으므로, **이 경로는 애초에 `report.failures`에 한 번도 잡힌 적이 없었다** — `.doc`/`.xls`/`.ppt`가 오류 없이 0청크로 인덱싱에서 빠지는 근본 원인이 여기 있었다(Phase 3 재측정 중 실제로 겪고 뒤늦게 발견, 2026-08-08).
 
-**결정 [사용자 확정]**: LibreOffice가 없을 때 앱이 자동으로 다운로드·설치하지 않는다(PRD 4장의 완전 오프라인·무관리자권한 전제와 배치된다). 대신 **"LibreOffice 포터블을 직접 받아 `vendor/LibreOfficePortable/`에 넣으라"는 안내만 사용자에게 보여준다.**
+**수정**: `index_folder()`가 `parse_file()` 성공 후에도 `document.status is ParseStatus.FAILED`면 `report.failures`에 추가하도록 고쳤다. 이 한 줄로 **CLI(`indexer.cli`)도 함께 고쳐졌다** — CLI는 이미 `report.failures`를 출력하는 코드가 있었지만 지금까지 채워진 적이 없어 무용지물이었다.
 
-**구현 방향(안, 착수 시 재검토)**:
-- 인덱싱 완료 후 `report.failures`에 `LibreOfficeNotFoundError` 유형이 있으면 상태바 또는 별도 배너로 안내 노출(기존 `_empty_result_hint()`와 같은 결의 "완화 제안" 패턴)
-- 문구는 정적 안내(다운로드 링크·설치 경로)로 충분 — 자동 감지·재시도 버튼 여부는 착수 시 판단
-- 모델 매니저 다이얼로그(`ui/widgets/model_manager_dialog.py`)의 "설치됨/준비 중" 패턴을 참고해 "구버전 문서 지원" 행을 추가하는 방안도 검토할 만하다(sLM·KURE-v1과 같은 자리에서 상태를 보여주면 사용자가 찾기 쉽다)
+**판별과 안내**: `parser/utils/libreoffice.py`에 `INSTALL_HINT` 상수("LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요")와 `is_missing_libreoffice_error(message)` 판별 함수를 추가했다. 변환 실패(soffice는 있는데 이 파일에서 오류)와 미설치(soffice 자체가 없음)를 구분해야 하는데, `document.errors`는 예외를 문자열로만 담으므로 `INSTALL_HINT` 부분 문자열 포함 여부로 판별한다 — `LibreOfficeNotFoundError`의 메시지에만 이 문구가 실리므로 오탐이 없다(별도 오류 유형인 타임아웃·변환 실패 메시지로 오판하지 않는지 테스트로 고정).
+
+**UI**: `ui/widgets/status_bar.py`에 `_warning_label` + `set_warning()`을 추가하고, `MainWindow._on_indexing_done()`이 실패 목록에서 LibreOffice 미설치 건만 추려 "구버전 문서를 변환하지 못했습니다(파일명). {INSTALL_HINT}"를 상태바에 띄운다. 다음 인덱싱이 성공하면(LibreOffice 설치 후 재시도) 자연히 사라진다 — 별도 dismiss 버튼은 두지 않았다(정적 안내로 충분하다는 결정 그대로).
+
+**하지 않은 것**: 모델 매니저 다이얼로그에 "구버전 문서 지원" 행을 추가하는 안은 검토만 하고 보류했다 — 상태바 안내만으로 결정 사항("직접 설치 안내만")을 충분히 충족한다고 판단했다. 필요해지면 별도 항목으로 다시 올린다.
+
+테스트 9건 추가(`test_legacy_and_hwp.py` 1 · `test_indexer_pipeline.py` 1 · `test_ui_status_bar.py` 3 · `test_ui_main_window.py` 4). 전체 **469 passed / 5 skipped**, 회귀 없음.
 
 ---
 

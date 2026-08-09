@@ -11,7 +11,7 @@ from typing import Callable
 from indexer.fts5.store import store_document
 from indexer.scanner import scan_folder
 from indexer.vector.store import embed_missing
-from parser import parse_file
+from parser import ParseStatus, parse_file
 from parser.base import ParserError
 
 ProgressCallback = Callable[[int, int, Path], None]
@@ -76,6 +76,12 @@ def index_folder(
             document = parse_file(path)
             store_document(conn, document, count_tokens=count_tokens)
             report.indexed += 1
+            if document.status is ParseStatus.FAILED:
+                # LegacyOfficeParser처럼 예외를 던지지 않고 document.errors에만
+                # 담는 파서가 있다(T10.2) — 그대로 두면 0청크로 조용히 빠진다.
+                report.failures.append(
+                    (path, "; ".join(document.errors) or "알 수 없는 오류")
+                )
         except ParserError as exc:
             report.failures.append((path, str(exc)))
         except Exception as exc:  # 예상 못한 오류도 인덱싱 전체를 죽이지 않는다

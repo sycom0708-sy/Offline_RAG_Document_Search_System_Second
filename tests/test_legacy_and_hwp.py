@@ -39,7 +39,24 @@ def test_missing_libreoffice_raises_specific_error(tmp_path, monkeypatch):
     monkeypatch.setattr(libreoffice, "find_soffice", lambda: None)
     with pytest.raises(LibreOfficeNotFoundError) as excinfo:
         libreoffice.convert(tmp_path / "a.doc", "docx")
-    assert "SOFFICE_PATH" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "SOFFICE_PATH" in message  # 고급 사용자용 대안 경로
+    # T10.2: 일반 사용자에게는 포터블 설치 안내가 우선이어야 한다.
+    assert libreoffice.is_missing_libreoffice_error(message)
+
+
+def test_is_missing_libreoffice_error_only_matches_the_not_found_case():
+    """변환 실패(soffice는 있는데 이 파일에서 오류)를 미설치로 오인하면 안 된다."""
+    assert libreoffice.is_missing_libreoffice_error(
+        f"LibreOffice(soffice)를 찾을 수 없습니다. {libreoffice.INSTALL_HINT} "
+        "(또는 SOFFICE_PATH 환경변수로 실행 파일 경로를 지정하세요)"
+    ) is True
+    assert libreoffice.is_missing_libreoffice_error(
+        "LibreOffice 변환 시간 초과(120초): a.doc"
+    ) is False
+    assert libreoffice.is_missing_libreoffice_error(
+        "변환 결과 파일이 생성되지 않았습니다: a.doc → .docx"
+    ) is False
 
 
 def test_missing_source_file_raises_conversion_failed(tmp_path, monkeypatch):

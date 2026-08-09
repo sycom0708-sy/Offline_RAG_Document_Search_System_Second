@@ -183,6 +183,12 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
+#StatusBarWarning {
+    /* DESIGN에 경고색 지정이 없어 자체 판단[제안] — amber 계열 */
+    color: #B45309;
+    font-size: 12px;
+}
+
 #StatusBarFolderButton {
     border: none;
     background: transparent;
