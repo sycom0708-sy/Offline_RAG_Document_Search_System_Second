@@ -20,6 +20,7 @@ from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
 from ui.widgets.folder_dialog import FolderDialog
+from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.model_manager_dialog import ModelManagerDialog
 from ui.widgets.result_list import ResultList
 from ui.widgets.search_bar import SearchBar
@@ -41,7 +42,7 @@ class _IndexingBridge(QObject):
     확인함(PLAN §4-B ②).
     """
 
-    progress = Signal(int, int)
+    progress = Signal(int, int, str)  # done, total, 현재 처리 중인 파일 경로
     done = Signal(object)  # IndexReport
 
 
@@ -69,6 +70,7 @@ class MainWindow(QMainWindow):
         self._embedder = None  # 백그라운드 워밍업 완료 전까지 None
         self._last_query = ""
         self._indexing_thread: IndexingThread | None = None
+        self._indexing_progress_dialog: IndexingProgressDialog | None = None
 
         self._build_ui()
         self._wire_signals()
@@ -196,9 +198,12 @@ class MainWindow(QMainWindow):
         `_active_workers`가 막아주는 것과 같은 종류의 크래시다. 인덱싱은 길 수
         있어 `stop_event`로 중단을 먼저 요청한다.
         """
-        if self._indexing_thread is not None and self._indexing_thread.isRunning():
+        if self._indexing_thread is not None and self._indexing_thread.is_alive():
+            # IndexingThread는 QThread가 아니라 threading.Thread다 —
+            # isRunning()/wait(ms)는 QThread API라 여기선 존재하지 않는다
+            # (AttributeError, 실측 확인). is_alive()/join(초)를 쓴다.
             self._indexing_thread.stop_event.set()
-            self._indexing_thread.wait(_THREAD_SHUTDOWN_WAIT_MS)
+            self._indexing_thread.join(_THREAD_SHUTDOWN_WAIT_MS / 1000)
 
         for worker in list(self._active_workers):
             worker.wait(_THREAD_SHUTDOWN_WAIT_MS)
@@ -260,8 +265,20 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _start_reindex(self, folder: str) -> None:
+        # 두 인덱싱 스레드가 같은 DB에 동시에 쓰면 위험하다 — 이미 도는 중이면
+        # 새로 시작하지 않고 기존 팝업만 앞으로 가져온다.
+        if self._indexing_thread is not None and self._indexing_thread.is_alive():
+            if self._indexing_progress_dialog is not None:
+                self._indexing_progress_dialog.raise_()
+                self._indexing_progress_dialog.activateWindow()
+            return
+
         self.state.target_folder = folder
         self.state.save()
+
+        # 이전 "원문 열기" 실패 안내가 남아 있으면 새 인덱싱 진행률과 한 줄에
+        # 겹쳐 보인다(실측 확인) — 새 인덱싱을 시작하는 시점에 지운다.
+        self.status_bar_widget.set_warning(None)
 
         bridge = _IndexingBridge(self)
         bridge.progress.connect(self._on_indexing_progress)
@@ -271,18 +288,33 @@ class MainWindow(QMainWindow):
         self._indexing_thread = IndexingThread(
             self.db_path,
             folder,
-            on_progress=lambda done, total, _path: bridge.progress.emit(done, total),
+            on_progress=lambda done, total, path: bridge.progress.emit(done, total, str(path)),
             on_done=lambda report: bridge.done.emit(report),
         )
+
+        dialog = IndexingProgressDialog(parent=self)
+        dialog.cancel_requested.connect(self._cancel_indexing)
+        dialog.show()
+        self._indexing_progress_dialog = dialog
+
         self._indexing_thread.start()
 
-    def _on_indexing_progress(self, done: int, total: int) -> None:
+    def _cancel_indexing(self) -> None:
+        if self._indexing_thread is not None:
+            self._indexing_thread.stop_event.set()
+
+    def _on_indexing_progress(self, done: int, total: int, current_path: str) -> None:
         self.status_bar_widget.set_indexing_progress(done, total)
+        if self._indexing_progress_dialog is not None:
+            self._indexing_progress_dialog.set_progress(done, total, current_path)
 
     def _on_indexing_done(self, report: IndexReport) -> None:
         self._refresh_format_filter_options()
         self._refresh_status_bar()
         self.status_bar_widget.set_warning(self._libreoffice_warning(report))
+        if self._indexing_progress_dialog is not None:
+            self._indexing_progress_dialog.close()
+            self._indexing_progress_dialog = None
         if self._last_query:
             self._run_search(self._last_query)
 

@@ -913,6 +913,20 @@ DESIGN §4.2의 placeholder 토글을 실제 동작으로 교체한다(T4.7 → 
 
 **검증**: 기존 카드 단위 테스트(`test_opening_missing_file_emits_open_failed` 등)는 카드가 직접 신호를 emit하는지만 봤지, 그 신호가 실제로 어딘가에 도달하는지는 검증한 적이 없었다 — 그래서 버그가 테스트를 다 통과한 채로 남아 있었다. `TestResultList.test_relays_open_failed_from_child_card`(릴레이 자체)와 `TestLibreOfficeWarning` 옆에 `test_open_failure_reaches_status_bar`(카드 클릭 → 상태바까지 종단)를 추가해 이번에는 실제 도달을 확인한다. 테스트 2건 추가, 전체 **471 passed / 5 skipped**, 회귀 없음.
 
+## T10.4 인덱싱 진행률 비모달 팝업 + 취소 버튼 — ✅ 완료 (2026-08-09, 사용자 요청)
+
+**요청 배경**: T10.3까지 고친 뒤 실제로 앱을 띄워 확인하던 중, 사용자가 "인덱싱 중에는 다른 동작을 할 수 없도록 팝업으로 띄우고 취소 버튼을 우측 하단에 두자"고 요청했다.
+
+**설계 결정 — 모달로 만들면 TECH 4.6과 충돌한다.** TECH 4.6은 "인덱싱은 별도 스레드에서 진행 바와 함께 수행해 메인 UI가 멈추지 않도록 한다"고 못박아뒀고, Phase 4가 SQLite를 WAL 모드로 바꾼 것도 인덱싱(쓰기)과 검색(읽기)이 동시에 되게 하려는 목적이었다(§4-D ①). "다른 동작을 못 하게 막는다"는 요청은 이 설계를 정면으로 뒤집는 것이라, 구현 전에 세 가지 선택지(진짜 모달로 TECH 4.6 재검토 / **비모달 팝업(취소 버튼만 추가)** / 상태바에 취소 버튼만 추가)를 사용자에게 제시했다. **[사용자 확정] 비모달로 간다** — 다만 "나중에 완전 모달로 바꿀 수도 있으니 내용만 저장해 두라"는 단서를 남겼다. 그래서 `IndexingProgressDialog`는 `exec()`가 아니라 `show()`로 띄우되, 모달 전환은 `setWindowModality(Qt.ApplicationModal)` + `exec()`로 바꾸는 정도로 되도록 구조를 잡아뒀다(코드 주석에 명시).
+
+**구현**: `ui/widgets/indexing_progress_dialog.py` 신설 — 진행률 텍스트("인덱싱 중… N/M") + `QProgressBar` + 우측 하단 취소 버튼(`QHBoxLayout` + `addStretch()`로 배치). 취소를 누르면 버튼을 즉시 비활성화하고 "취소하는 중…"으로 바꿔 중복 클릭을 막는다. `MainWindow._start_reindex()`가 다이얼로그를 만들어 `show()`하고, `cancel_requested`를 `_cancel_indexing()`(`IndexingThread.stop_event.set()`)에 연결한다. 이미 도는 인덱싱이 있으면 새로 시작하지 않고 기존 팝업만 앞으로 가져오는 가드도 추가했다(같은 DB에 쓰기 스레드 두 개가 동시에 뜨는 걸 막는다). `_on_indexing_done()`이 완료 시 다이얼로그를 닫는다.
+
+**사용자 추가 요청 — 처리 중인 파일 경로 표시.** 팝업을 실제로 확인한 뒤 "프로그래스바 아래에 인덱싱 중인 파일경로/파일명을 보여달라"고 추가 요청했다. 기존 `_IndexingBridge.progress` 시그널이 `(done, total)`만 실어 날라 현재 파일 경로가 애초에 UI까지 오지 않았다(`IndexingThread`의 `on_progress` 콜백은 경로를 받지만 `bridge.progress.emit(done, total)`에서 버리고 있었다) — 시그널을 `(done, total, path)`로 넓혔다. 다이얼로그는 `QFontMetrics.elidedText()`로 가운데를 생략(`…`)해 다이얼로그 폭이 안 늘어나게 하고, 전체 경로는 툴팁으로 남긴다.
+
+**부수 발견(별건, 실사용 중 드러남) — `closeEvent`가 항상 죽어 있었다.** 실제로 인덱싱을 완료한 뒤 창을 닫아보니 로그에 `AttributeError: 'IndexingThread' object has no attribute 'isRunning'`이 찍혔다. Phase 4·6에서 각각 검색 크래시(§4-D ⑦)와 인덱싱 정리를 위해 추가한 `closeEvent`가 `IndexingThread`(`threading.Thread`)에 `QThread` 전용 API(`isRunning()`/`wait(ms)`)를 부르고 있었다 — `_indexing_thread`가 한 번이라도 세팅되면(그 세션에서 인덱싱을 한 번이라도 돌리면) 창을 닫을 때마다 100% 재현되는 버그였는데, 그때까지 아무 테스트도 "인덱싱 완료 후 창 닫기"를 실제로 실행한 적이 없어(검색 크래시 회귀 테스트는 `_indexing_thread`를 안 건드린다) 발견되지 않았다. `is_alive()`/`join(초)`로 고쳤다.
+
+**검증**: 다이얼로그 단위 테스트 5건(비모달 여부·진행률 갱신·파일 경로 표시·긴 경로 생략·취소 버튼) + `MainWindow` 통합 테스트 5건(팝업 표시·취소 시 `stop_event`·중복 시작 가드·경고 정리·**closeEvent 회귀**). 테스트 10건 추가, 전체 **481 passed / 5 skipped**, 회귀 없음. 실제로 앱을 띄워 팝업·취소·파일 경로 표시·검색 병행 동작을 육안으로도 확인했다.
+
 ---
 
 ## 부록: Phase 간 의존관계

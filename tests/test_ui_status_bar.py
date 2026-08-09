@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from ui.widgets.folder_dialog import FolderDialog, NO_FOLDER_TEXT
+from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.status_bar import StatusBar, format_relative_time
 
 
@@ -138,3 +139,51 @@ class TestFolderDialog:
         dialog._start_reindex()  # 버튼이 비활성이라도 직접 호출 시 안전한지 확인
 
         assert received == []
+
+
+class TestIndexingProgressDialog:
+    """T10.4: 비모달 인덱싱 진행률 팝업 — TECH 4.6("메인 UI가 멈추지 않도록")을
+    지키면서 취소 버튼을 추가한다."""
+
+    def test_is_non_modal(self, qtbot):
+        """exec()가 아니라 show()로 띄운다 — 검색·필터 조작을 막지 않아야 한다."""
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        assert dialog.isModal() is False
+
+    def test_set_progress_updates_label_and_bar(self, qtbot):
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        dialog.set_progress(3, 10)
+        assert "3" in dialog._info_label.text()
+        assert "10" in dialog._info_label.text()
+        assert dialog._progress.value() == 3
+        assert dialog._progress.maximum() == 10
+
+    def test_set_progress_shows_current_file(self, qtbot):
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        dialog.set_progress(3, 10, r"C:\문서\보고서.docx")
+        assert "보고서.docx" in dialog._file_label.text()
+        assert dialog._file_label.toolTip() == r"C:\문서\보고서.docx"  # 생략돼도 전체 경로는 툴팁으로
+
+    def test_long_path_is_elided_not_wrapped(self, qtbot):
+        """다이얼로그가 늘어나지 않도록 가운데를 생략(...)한다."""
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        long_path = "C:\\" + "매우긴폴더이름" * 20 + "\\파일.docx"
+        dialog.set_progress(1, 1, long_path)
+        assert len(dialog._file_label.text()) < len(long_path)
+        assert "…" in dialog._file_label.text() or "..." in dialog._file_label.text()
+
+    def test_cancel_button_emits_signal_and_disables_itself(self, qtbot):
+        """두 번 눌러도 중복 요청이 안 나가야 한다."""
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        received = []
+        dialog.cancel_requested.connect(lambda: received.append(1))
+
+        dialog.cancel_button.click()
+
+        assert received == [1]
+        assert dialog.cancel_button.isEnabled() is False

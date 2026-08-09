@@ -256,6 +256,85 @@ class TestReindexFlow:
         assert win.state.target_folder == source_folder
         assert len(win.sidebar.format_filter._format_checkboxes) > 0
 
+    def test_shows_non_modal_progress_dialog_while_indexing(self, qtbot, tmp_path, samples):
+        """T10.4: TECH 4.6("메인 UI가 멈추지 않도록")을 지키는 비모달 팝업."""
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState())
+        qtbot.addWidget(win)
+
+        source_folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(source_folder)
+
+        assert win._indexing_progress_dialog is not None
+        assert win._indexing_progress_dialog.isModal() is False
+
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+    def test_cancel_button_sets_stop_event(self, qtbot, tmp_path, samples):
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState())
+        qtbot.addWidget(win)
+
+        source_folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(source_folder)
+        thread = win._indexing_thread
+
+        win._indexing_progress_dialog.cancel_button.click()
+
+        assert thread.stop_event.is_set()
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+    def test_starting_reindex_twice_does_not_spawn_second_thread(self, qtbot, tmp_path, samples):
+        """같은 DB에 인덱싱 스레드 두 개가 동시에 쓰면 위험하다 — 도는 중이면 무시한다."""
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState())
+        qtbot.addWidget(win)
+
+        source_folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(source_folder)
+        first_thread = win._indexing_thread
+
+        win._start_reindex(source_folder)  # 아직 실행 중일 때 재시도
+
+        assert win._indexing_thread is first_thread
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+    def test_new_indexing_clears_stale_open_failed_warning(self, qtbot, tmp_path, samples):
+        """이전 "원문 열기" 실패 안내가 새 인덱싱 진행률과 한 줄에 겹쳐 보이던 문제.
+
+        상태바는 정보 라벨과 경고 라벨이 한 줄에 나란히 붙어 있어, 이전
+        실행에서 남은 경고가 지워지지 않으면 "인덱싱 중… 5/10 파일을 찾을 수
+        없습니다: ..."처럼 한 문장인 것으로 오해할 수 있다(실사용에서 실제로
+        겪음).
+        """
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState())
+        qtbot.addWidget(win)
+
+        win.status_bar_widget.set_warning("이전 원문 열기 실패 메시지")
+
+        source_folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(source_folder)
+
+        assert not win.status_bar_widget._warning_label.isVisibleTo(win.status_bar_widget)
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+    def test_closing_window_after_indexing_does_not_raise(self, qtbot, tmp_path, samples):
+        """closeEvent가 IndexingThread(threading.Thread)에 QThread 전용 API인
+        isRunning()/wait(ms)를 불러 AttributeError가 났다(실측 확인) —
+        _indexing_thread가 한 번이라도 세팅되면 창을 닫을 때마다 터졌다.
+        is_alive()/join(초)로 고쳤다.
+        """
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState())
+        qtbot.addWidget(win)
+
+        source_folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(source_folder)
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+        win.close()  # 예외가 나면 이 테스트 자체가 실패한다
+
 
 class TestLibreOfficeWarning:
     """T10.2: LibreOffice 미설치로 구버전 문서가 조용히 빠지면 사용자에게 안내한다."""
