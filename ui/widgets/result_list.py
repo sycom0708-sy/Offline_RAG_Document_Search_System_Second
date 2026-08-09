@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from parser.schema import ChunkType
@@ -22,6 +22,12 @@ ERROR_MESSAGE_PREFIX = "검색 중 오류가 발생했습니다: "
 
 
 class ResultList(QScrollArea):
+    # 카드(ResultCard/TableCard/ImageCard)가 각자 내보내는 open_failed를 이
+    # 한 자리로 모은다 — 세 카드 타입 각각에 MainWindow가 개별 연결할 필요가
+    # 없다. 지금까지 이 연결 자체가 없어 "원문 열기"가 실패해도 사용자에게
+    # 아무 알림도 가지 않았다(신호는 emit되지만 받는 곳이 없었다).
+    open_failed = Signal(str)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setWidgetResizable(True)
@@ -87,6 +93,7 @@ class ResultList(QScrollArea):
         self._clear()
         for result in results:
             card = _make_card(result, query, case_sensitive, exact_word)
+            card.open_failed.connect(self.open_failed)
             self._layout.insertWidget(self._layout.count() - 1, card)
 
     def card_count(self) -> int:

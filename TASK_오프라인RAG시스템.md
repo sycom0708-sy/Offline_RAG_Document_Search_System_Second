@@ -307,6 +307,7 @@
   - **[2026-08-08 추가]** 구버전 포맷 **변환**(파싱 단계, T1.9)은 Office COM 대신 LibreOffice 포터블 동봉으로 확정했다(TECH 9.1절). 이 항목(딥링크)은 그와 별개 — 원문을 정확한 위치로 **여는** 기능은 LibreOffice로 대체 불가해 COM이 유일한 경로다
 
 - [x] T10.2 **구버전 포맷 변환 실패를 사용자에게 안내** — ✅ **완료 (2026-08-09)**. 근본 원인은 `LegacyOfficeParser`가 예외를 던지지 않고 `document.status=FAILED`만 남겨 `IndexReport.failures`가 애초에 채워지지 않던 것(`indexer/pipeline.py` 수정). `soffice`(LibreOffice 포터블)를 못 찾으면 상태바에 "구버전 문서를 변환하지 못했습니다(파일명). LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요." **정적 안내**를 표시한다(자동 다운로드·설치 없음, 사용자 확정). CLI(`indexer.cli`)도 같은 수정으로 실패 목록을 정상 출력하게 됐다. 테스트 9건 추가, 전체 469 passed. 상세는 PLAN Phase 10 절
+- [x] T10.3 **"원문 열기" 실패가 화면에 안 뜨는 버그 수정** — ✅ **완료 (2026-08-09)**. `ResultCard`/`TableCard`/`ImageCard`가 파일을 못 찾으면 `open_failed`를 emit하지만, 지금까지 이 신호를 받는 곳이 어디에도 없었다 — 클릭해도 화면에 아무 반응이 없는 것처럼 보이던 실제 버그(다른 PC에서 만든 인덱스를 이 PC로 옮겨왔더니 파일 경로 대부분이 존재하지 않아 실사용 중 드러났다). `ResultList`가 카드의 `open_failed`를 한 자리로 relay하고, `MainWindow`가 T10.2에서 만든 `set_warning()`으로 사유를 상태바에 표시하도록 연결했다. 테스트 2건 추가(릴레이·종단), 전체 471 passed. 상세는 PLAN Phase 10 절
 
 ---
 

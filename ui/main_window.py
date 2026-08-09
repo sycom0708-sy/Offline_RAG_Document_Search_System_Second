@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         self.sidebar.performance_combo.model_manager_requested.connect(self._open_model_manager)
 
         self.status_bar_widget.folder_button.clicked.connect(self._open_folder_dialog)
+        self.result_list.open_failed.connect(self._on_open_failed)
 
     # --- 검색 --------------------------------------------------
 
@@ -177,6 +178,16 @@ class MainWindow(QMainWindow):
         if request_id != self._request_seq:
             return
         self.result_list.show_error(message)
+
+    def _on_open_failed(self, message: str) -> None:
+        """"원문 열기" 실패를 사용자에게 보여준다.
+
+        카드는 실패 시 `open_failed`를 emit하지만 지금까지 받는 곳이 없어
+        아무 반응도 없는 것처럼 보였다(신호는 나가는데 아무도 안 듣는 상태) —
+        실사용에서 실제로 겪은 버그다. 상태바의 인덱싱 안내와 같은 자리를
+        재사용한다: 다음 인덱싱이 끝나면 자연히 새 상태로 교체된다.
+        """
+        self.status_bar_widget.set_warning(message)
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
         """실행 중인 스레드를 정리하고 닫는다.

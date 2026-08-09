@@ -901,6 +901,18 @@ DESIGN §4.2의 placeholder 토글을 실제 동작으로 교체한다(T4.7 → 
 
 테스트 9건 추가(`test_legacy_and_hwp.py` 1 · `test_indexer_pipeline.py` 1 · `test_ui_status_bar.py` 3 · `test_ui_main_window.py` 4). 전체 **469 passed / 5 skipped**, 회귀 없음.
 
+## T10.3 "원문 열기" 실패가 화면에 안 뜨는 버그 수정 — ✅ 완료 (2026-08-09)
+
+**발견 경위**: T10.2 다음 작업으로 앱을 실제로 띄워 "원문 열기"를 테스트하다가 사용자가 "파일 열기 안 되는데"라고 보고했다. 확인해보니 두 가지가 겹쳐 있었다.
+
+**① 진짜 버그 — 실패 알림이 어디로도 안 간다.** `ResultCard`/`TableCard`/`ImageCard`는 `open_source_file()`이 실패 사유를 돌려주면 `open_failed` 시그널을 emit하지만(Phase 5에서 이미 구현돼 있었다), **이 시그널을 받는 곳이 `MainWindow` 어디에도 없었다.** `ui/widgets/card_common.py`의 `build_card_header()` 문서에 "연결은 호출부 몫"이라고 적어뒀지만 실제 상위 연결을 빠뜨린 채 Phase 5가 끝난 것으로 보인다. 결과적으로 버튼을 눌러도 신호는 나가지만 아무도 안 들어 화면에 아무 반응이 없다.
+
+**② 겉보기엔 같은 증상, 실제로는 다른 원인 — 인덱스 이식.** `data/index.sqlite3`(권장 사양 PC에서 옮겨온 인덱스)의 문서 20건 중 17건이 이 PC에 물리적으로 없었다 — `C:\Users\sk.kim1101\...\Temp\phase4_demo\`(다른 PC 계정의 임시 폴더)와 `D:\aiproj\...`(이 PC는 `D:` 드라이브를 안 씀) 경로였다. **Phase 3에서 확인한 "인덱스는 이식할 수 없다"(벡터 얘기)가 파일 경로에도 똑같이 적용된다** — 당연한 얘기지만 이번에 실제로 부딪혀서야 분명해졌다. 이건 코드 결함이 아니라 이 인덱스 자체가 이 PC용이 아니라서 생긴 것이라 손대지 않았다(재인덱싱하면 해결).
+
+**수정(①만)**: `ResultList`에 `open_failed` 시그널을 추가해 `show_results()`에서 만드는 카드마다 이 자리로 relay하도록 했다. `MainWindow._wire_signals()`가 `result_list.open_failed`를 새 핸들러 `_on_open_failed()`로 연결하고, T10.2에서 만든 `status_bar_widget.set_warning()`을 그대로 재사용해 실패 사유를 보여준다. 다음 인덱싱이 끝나면 상태바가 다시 그려지며 자연히 사라진다 — 별도 dismiss는 없다.
+
+**검증**: 기존 카드 단위 테스트(`test_opening_missing_file_emits_open_failed` 등)는 카드가 직접 신호를 emit하는지만 봤지, 그 신호가 실제로 어딘가에 도달하는지는 검증한 적이 없었다 — 그래서 버그가 테스트를 다 통과한 채로 남아 있었다. `TestResultList.test_relays_open_failed_from_child_card`(릴레이 자체)와 `TestLibreOfficeWarning` 옆에 `test_open_failure_reaches_status_bar`(카드 클릭 → 상태바까지 종단)를 추가해 이번에는 실제 도달을 확인한다. 테스트 2건 추가, 전체 **471 passed / 5 skipped**, 회귀 없음.
+
 ---
 
 ## 부록: Phase 간 의존관계

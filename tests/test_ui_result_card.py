@@ -167,6 +167,27 @@ class TestResultList:
         widget.show_results([_hybrid()], "계약서")
         assert widget.findChild(QLabel, "ResultListMessage") is None
 
+    def test_relays_open_failed_from_child_card(self, qtbot):
+        """카드가 emit한 open_failed를 ResultList가 바깥으로 전달해야 한다.
+
+        `MainWindow`가 카드 하나하나에 개별 연결할 필요 없이 `ResultList`
+        하나만 구독하면 되게 하는 릴레이다. 이게 없어서 지금까지 "원문 열기"
+        실패가 화면 어디에도 안 나타났다.
+        """
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        result = _search_result(file_path=r"D:\없는\경로\파일.docx")
+        widget.show_results([_hybrid(result)], "계약서")
+
+        failures = []
+        widget.open_failed.connect(failures.append)
+
+        card = widget.findChild(ResultCard)
+        card._open_source()
+
+        assert len(failures) == 1
+        assert "파일을 찾을 수 없습니다" in failures[0]
+
     def test_show_empty_includes_hint_when_given(self, qtbot):
         widget = ResultList()
         qtbot.addWidget(widget)

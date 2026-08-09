@@ -126,6 +126,25 @@ class TestEndToEndSearch:
         card._open_source()
         assert len(failures) == 1
 
+    def test_open_failure_reaches_status_bar(self, qtbot, window):
+        """카드가 emit한 open_failed가 실제로 사용자에게 보여야 한다.
+
+        `ResultList`가 카드의 `open_failed`를 relay하고 `MainWindow`가
+        받는 연결 자체가 없어, 신호는 나가는데 아무 데도 안 들리는 상태였다
+        — 원문 열기 실패 시 화면에 아무 반응도 없던 실제 버그다.
+        """
+        window.search_bar.set_text("계약서 검토 기준이 뭐였지")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        card = window.result_list.findChild(ResultCard)
+        card._open_source()  # 실제 클릭 경로 — 존재하지 않는 파일 경로라 실패한다
+
+        bar = window.status_bar_widget
+        assert bar._warning_label.isVisibleTo(bar)
+        assert "찾을 수 없습니다" in bar._warning_label.text()
+
 
 class TestNoIndexState:
     def test_empty_database_shows_no_index_message(self, qtbot, tmp_path):
