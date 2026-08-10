@@ -64,6 +64,24 @@ def embedder():
 
 
 @pytest.fixture(scope="session")
+def heavy_embedder():
+    """KURE-v1(고성능 모드) 전용 — 없으면 스킵한다 (Phase 7.5).
+
+    `embedder`는 기본 프로파일(LIGHT)에 고정돼 있어 CLS 풀링·8192 truncation
+    처럼 HEAVY에서만 갈리는 동작은 별도 픽스처가 필요하다.
+    """
+    from config.settings import HEAVY
+    from indexer.vector.embedder import Embedder
+
+    if not HEAVY.is_installed():
+        pytest.skip(
+            f"KURE-v1 미설치 ({HEAVY.local_dir}) — "
+            "`.venv-convert`에서 `python -m scripts.convert_kure` 실행 후 재시도"
+        )
+    return Embedder(HEAVY)
+
+
+@pytest.fixture(scope="session")
 def sample_txt(samples) -> Path:
     return samples["sample.txt"]
 

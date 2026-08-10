@@ -40,6 +40,22 @@ import numpy as np
 
 from config.settings import ModelProfile, get_profile
 
+# 🔴 모델이 지원하는 max_seq_length를 그대로 토크나이저 truncation에 쓰면 안
+# 된다 — Phase 7.5에서 KURE-v1(max_seq_length=8192)로 실제 청크를 재인덱싱하다
+# 실측했다. 표 청크는 chunker.py가 **의도적으로** 분할하지 않는다(구조 보존,
+# Phase 1 결정) — 그래서 239행짜리 시트 하나가 13,625자 청크 하나로 그대로
+# 들어간다. LIGHT(max_seq_length=128)에서는 이게 자동으로 128토큰까지만
+# 잘려 문제가 드러나지 않았을 뿐이다. KURE-v1의 진짜 한계(8192)를 그대로 쓰면
+# `tokenizer.enable_padding()`이 배치 안의 가장 긴 시퀀스에 맞춰 전부 패딩하므로,
+# 표 청크 하나가 배치 전체를 8192로 끌어올려 어텐션 행렬이 수십 GB를 요구한다
+# (실측: batch=16에서 68,719,476,736 bytes 요청, 메모리 할당 실패).
+#
+# 이 상한은 모델 성능과 무관하다 — 8192토큰짜리 표 하나를 벡터 하나로
+# 뭉개는 것 자체가 검색 품질에도 의미가 없다(재순위는 세밀한 매칭이 목적).
+# `ModelProfile.max_seq_length`는 모델의 실제 능력을 정확히 표시하는 메타데이터로
+# 그대로 두고, 인코딩에 실제로 쓰는 길이만 이 상한으로 낮춘다.
+_MAX_SAFE_ENCODE_TOKENS = 512
+
 
 class ModelNotInstalledError(RuntimeError):
     """모델 파일이 없다."""
@@ -86,8 +102,11 @@ class Embedder:
         )
 
         tokenizer = Tokenizer.from_file(str(profile.tokenizer_path))
-        # 배치로 넣으려면 길이를 맞춰야 한다. 잘림 한도는 모델 사양을 따른다.
-        tokenizer.enable_truncation(max_length=profile.max_seq_length)
+        # 배치로 넣으려면 길이를 맞춰야 한다. 잘림 한도는 모델 사양을 따르되,
+        # 메모리 안전 상한을 넘지 않는다 (모듈 상단 _MAX_SAFE_ENCODE_TOKENS 참고).
+        tokenizer.enable_truncation(
+            max_length=min(profile.max_seq_length, _MAX_SAFE_ENCODE_TOKENS)
+        )
         tokenizer.enable_padding()
         self._tokenizer = tokenizer
 
@@ -130,11 +149,37 @@ class Embedder:
             {"input_ids": input_ids, "attention_mask": attention_mask},
         )
 
-        return _mean_pool_and_normalize(last_hidden_state, attention_mask)
+        return pool_and_normalize(
+            last_hidden_state, attention_mask, self.profile.pooling
+        )
 
 
-def _mean_pool_and_normalize(last_hidden_state: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
-    """attention_mask 가중 평균 후 L2 정규화.
+def pool_and_normalize(
+    last_hidden_state: np.ndarray,
+    attention_mask: np.ndarray,
+    pooling: str,
+) -> np.ndarray:
+    """토큰 벡터 → 문장 벡터. 방식은 **프로파일이 정한다**.
+
+    🔴 풀링 방식은 모델마다 다르고, 틀려도 예외가 나지 않는다 — 그럴듯한
+    벡터가 나오되 검색 품질만 조용히 나빠진다. 그래서 프로파일에 명시된 값만
+    받고, 모르는 값이면 **차라리 실패한다**(기본값으로 넘어가면 잘못된 인덱스가
+    조용히 만들어진다).
+    """
+    if pooling == "mean":
+        pooled = _mean_pool(last_hidden_state, attention_mask)
+    elif pooling == "cls":
+        pooled = _cls_pool(last_hidden_state)
+    else:
+        raise ValueError(
+            f"알 수 없는 풀링 방식: {pooling!r} (사용 가능: 'mean', 'cls'). "
+            "모델 레포의 1_Pooling/config.json을 확인하세요."
+        )
+    return _l2_normalize(pooled)
+
+
+def _mean_pool(last_hidden_state: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
+    """attention_mask 가중 평균.
 
     패딩 토큰까지 평균에 넣으면 짧은 문장일수록 벡터가 0쪽으로 끌려가 유사도가
     왜곡된다. 실제 토큰 개수로만 나눠야 한다.
@@ -142,8 +187,20 @@ def _mean_pool_and_normalize(last_hidden_state: np.ndarray, attention_mask: np.n
     mask = attention_mask.astype(np.float32)[..., None]  # (batch, seq, 1)
     summed = (last_hidden_state * mask).sum(axis=1)
     counts = np.clip(mask.sum(axis=1), a_min=1e-9, a_max=None)  # 0으로 나누기 방지
-    pooled = summed / counts
+    return summed / counts
 
+
+def _cls_pool(last_hidden_state: np.ndarray) -> np.ndarray:
+    """첫 토큰([CLS]) 벡터만 취한다 (KURE-v1·bge-m3 계열).
+
+    토크나이저가 항상 특수 토큰을 붙이므로 0번이 [CLS]다. 패딩은 뒤에 붙어
+    첫 토큰을 침범하지 않으므로 attention_mask가 필요 없다.
+    """
+    return last_hidden_state[:, 0, :]
+
+
+def _l2_normalize(pooled: np.ndarray) -> np.ndarray:
+    """L2 정규화 — 저장 시점에 해두면 검색 때 코사인 유사도가 내적 한 번으로 끝난다."""
     norms = np.linalg.norm(pooled, axis=1, keepdims=True)
     return (pooled / np.clip(norms, a_min=1e-12, a_max=None)).astype(np.float32)
 

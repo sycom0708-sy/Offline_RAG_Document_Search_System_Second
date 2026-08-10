@@ -131,6 +131,37 @@ def test_vector_stats_counts_by_model(db):
     assert vector_stats(db) == {MODEL: len(ids)}
 
 
+def test_two_models_coexist_for_the_same_chunk(db):
+    """🔴 Phase 7.5 회귀 방지 — 이게 원래 깨져 있었다.
+
+    `chunk_vectors`의 기본키가 `chunk_id` 단독이던 시절엔, 같은 청크를 다른
+    모델로 다시 임베딩하면(=PC 성능 모드 전환) INSERT OR REPLACE가 **이전
+    모델의 벡터를 지우고 덮어썼다.** Phase 3가 설계한 "모델별 벡터 공존"이
+    스키마 수준에서 애초에 성립하지 않았던 것 — LIGHT 하나만 실사용된
+    Phase 3~7 동안은 드러나지 않다가, Phase 7.5에서 KURE-v1으로 실제
+    재인덱싱을 하면서 처음 발견됐다(LIGHT 벡터 522개가 통째로 사라짐).
+    """
+    ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks")]
+
+    store_vectors(db, ids, _vectors(len(ids)), "경량-모델")
+    store_vectors(db, ids, _vectors(len(ids), dim=1024), "고성능-모델")
+
+    assert vector_stats(db) == {"경량-모델": len(ids), "고성능-모델": len(ids)}
+    assert fetch_vectors(db, ids, "경량-모델") != {}
+    assert fetch_vectors(db, ids, "고성능-모델") != {}
+
+
+def test_switching_model_does_not_require_full_reindex(db):
+    """모드를 한 번 전환한 뒤 되돌아가면, 전환 전 모델은 다시 embed할 필요가 없어야 한다."""
+    ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks")]
+    store_vectors(db, ids, _vectors(len(ids)), "경량-모델")
+
+    store_vectors(db, ids, _vectors(len(ids), dim=1024), "고성능-모델")
+
+    # 경량 모드로 돌아가도 이미 만들어둔 벡터가 살아 있어야 한다.
+    assert missing_chunk_ids(db, "경량-모델") == []
+
+
 # --- 실제 모델 필요 --------------------------------------------------
 
 

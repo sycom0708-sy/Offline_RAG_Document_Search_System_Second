@@ -6,6 +6,8 @@ external content 테이블 패턴은 트리거 동기화가 핵심이라, INSERT
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from indexer.fts5.schema import connect
@@ -94,6 +96,66 @@ def test_connect_creates_file_backed_db(tmp_path):
 
     reconnected = connect(db_path)
     assert reconnected.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    reconnected.close()
+
+
+def test_chunk_vectors_pk_migrates_from_legacy_single_column(tmp_path):
+    """🔴 Phase 7.5 — 구버전 DB(chunk_id 단독 PK)를 열어도 조용히 새 스키마로 옮겨져야 한다.
+
+    `CREATE TABLE IF NOT EXISTS`는 이미 만들어진 테이블을 바꾸지 않으므로,
+    이 마이그레이션이 없으면 기존 사용자의 DB는 영원히 "모델 하나만 저장
+    가능한" 구버전 스키마에 머문다 — 고성능 모드로 전환하는 순간부터 다시
+    조용히 벡터가 사라지는 버그가 재발한다.
+    """
+    db_path = tmp_path / "index.sqlite3"
+
+    # 구버전 스키마를 직접 만든다 — connect()를 거치지 않고 DDL을 그대로 재현.
+    legacy = sqlite3.connect(str(db_path))
+    legacy.execute(
+        """CREATE TABLE chunk_vectors (
+            chunk_id TEXT PRIMARY KEY,
+            model TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            vector BLOB NOT NULL
+        )"""
+    )
+    legacy.execute(
+        "INSERT INTO chunk_vectors VALUES ('c1', 'old-model', 4, X'00000000')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    conn = connect(db_path)  # 마이그레이션이 여기서 일어나야 한다
+
+    columns = conn.execute("PRAGMA table_info(chunk_vectors)").fetchall()
+    pk_columns = {row["name"] for row in columns if row["pk"] > 0}
+    assert pk_columns == {"chunk_id", "model"}
+
+    # 구버전 데이터는 파생 데이터라 보존 대상이 아니다 — 재생성하면 된다.
+    assert conn.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0] == 0
+    conn.close()
+
+
+def test_chunk_vectors_migration_is_idempotent(tmp_path):
+    """이미 새 스키마인 DB를 다시 열어도 아무 일도 안 일어나야 한다(매번 DROP하면 안 됨)."""
+    db_path = tmp_path / "index.sqlite3"
+    conn = connect(db_path)
+    conn.execute(
+        "INSERT INTO documents(doc_id, file_path, file_name, title, status, indexed_at) "
+        "VALUES ('d1','x','x.docx','t','ok','now')"
+    )
+    conn.execute(
+        "INSERT INTO chunks(chunk_id, doc_id, file_path, file_name, type, content, created_at) "
+        "VALUES ('c1','d1','x','x.docx','text','본문','now')"
+    )
+    conn.execute(
+        "INSERT INTO chunk_vectors VALUES ('c1', 'model-a', 4, X'00000000000000000000000000000000')"
+    )
+    conn.commit()
+    conn.close()
+
+    reconnected = connect(db_path)  # 재연결 — 마이그레이션이 다시 안 돌아야 한다
+    assert reconnected.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0] == 1
     reconnected.close()
 
 

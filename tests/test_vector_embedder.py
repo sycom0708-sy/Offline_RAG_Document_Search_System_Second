@@ -9,12 +9,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from config.settings import HEAVY, LIGHT
 from indexer.vector.embedder import (
     ModelNotInstalledError,
-    _mean_pool_and_normalize,
     blob_to_vector,
+    pool_and_normalize,
     vector_to_blob,
 )
+
+
+def _mean_pool_and_normalize(hidden, mask):
+    return pool_and_normalize(hidden, mask, "mean")
 
 
 # --- 모델 없이 검증 가능한 부분 -------------------------------------
@@ -50,6 +55,72 @@ def test_mean_pool_handles_all_padding_without_dividing_by_zero():
     pooled = _mean_pool_and_normalize(hidden, mask)
 
     assert np.isfinite(pooled).all()
+
+
+# --- 풀링 방식 분기 (Phase 7.5) -------------------------------------
+#
+# 🔴 풀링을 틀리면 예외가 나지 않는다 — 그럴듯한 벡터가 나오고 검색 품질만
+# 조용히 나빠진다. 그래서 "어느 모델이 어떤 풀링을 쓰는가"를 테스트로 못 박는다.
+
+
+def test_cls_pool_takes_only_the_first_token():
+    """[CLS]는 항상 0번이다. 나머지 토큰 값이 결과에 섞이면 안 된다."""
+    hidden = np.array([[[3.0, 4.0], [99.0, 99.0], [-99.0, -99.0]]], dtype=np.float32)
+    mask = np.array([[1, 1, 1]], dtype=np.int64)
+
+    pooled = pool_and_normalize(hidden, mask, "cls")
+
+    assert np.allclose(pooled[0], np.array([0.6, 0.8]), atol=1e-6)
+
+
+def test_cls_pool_ignores_attention_mask():
+    """패딩은 뒤에 붙으므로 첫 토큰을 침범하지 않는다 — mask와 무관해야 한다."""
+    hidden = np.array([[[1.0, 0.0], [5.0, 5.0]]], dtype=np.float32)
+
+    with_mask = pool_and_normalize(hidden, np.array([[1, 1]], dtype=np.int64), "cls")
+    without = pool_and_normalize(hidden, np.array([[1, 0]], dtype=np.int64), "cls")
+
+    assert np.allclose(with_mask, without)
+
+
+def test_cls_and_mean_give_different_vectors():
+    """두 방식이 실제로 다른 결과를 낸다 — 분기가 무의미해지지 않았는지 확인."""
+    hidden = np.array([[[1.0, 0.0], [0.0, 1.0]]], dtype=np.float32)
+    mask = np.array([[1, 1]], dtype=np.int64)
+
+    assert not np.allclose(
+        pool_and_normalize(hidden, mask, "cls"),
+        pool_and_normalize(hidden, mask, "mean"),
+    )
+
+
+def test_cls_pool_output_is_l2_normalized():
+    rng = np.random.default_rng(1)
+    hidden = rng.normal(size=(4, 7, 16)).astype(np.float32)
+    mask = np.ones((4, 7), dtype=np.int64)
+
+    pooled = pool_and_normalize(hidden, mask, "cls")
+
+    assert np.allclose(np.linalg.norm(pooled, axis=1), 1.0, atol=1e-5)
+
+
+def test_unknown_pooling_raises_instead_of_falling_back():
+    """조용히 기본값으로 넘어가면 잘못된 인덱스가 만들어진다 — 차라리 실패한다."""
+    hidden = np.ones((1, 2, 3), dtype=np.float32)
+    mask = np.ones((1, 2), dtype=np.int64)
+
+    with pytest.raises(ValueError, match="풀링"):
+        pool_and_normalize(hidden, mask, "max")
+
+
+def test_light_profile_still_uses_mean_pooling():
+    """🔴 회귀 방지 — 경량 모델이 CLS로 바뀌면 **기존 인덱스 전체가 조용히 무효**가 된다."""
+    assert LIGHT.pooling == "mean"
+
+
+def test_heavy_profile_uses_cls_pooling():
+    """KURE-v1 레포의 1_Pooling/config.json 기준 (pooling_mode_cls_token=true)."""
+    assert HEAVY.pooling == "cls"
 
 
 def test_blob_round_trip_is_lossless():
@@ -170,3 +241,47 @@ def test_long_text_is_truncated_to_model_limit(embedder):
     vector = embedder.encode_one("가나다라마바사" * 500)
     assert vector.shape == (embedder.dim,)
     assert np.isfinite(vector).all()
+
+
+# --- 메모리 안전 상한 (Phase 7.5) -----------------------------------------
+#
+# 표 청크는 chunker.py가 **의도적으로** 분할하지 않는다(구조 보존). 실제
+# 검진항목표 시트 하나가 13,625자(KURE-v1 토크나이저 기준 8192토큰, 즉
+# truncation 상한에 정확히 걸림) 청크 하나로 통째로 들어간 사례를 T4.11b
+# 재인덱싱 중 실측했다 — LIGHT(max_seq_length=128)에서는 자동으로 128토큰까지만
+# 잘려 드러나지 않았을 뿐이다. `enable_padding()`은 배치 안의 가장 긴 시퀀스에
+# 맞춰 전부 패딩하므로, 표 청크 하나가 배치 전체를 8192로 끌어올려 어텐션
+# 행렬이 68GB를 요구하며 실패했다(batch=16 기준).
+
+
+def test_oversized_table_chunk_does_not_blow_up_batch_memory(heavy_embedder):
+    """실측 재현 — 거대 청크 1개 + 짧은 청크 다수를 같은 배치에 넣는다.
+
+    이 테스트가 없으면 `_MAX_SAFE_ENCODE_TOKENS` 상한을 실수로 지워도
+    조용히 통과하다가, 실제 대형 표 문서를 인덱싱할 때만 메모리 실패로
+    터진다 — 재현이 매우 늦게 드러나는 종류의 회귀다.
+    """
+    huge = "가나다라마바사아자차카타파하" * 2000  # 수만 자 — 실측 사례보다 더 크게
+    short_texts = ["짧은 문장입니다."] * 15
+
+    vectors = heavy_embedder.encode([huge, *short_texts], batch_size=16)
+
+    assert vectors.shape == (16, heavy_embedder.dim)
+    assert np.isfinite(vectors).all()
+
+
+def test_encode_max_length_is_capped_regardless_of_profile(heavy_embedder):
+    """KURE-v1의 실제 max_seq_length(8192)를 그대로 쓰지 않는지 직접 확인."""
+    from indexer.vector.embedder import _MAX_SAFE_ENCODE_TOKENS
+
+    heavy_embedder._ensure_loaded()
+    encoding = heavy_embedder._tokenizer.encode("가" * 20000)
+    assert len(encoding.ids) <= _MAX_SAFE_ENCODE_TOKENS
+    assert _MAX_SAFE_ENCODE_TOKENS < heavy_embedder.profile.max_seq_length
+
+
+def test_light_encode_length_unaffected_by_the_cap(embedder):
+    """🔴 회귀 방지 — LIGHT는 원래도 128이라 상한(512)보다 작다. 동작이 바뀌면 안 된다."""
+    from indexer.vector.embedder import _MAX_SAFE_ENCODE_TOKENS
+
+    assert embedder.profile.max_seq_length < _MAX_SAFE_ENCODE_TOKENS

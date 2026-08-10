@@ -49,11 +49,20 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
 -- TECH 5.1은 ChromaDB를 지정했으나, 이 파이프라인은 ANN을 쓰지 않고 FTS5가 좁힌
 -- 후보의 벡터만 chunk_id로 꺼내 직접 코사인을 계산한다. 그 용도에는 SQLite가
 -- 더 정확히 부합하고(같은 트랜잭션·같은 쿼리로 조회), 의존성이 79개 늘지 않는다.
+--
+-- 🔴 기본키는 (chunk_id, model) 복합키다 — chunk_id 단독이 아니다.
+-- Phase 7.5에서 KURE-v1로 실제 재인덱싱을 해보고서야 드러난 버그였다:
+-- chunk_id 단독 PK였을 때는 청크당 벡터를 하나만 가질 수 있어서, 경량↔고성능
+-- 모드를 전환할 때마다 INSERT OR REPLACE가 **이전 모델의 벡터를 지우고
+-- 덮어썼다**. 두 모델 벡터가 공존해야 한다는 Phase 3 설계 의도(모델별 재순위
+-- 비교, 모드 전환 시 재인덱싱 없이 유지)가 스키마 수준에서 애초에 성립하지
+-- 않고 있었다 — LIGHT 하나만 실사용된 Phase 3~7 동안은 드러나지 않았다.
 CREATE TABLE IF NOT EXISTS chunk_vectors (
-    chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+    chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
     model    TEXT NOT NULL,      -- 어떤 모델로 만든 벡터인지 (교체 시 무효화 판단)
     dim      INTEGER NOT NULL,
-    vector   BLOB NOT NULL       -- float32 little-endian, L2 정규화 완료 상태
+    vector   BLOB NOT NULL,      -- float32 little-endian, L2 정규화 완료 상태
+    PRIMARY KEY (chunk_id, model)
 );
 
 -- content='chunks' → chunks 테이블의 원문을 그대로 참조 (중복 저장 없음)
@@ -100,8 +109,34 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     _ensure_wal_mode(conn)
     conn.executescript(_DDL)
+    _migrate_chunk_vectors_pk(conn)
     conn.commit()
     return conn
+
+
+def _migrate_chunk_vectors_pk(conn: sqlite3.Connection) -> None:
+    """구버전 `chunk_vectors`(chunk_id 단독 PK)를 복합키로 옮긴다.
+
+    `CREATE TABLE IF NOT EXISTS`는 이미 만들어진 테이블의 컬럼·제약을 바꾸지
+    않는다 — 이 프로젝트에 별도 마이그레이션 프레임워크가 없어(T10.5·Phase
+    3까지 전부 "재인덱싱"으로 대응한 전례) 여기서 한 번만 감지해서 옮긴다.
+
+    벡터는 전부 `embed_missing()`으로 재생성 가능한 파생 데이터라 안전하게
+    한쪽만(구버전 쪽) 지우고 새 스키마로 다시 만들면 된다 — `chunks`/`documents`
+    원문은 건드리지 않는다.
+    """
+    columns = conn.execute("PRAGMA table_info(chunk_vectors)").fetchall()
+    if not columns:
+        return  # 방금 새로 만들어진 테이블 — 이미 새 스키마다
+
+    pk_columns = {row["name"] for row in columns if row["pk"] > 0}
+    if pk_columns == {"chunk_id", "model"}:
+        return  # 이미 마이그레이션됨
+
+    # 구버전: chunk_id만 PK. 청크당 벡터가 최대 1개뿐이었으므로(모델 전환마다
+    # 덮어써짐) 보존할 가치가 없다 — 지우고 새 스키마로 다시 만든다.
+    conn.execute("DROP TABLE chunk_vectors")
+    conn.executescript(_DDL)
 
 
 def _ensure_wal_mode(conn: sqlite3.Connection) -> None:
