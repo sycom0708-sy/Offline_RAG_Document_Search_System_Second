@@ -188,16 +188,24 @@ def _health_ok(port: int) -> bool:
         return False
 
 
-@contextmanager
-def llama_server(
+def start_server(
     model_path: str | Path,
     *,
     n_ctx: int = 4096,
     n_threads: int | None = None,
     startup_timeout: int = DEFAULT_STARTUP_TIMEOUT_SEC,
     extra_args: list[str] | None = None,
-):
-    """llama-server를 띄우고 `ServerHandle`을 넘긴다. 블록을 벗어나면 종료한다."""
+) -> tuple[ServerHandle, subprocess.Popen]:
+    """llama-server를 띄우고 (핸들, 프로세스)를 돌려준다. **호출자가 종료 책임을 진다.**
+
+    Phase 7의 `slm/service.py`는 서버를 요청 사이에 **띄워둔 채로 재사용**하므로
+    컨텍스트 매니저(블록을 벗어나면 죽는다)로는 쓸 수 없다. 기동 로직은 하나만
+    두고, 블록 스코프가 맞는 쪽(측정 스크립트·테스트)은 아래 `llama_server()`
+    컨텍스트 매니저를 계속 쓴다.
+
+    기동에 실패하면 프로세스를 정리하고 예외를 던진다 — 실패한 채 떠 있는
+    프로세스를 호출자에게 떠넘기지 않는다.
+    """
     exe = find_llama_server()
     if exe is None:
         raise LlamaServerNotFoundError(
@@ -248,14 +256,44 @@ def llama_server(
                     f"llama-server가 {startup_timeout}초 안에 준비되지 않았습니다: {model_path.name}"
                 )
             time.sleep(_HEALTH_POLL_INTERVAL_SEC)
-
-        yield ServerHandle(
-            port=port,
-            load_seconds=time.perf_counter() - started,
-            pid=process.pid,
-        )
-    finally:
+    except BaseException:
         _terminate(process)
+        raise
+
+    handle = ServerHandle(
+        port=port,
+        load_seconds=time.perf_counter() - started,
+        pid=process.pid,
+    )
+    return handle, process
+
+
+def stop_server(process: subprocess.Popen) -> None:
+    """`start_server()`가 돌려준 프로세스를 종료한다."""
+    _terminate(process)
+
+
+@contextmanager
+def llama_server(
+    model_path: str | Path,
+    *,
+    n_ctx: int = 4096,
+    n_threads: int | None = None,
+    startup_timeout: int = DEFAULT_STARTUP_TIMEOUT_SEC,
+    extra_args: list[str] | None = None,
+):
+    """llama-server를 띄우고 `ServerHandle`을 넘긴다. 블록을 벗어나면 종료한다."""
+    handle, process = start_server(
+        model_path,
+        n_ctx=n_ctx,
+        n_threads=n_threads,
+        startup_timeout=startup_timeout,
+        extra_args=extra_args,
+    )
+    try:
+        yield handle
+    finally:
+        stop_server(process)
 
 
 def _terminate(process: subprocess.Popen) -> None:

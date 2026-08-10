@@ -165,6 +165,42 @@ def clean_answer(answer: str) -> str:
     return _ANSWER_PREFIX.sub("", answer or "").strip()
 
 
+# 근거 번호 `[1]` — 3단계 안전장치(T7.3)가 이것을 출처 표기로 바꾼다.
+_CITATION = re.compile(r"\[(\d+)\]")
+
+
+def expand_citations(answer: str, excerpts: list[Excerpt]) -> str:
+    """답변의 `[N]`을 `[파일명, 위치]`로 치환한다 (T7.3, TECH 5.3 3단계).
+
+    **모델에게 파일명을 직접 쓰게 하지 않는 것이 핵심이다.** TECH는 문장마다
+    `[파일명, 페이지/슬라이드]`를 요구하지만, 4B급 모델에 파일명을 인라인으로
+    적게 하면 그 파일명 자체를 지어낼 여지가 생긴다 — 출처 표기의 목적(원문
+    대조)이 정면으로 무너진다. Phase 6 실측에서 후보들이 `[1]`~`[3]` 번호는
+    안정적으로 달았으므로, **번호는 모델이 붙이고 치환은 여기서 결정론적으로**
+    한다.
+
+    범위를 벗어난 번호(발췌 3건인데 `[5]`)는 **일부러 그대로 둔다** — 지우면
+    사용자에게는 멀쩡한 문장으로 보이고, `slm/verify.py`가 같은 것을 찾아
+    "확인 필요"로 표시할 근거도 화면에서 사라진다.
+    """
+    if not answer:
+        return ""
+    if not excerpts:
+        return answer
+
+    def replace(match: re.Match) -> str:
+        index = int(match.group(1))
+        if index < 1 or index > len(excerpts):
+            return match.group(0)
+        excerpt = excerpts[index - 1]
+        location = excerpt.location
+        if location and location != "-":
+            return f"[{excerpt.file_name}, {location}]"
+        return f"[{excerpt.file_name}]"
+
+    return _CITATION.sub(replace, answer)
+
+
 def _normalize(text: str) -> str:
     return _WHITESPACE.sub("", text)
 

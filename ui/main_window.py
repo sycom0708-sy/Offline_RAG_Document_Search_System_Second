@@ -17,8 +17,10 @@ from config.settings import get_profile
 from indexer.fts5.schema import connect
 from indexer.pipeline import IndexingThread, IndexReport
 from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
+from slm.service import SlmService
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
+from ui.summary_worker import SummaryWorker
 from ui.widgets.folder_dialog import FolderDialog
 from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.model_manager_dialog import ModelManagerDialog
@@ -31,6 +33,9 @@ from ui.widgets.status_bar import StatusBar
 # 창을 닫을 때 실행 중인 스레드를 기다리는 한계. 무한정 기다리면 창이 안 닫히고,
 # 안 기다리면 실행 중인 QThread가 파괴되며 크래시한다.
 _THREAD_SHUTDOWN_WAIT_MS = 5000
+
+# 요약은 중앙 18.3초(채택 모델 실측)라 검색과 같은 5초로는 못 기다린다.
+_SUMMARY_SHUTDOWN_WAIT_MS = 20000
 
 
 class _IndexingBridge(QObject):
@@ -69,13 +74,23 @@ class MainWindow(QMainWindow):
         self._active_workers: set[SearchWorker] = set()
         self._embedder = None  # 백그라운드 워밍업 완료 전까지 None
         self._last_query = ""
+        self._last_results: list = []
         self._indexing_thread: IndexingThread | None = None
         self._indexing_progress_dialog: IndexingProgressDialog | None = None
+
+        # AI 요약 (Phase 7). 서버는 첫 요청 때 올라오고 유휴 5분이면 스스로
+        # 내려간다 — 여기서 만드는 것은 관리 객체일 뿐 프로세스가 아니다.
+        self._slm_service = SlmService(self.state.slm_profile)
+        self._summary_seq = 0
+        # 검색 워커와 같은 이유로 **실행 중인 요약 워커를 전부 붙들어야 한다** —
+        # 참조를 잃으면 실행 중인 QThread가 GC되며 앱이 통째로 죽는다.
+        self._active_summary_workers: set[SummaryWorker] = set()
 
         self._build_ui()
         self._wire_signals()
         self._refresh_format_filter_options()
         self._refresh_status_bar()
+        self._refresh_ai_summary_availability()
         self._start_embedder_warmup()
 
     # --- UI 구성 --------------------------------------------------
@@ -109,6 +124,7 @@ class MainWindow(QMainWindow):
         self.sidebar.format_filter.selection_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.case_sensitive_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.exact_word_changed.connect(self._on_filters_changed)
+        self.sidebar.search_options.ai_summary_changed.connect(self._on_ai_summary_toggled)
 
         self.sidebar.performance_combo.profile_activated.connect(self._on_profile_activated)
         self.sidebar.performance_combo.model_manager_requested.connect(self._open_model_manager)
@@ -167,6 +183,8 @@ class MainWindow(QMainWindow):
         if request_id != self._request_seq:
             return  # 더 최신 질의가 이미 나갔다 — 늦게 도착한 결과는 버린다
 
+        self._last_results = results
+
         if not results:
             hint = self._empty_result_hint()
             self.result_list.show_empty(hint)
@@ -176,10 +194,74 @@ class MainWindow(QMainWindow):
         exact_word = self.sidebar.search_options.is_exact_word()
         self.result_list.show_results(results, self._last_query, case_sensitive, exact_word)
 
+        if self.sidebar.search_options.is_ai_summary():
+            self._start_summary()
+
     def _on_search_failed(self, request_id: int, message: str) -> None:
         if request_id != self._request_seq:
             return
         self.result_list.show_error(message)
+
+    # --- AI 요약 (T7.5) --------------------------------------------------
+
+    def _refresh_ai_summary_availability(self) -> None:
+        """모델·실행 바이너리가 모두 있어야 토글을 연다."""
+        available = self._slm_service.is_available()
+        self.sidebar.search_options.set_ai_summary_available(available)
+        if available:
+            self.sidebar.search_options.set_ai_summary(self.state.ai_summary_enabled)
+
+    def _on_ai_summary_toggled(self, enabled: bool) -> None:
+        self.state.ai_summary_enabled = enabled
+        self.state.save()
+
+        if not enabled:
+            # 켜져 있던 요약을 걷어낸다. 진행 중인 워커는 request_id가 어긋나
+            # 결과가 버려지므로 따로 중단시킬 필요가 없다.
+            self._summary_seq += 1
+            self.result_list.clear_summary()
+            return
+
+        # 이미 결과가 떠 있으면 곧바로 요약한다 — 검색을 다시 하게 만들면
+        # 토글이 안 먹는 것처럼 보인다.
+        if self._last_results:
+            self._start_summary()
+
+    def _start_summary(self) -> None:
+        self._summary_seq += 1
+        request_id = self._summary_seq
+
+        card = self.result_list.summary_card()
+        card.show_generating()
+
+        worker = SummaryWorker(
+            self._last_query,
+            self._last_results,
+            self._slm_service,
+            request_id,
+        )
+        worker.started_loading.connect(self._on_summary_loading)
+        worker.succeeded.connect(self._on_summary_succeeded)
+        worker.failed.connect(self._on_summary_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda w=worker: self._active_summary_workers.discard(w))
+        self._active_summary_workers.add(worker)
+        worker.start()
+
+    def _on_summary_loading(self, request_id: int) -> None:
+        if request_id != self._summary_seq or not self.result_list.has_summary():
+            return
+        self.result_list.summary_card().show_starting()
+
+    def _on_summary_succeeded(self, request_id: int, summary) -> None:
+        if request_id != self._summary_seq or not self.result_list.has_summary():
+            return
+        self.result_list.summary_card().show_summary(summary)
+
+    def _on_summary_failed(self, request_id: int, message: str) -> None:
+        if request_id != self._summary_seq or not self.result_list.has_summary():
+            return
+        self.result_list.summary_card().show_error(message)
 
     def _on_open_failed(self, message: str) -> None:
         """"원문 열기" 실패를 사용자에게 보여준다.
@@ -207,6 +289,15 @@ class MainWindow(QMainWindow):
 
         for worker in list(self._active_workers):
             worker.wait(_THREAD_SHUTDOWN_WAIT_MS)
+
+        # 요약 워커는 추론이 끝날 때까지 최대 18초를 더 기다릴 수 있어 검색보다
+        # 여유가 필요하다. 다만 무한정 기다리면 창이 안 닫히므로 상한을 둔다.
+        for worker in list(self._active_summary_workers):
+            worker.wait(_SUMMARY_SHUTDOWN_WAIT_MS)
+
+        # 🔴 반드시 마지막에. 안 부르면 llama-server(채택 모델 기준 4.8GB)가
+        # 고아 프로세스로 남아 앱을 닫아도 메모리가 돌아오지 않는다.
+        self._slm_service.shutdown()
 
         super().closeEvent(event)
 
@@ -256,6 +347,8 @@ class MainWindow(QMainWindow):
         dialog = ModelManagerDialog(focus_profile=focus_profile, parent=self)
         dialog.exec()
         self.sidebar.performance_combo.refresh()
+        # sLM을 새로 넣었거나 지웠을 수 있다 — AI 요약 토글을 다시 판정한다.
+        self._refresh_ai_summary_availability()
 
     # --- 폴더 관리 / 인덱싱 --------------------------------------------------
 

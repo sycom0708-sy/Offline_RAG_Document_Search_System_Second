@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import urllib.error
 import urllib.request
@@ -134,6 +136,114 @@ def _verify(profile: SlmProfile) -> None:
             f"GGUF 파일이 비정상적으로 작습니다({size:,} bytes): {path}\n"
             "레포에 해당 파일이 없거나 경로가 바뀌었을 수 있습니다."
         )
+
+
+def file_sha256(path: Path, *, chunk_bytes: int = 8 * 1024 * 1024, progress=None) -> str:
+    """파일의 SHA256을 계산한다 (TECH 9.3 "새로고침(파일 확인)" 검증용).
+
+    GB 단위 파일을 통째로 읽으므로 **UI 스레드에서 부르면 안 된다.**
+    `progress(read_bytes, total_bytes)` 콜백으로 진행률을 알릴 수 있다.
+    """
+    digest = hashlib.sha256()
+    total = path.stat().st_size
+    read = 0
+    with open(path, "rb") as fp:
+        while True:
+            block = fp.read(chunk_bytes)
+            if not block:
+                break
+            digest.update(block)
+            read += len(block)
+            if progress is not None:
+                progress(read, total)
+    return digest.hexdigest()
+
+
+def _verified_cache_path() -> Path:
+    from config.settings import PROJECT_ROOT
+
+    return PROJECT_ROOT / "data" / "slm_verified.json"
+
+
+def load_verified_marker(profile: SlmProfile) -> bool:
+    """이 파일이 **이미 검증된 그대로인지** 돌려준다.
+
+    체크섬 검증은 GB 단위 파일을 통째로 읽는다. 같은 바이트를 새로고침할
+    때마다 다시 읽는 것은 낭비이고, 사용자에게는 버튼이 매번 수십 초 도는
+    것으로 보인다. 크기와 mtime이 그대로면 내용도 그대로라고 본다 — 이
+    수준의 보수성은 "사용자가 파일을 잘못 넣었는지" 잡는 목적에 충분하다.
+    """
+    path = profile.local_path
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(_verified_cache_path().read_text(encoding="utf-8"))
+        entry = data.get(profile.key) or {}
+        stat = path.stat()
+        return (
+            entry.get("size") == stat.st_size
+            and entry.get("mtime") == _rounded_mtime(stat.st_mtime)
+            and entry.get("sha256") == profile.sha256
+        )
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return False
+
+
+def _rounded_mtime(mtime: float) -> float:
+    """mtime을 소수점 아래까지 그대로 쓰면 파일시스템별 정밀도 차이로 어긋난다."""
+    return round(mtime, 3)
+
+
+def save_verified_marker(profile: SlmProfile) -> None:
+    """검증 통과를 기록한다. 실패해도 조용히 넘어간다 — 캐시일 뿐이다."""
+    path = profile.local_path
+    if not path.is_file():
+        return
+    cache = _verified_cache_path()
+    try:
+        data = {}
+        if cache.is_file():
+            data = json.loads(cache.read_text(encoding="utf-8"))
+        stat = path.stat()
+        data[profile.key] = {
+            "size": stat.st_size,
+            "mtime": _rounded_mtime(stat.st_mtime),
+            "sha256": profile.sha256,
+        }
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+
+
+def verify_installed(profile: SlmProfile, *, check_hash: bool = True, progress=None) -> str | None:
+    """설치된 GGUF를 검증한다. 정상이면 None, 문제가 있으면 사유 문자열.
+
+    체크섬을 아는 모델만 해시를 대조한다 — 이 저장소가 실제로 받아본 적 없는
+    후보에는 기록된 값이 없다(`SlmProfile.sha256` 주석 참고). 그 경우 크기만
+    본다.
+    """
+    path = profile.local_path
+    if not path.is_file():
+        return f"파일이 없습니다: {path}"
+
+    size = path.stat().st_size
+    if profile.size_bytes and size != profile.size_bytes:
+        return (
+            f"파일 크기가 다릅니다 (예상 {profile.size_bytes:,} / 실제 {size:,} bytes). "
+            "다운로드가 중단됐거나 다른 파일일 수 있습니다."
+        )
+    if size < _MIN_GGUF_BYTES:
+        return f"파일이 비정상적으로 작습니다({size:,} bytes)."
+
+    if check_hash and profile.sha256:
+        actual = file_sha256(path, progress=progress)
+        if actual.lower() != profile.sha256.lower():
+            return (
+                "체크섬이 일치하지 않습니다. 파일이 손상됐거나 다른 버전입니다.\n"
+                f"  예상 {profile.sha256}\n  실제 {actual}"
+            )
+    return None
 
 
 def main(argv: list[str] | None = None) -> int:

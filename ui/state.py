@@ -13,7 +13,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from config.settings import LIGHT, PROJECT_ROOT
+from config.settings import DEFAULT_SLM_PROFILE, LIGHT, PROJECT_ROOT
 
 DATA_DIR = PROJECT_ROOT / "data"
 STATE_PATH = DATA_DIR / "app_state.json"
@@ -24,6 +24,10 @@ DB_PATH = DATA_DIR / "index.sqlite3"
 class AppState:
     target_folder: str | None = None
     model_profile: str = LIGHT.key
+    # AI 요약은 **기본 OFF**다 — 추출형 검색이 기본값이라는 설계 원칙
+    # (PRD/DESIGN §1, TECH 5.2)이고, 명시적으로 켜야 하는 옵션이다.
+    ai_summary_enabled: bool = False
+    slm_profile: str = DEFAULT_SLM_PROFILE
 
     def __post_init__(self) -> None:
         # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자

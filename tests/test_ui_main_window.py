@@ -454,3 +454,152 @@ class TestMixedResultTypes:
         assert win.result_list.findChild(ResultCard) is not None
         assert win.result_list.findChild(TableCard) is not None
         assert win.result_list.findChild(ImageCard) is not None
+
+
+class TestAiSummaryWiring:
+    """AI 요약 토글 배선 (T7.5).
+
+    실제 sLM을 띄우지 않는다 — 서비스를 스텁으로 바꿔 **배선이 화면까지
+    도달하는지**만 본다. T10.3에서 신호가 emit만 되고 받는 곳이 없어 아무
+    반응도 없던 버그가 카드 단위 테스트를 다 통과한 채 남아 있었다.
+    """
+
+    @staticmethod
+    def _grounded_results():
+        """유사도 0.8짜리 근거를 직접 만든다.
+
+        4건짜리 테스트 픽스처는 실제 유사도가 0.5(1단계 임계값) 아래라 그대로
+        쓰면 gate 1이 전부 막아 요약 배선을 지나가지 못한다. 임계값 자체는
+        `test_slm_summarize.py`가 따로 검증하므로, 여기서는 배선만 본다.
+        """
+        from search.hybrid_search import HybridResult
+        from indexer.fts5.search import SearchResult
+
+        result = SearchResult(
+            chunk_id="c1", doc_id="d1", file_path="x", file_name="사규.docx",
+            type=ChunkType.TEXT, page_or_slide=3,
+            content="계약서 검토 시 기준이 되는 조항은 손해배상, 계약 해지 조건이다",
+            caption="", score=-1.0,
+        )
+        return [HybridResult(result, 0.8, False)]
+
+    @staticmethod
+    def _stub_service(window, text="계약서 기준 조항입니다. [1]"):
+        from slm.client import Completion
+
+        class _Stub:
+            def __init__(self):
+                self.calls = 0
+
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, messages, **_kwargs):
+                self.calls += 1
+                return Completion(text=text, elapsed_sec=0.1, completion_tokens=5)
+
+            def shutdown(self):
+                pass
+
+        stub = _Stub()
+        window._slm_service = stub
+        return stub
+
+    def test_toggle_is_off_by_default(self, window):
+        """추출형 검색이 기본값이라는 원칙 (PRD/DESIGN §1, TECH 5.2)."""
+        assert window.sidebar.search_options.is_ai_summary() is False
+
+    def test_no_summary_card_when_toggle_off(self, window, qtbot):
+        self._stub_service(window)
+        window.search_bar.set_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        assert window.result_list.has_summary() is False
+
+    def test_turning_toggle_on_summarizes_existing_results(self, window, qtbot):
+        """이미 결과가 떠 있으면 재검색 없이 바로 요약해야 한다."""
+        stub = self._stub_service(window)
+        window.search_bar.set_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        window._last_results = self._grounded_results()
+
+        window.sidebar.search_options.set_ai_summary_available(True)
+        window.sidebar.search_options.ai_summary.setChecked(True)
+
+        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+        qtbot.waitUntil(
+            lambda: "계약서" in window.result_list.summary_card().body_text(),
+            timeout=SEARCH_TIMEOUT_MS,
+        )
+        assert window.result_list.card_count() > 0  # 결과 카드는 그대로
+
+    def test_turning_toggle_off_removes_the_card(self, window, qtbot):
+        stub = self._stub_service(window)
+        window.search_bar.set_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        window._last_results = self._grounded_results()
+
+        window.sidebar.search_options.set_ai_summary_available(True)
+        window.sidebar.search_options.ai_summary.setChecked(True)
+        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        window.sidebar.search_options.ai_summary.setChecked(False)
+        assert window.result_list.has_summary() is False
+
+    def test_toggle_state_is_persisted(self, window):
+        window.sidebar.search_options.set_ai_summary_available(True)
+        window.sidebar.search_options.ai_summary.setChecked(True)
+        assert window.state.ai_summary_enabled is True
+
+        reloaded = AppState.load(path=window.state._path)
+        assert reloaded.ai_summary_enabled is True
+
+    def test_summary_failure_reaches_the_card(self, window, qtbot):
+        """실패가 화면에 도달하는지 — 신호만 나가고 끝나면 사용자는 멈춘 줄 안다."""
+        class _Failing:
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, *_a, **_k):
+                raise RuntimeError("서버 기동 실패")
+
+            def shutdown(self):
+                pass
+
+        window._slm_service = _Failing()
+        window.search_bar.set_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        window._last_results = self._grounded_results()
+
+        window.sidebar.search_options.set_ai_summary_available(True)
+        window.sidebar.search_options.ai_summary.setChecked(True)
+
+        qtbot.waitUntil(
+            lambda: "서버 기동 실패" in window.result_list.summary_card().body_text(),
+            timeout=SEARCH_TIMEOUT_MS,
+        )
+
+    def test_close_shuts_down_the_slm_server(self, window):
+        """🔴 안 내리면 4.8GB짜리 프로세스가 고아로 남는다."""
+        class _Tracking:
+            def __init__(self):
+                self.shutdown_called = False
+
+            def is_available(self):
+                return False
+
+            def is_running(self):
+                return False
+
+            def shutdown(self):
+                self.shutdown_called = True
+
+        tracker = _Tracking()
+        window._slm_service = tracker
+        window.close()
+        assert tracker.shutdown_called is True

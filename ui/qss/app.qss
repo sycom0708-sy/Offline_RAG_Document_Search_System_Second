@@ -92,6 +92,55 @@ QMainWindow, #CentralWidget {
     border-radius: 8px;
 }
 
+/* AI 요약 카드 (Phase 7) — 결과 카드와 구별되도록 파란 계열을 쓴다.
+   DESIGN에 명세가 없어 새로 정한 것이다(§4.2에 토글만 있었다). */
+#AiSummaryCard {
+    background: #F5F8FF;
+    border: 1px solid #C7D7FE;
+    border-radius: 8px;
+}
+
+#AiSummaryCard[state="failed"] {
+    background: #FEF6F6;
+    border-color: #F5C2C2;
+}
+
+#AiSummaryTitle {
+    color: #2563EB;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+#AiSummaryBody {
+    color: #1F2937;
+    font-size: 14px;
+}
+
+/* 준비 중·생성 중은 아직 내용이 아니므로 흐리게 둔다. */
+#AiSummaryCard[state="pending"] #AiSummaryBody,
+#AiSummaryCard[state="empty"] #AiSummaryBody {
+    color: #6B7280;
+}
+
+#AiSummaryCard[state="failed"] #AiSummaryBody {
+    color: #B91C1C;
+}
+
+/* 4단계 안전장치 배지 — 답을 숨기지 않고 검토가 필요함만 표시한다. */
+#AiSummaryReviewBadge {
+    background: #FEF3C7;
+    color: #92400E;
+    border: 1px solid #FDE68A;
+    border-radius: 4px;
+    font-size: 12px;
+    padding: 2px 8px;
+}
+
+#AiSummaryHint {
+    color: #6B7280;
+    font-size: 12px;
+}
+
 #ResultCard[relevance="low"] {
     border-color: #F1F2F4;
 }
@@ -226,6 +275,13 @@ QMainWindow, #CentralWidget {
 
 #ModelRowBadge[state="pending"] {
     color: #52606D;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+/* 파일은 있으나 크기·체크섬이 안 맞는다 (T7.9) */
+#ModelRowBadge[state="invalid"] {
+    color: #B91C1C;
     font-size: 11px;
     font-weight: 700;
 }
