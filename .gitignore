@@ -5,6 +5,11 @@ __pycache__/
 .claude/settings.local.json
 .venv/
 venv/
+# KURE-v1 변환 전용 임시 venv (Phase 7.5) — torch/optimum이 들어가므로 런타임
+# venv와 격리한다. 변환이 끝나면 통째로 지운다.
+.venv-convert/
+# 변환 중간 산출물 (fp32 ONNX, --clean 없이 실행하면 남는다. 최대 2.3GB)
+build/
 *.egg-info/
 .pytest_cache/
 tests/samples/generated/

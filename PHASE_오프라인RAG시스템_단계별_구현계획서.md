@@ -4,6 +4,284 @@
 
 ---
 
+<!-- 출처: sequential-snacking-puddle.md · DESKTOP-V42GJBP · 작성 2026-08-10 15:48 · 아카이브 2026-08-10 17:02 -->
+
+# Phase 7.5: KURE-v1 임베딩 변환 파이프라인
+
+## Context
+
+`KURE-v1`(고성능 모드 임베딩)은 Phase 3에서 "허깅페이스 레포에 ONNX가 없다"는 이유로 변환을 미뤘고, Phase 4에서 모델 관리 화면에 **"준비 중" 배지 + 비활성 버튼**으로만 노출했다. 이후 Phase 6·7 내내 "별도 Phase에서 재검토"로만 언급되며 Phase 10 백로그에도 못 오른 채 방치됐다. Phase 7을 마친 뒤 사용자가 "고성능 모드는 아직도 준비 중으로 나오는데?"라고 지적해 **Phase 8보다 우선순위를 올려 신설**했다.
+
+목표는 safetensors → ONNX(int8) 변환 파이프라인을 만들어 고성능 모드를 실제로 쓸 수 있게 만들고, Phase 4부터 검증 불가 상태로 남아 있던 **T4.11b(고성능 전환 → 재인덱싱 종단 검증)**를 닫는 것이다.
+
+### 착수 전 조사에서 드러난 것 (2026-08-10)
+
+| 항목 | 기존 문서/코드 | 실제 (HF 재조회) | 영향 |
+|---|---|---|---|
+| **풀링 방식** | (미확인, mean 가정) | 🔴 **CLS 풀링** (`1_Pooling/config.json`) | **런타임 코드 재사용 불가** — 아래 §2 |
+| `max_seq_length` | `settings.py` = 512 | **8192** | 프로파일 정정 |
+| 원본 용량 | PLAN §4-C = "2.27GB" | **568MB** (`model.safetensors`) | 문서 오기 — 정정 |
+| 베이스 | (미기재) | `BAAI/bge-m3` 파생, XLM-RoBERTa | 토크나이저·입력 형식 확인 필요 |
+
+🔴 **가장 중요한 발견은 풀링 방식이다.** 기존 `Embedder`는 `ko-sroberta-multitask`의 `modules.json`에 맞춰 **mean pooling을 코드에 하드코딩**해뒀다(`indexer/vector/embedder.py:_mean_pool_and_normalize`). KURE-v1에 그대로 쓰면 **예외 없이 조용히 잘못된 벡터**가 나와 검색 품질만 나빠진다 — 착수 전 조사에서 잡지 못했다면 "고성능 모드가 왜 더 나쁘지?"로 한참 헤맸을 종류의 결함이다.
+
+**변환 방식은 직접 구축으로 확정** [사용자 확정, 2026-08-10].
+
+검토 과정에서 커뮤니티 int8 변환본(`challychoi/KURE-v1-onnx-int8`, 591MB)을 발견했고 이걸 그대로 쓰면 구현량이 크게 줄지만, **채택하지 않았다.** 다운로드 34회짜리 개인 재업로드라 변환이 제대로 됐는지 확인할 근거가 없고, 임베딩 모델이 조용히 틀리면 예외 없이 **검색 품질 저하로만** 나타나 원인을 찾기 어렵다. 사내 문서 검색 시스템에는 출처가 명확하고 우리가 직접 재현·검증할 수 있는 경로가 맞다고 판단했다.
+
+→ 공식 `nlpai-lab/KURE-v1` safetensors에서 우리가 직접 변환하고, `sentence-transformers` 정식 추론 결과를 참조 벡터로 삼아 변환 정확성을 수치로 검증한다(§4).
+
+---
+
+## 1. 변환 파이프라인 — `scripts/convert_kure.py` (신설)
+
+**torch·optimum은 이 스크립트 전용 빌드타임 의존성이다.** Phase 3에서 어렵게 걷어낸 117MB를 런타임에 다시 들이면 안 된다(TECH 9.2 인스톨러 예산).
+
+**격리 방식**: 프로젝트 `.venv`를 건드리지 않고 **별도 `.venv-convert`**(gitignore 대상)를 만들어 거기서만 변환을 돌린다. 끝나면 통째로 지운다.
+
+```
+py -3.14 -m venv .venv-convert
+.venv-convert/Scripts/pip install torch --index-url https://download.pytorch.org/whl/cpu
+.venv-convert/Scripts/pip install optimum[onnxruntime] sentence-transformers
+```
+
+변환 흐름:
+
+1. `optimum`의 `ORTModelForFeatureExtraction.from_pretrained(export=True)`로 fp32 ONNX 추출
+2. `onnxruntime.quantization.quantize_dynamic`으로 int8 양자화
+3. `tokenizer.json`을 같은 폴더에 배치 → `models/KURE-v1/{model.onnx, tokenizer.json}` (기존 `ModelProfile` 구조 그대로)
+4. **검증용 참조 벡터**를 `sentence-transformers` 정식 추론으로 뽑아 `.npy`로 저장 — 변환 venv를 지운 뒤에도 프로젝트 venv에서 대조할 수 있어야 한다
+
+**⚠ 예상 함정 — 2GB protobuf 한계**: fp32 export가 약 2.3GB라 단일 `.onnx`에 안 들어가 `model.onnx` + `model.onnx_data`(external data)로 쪼개진다(커뮤니티 fp32 변환본 `NetMD/KURE-v1-onnx`가 정확히 이 구조다). 양자화 단계가 external data를 제대로 읽는지, 결과물은 단일 파일로 나오는지 확인해야 한다.
+
+**디스크**: 현재 여유 16GB(91% 사용). 피크 사용량 ≈ 툴체인 3GB + safetensors 0.6GB + fp32 2.3GB ≈ 6GB. 변환 후 중간물·`.venv-convert`를 정리해 최종 570MB만 남긴다.
+
+---
+
+## 2. 🔴 풀링 방식 분기 — `config/settings.py` + `indexer/vector/embedder.py`
+
+지금 구조는 모델마다 다른 풀링을 표현할 방법이 없다.
+
+- `ModelProfile`에 **`pooling: str = "mean"`** 필드 추가 → `LIGHT`는 `"mean"`(현행 유지), `HEAVY`는 **`"cls"`**
+- `Embedder._encode_batch()`가 프로파일을 보고 분기. `_mean_pool_and_normalize()`는 그대로 두고 `_cls_pool_and_normalize()`(첫 토큰 + L2 정규화)를 추가
+- `HEAVY.max_seq_length` 512 → **8192**, `files` 튜플은 변환 산출물 구조에 맞게 정정
+
+**청킹은 이번 Phase에서 바꾸지 않는다** [결정]. `DEFAULT_MAX_TOKENS=120`은 ko-sroberta의 128 한계에 맞춘 값이라 KURE-v1의 8192를 못 살리지만, 재청킹하면 `chunk_id`가 전부 바뀌어 **T10.5에서 겪은 것처럼 Phase 6 sLM 테스트셋이 또 무효화**된다. 청크 크기는 검색 입도(granularity) 문제라 모델 한계와 별개이기도 하다 — 별도 과제로 남긴다.
+
+---
+
+## 3. 배포 경로 — 다운로드가 아니라 "변환 후 복사"
+
+우리가 만든 아티팩트는 허깅페이스에 없으므로 `download_profile()`로 받을 수 없다. **sLM·LibreOffice와 같은 방침**을 따른다(TECH 9.1/9.3):
+
+- 인터넷 되는 PC에서 변환 스크립트 1회 실행 → `models/KURE-v1/` 생성
+- 오프라인 PC로는 `models/` 폴더째 복사 (PRD 6장의 기존 배포 경로 그대로)
+- 모델 관리 화면(`ui/widgets/model_manager_dialog.py`)의 KURE-v1 행: "준비 중" → **설치 상태 실검사 + 안내 팝업**("변환 스크립트를 실행하거나 models/ 폴더를 복사하세요"). Phase 7에서 만든 `_SlmRow`의 안내 팝업 패턴을 그대로 본뜬다
+
+---
+
+## 4. 검증 (T7.5.3·T7.5.4·T7.5.6·T7.5.7)
+
+| 항목 | 방법 | 판단 기준 |
+|---|---|---|
+| 변환 정확성 | ONNX 벡터 vs `sentence-transformers` 참조 벡터(§1-4) 코사인 대조 | fp32는 >0.999, int8 열화폭을 수치로 기록 |
+| 양자화 재현성 | Phase 3과 같은 측정 — 배치 vs 단건, 자기 유사도 | Phase 3 선례(ko-sroberta는 CPU 따라 0.94~0.98)와 비교 |
+| **처리량** | 실문서 재인덱싱 시간 측정 | 🔴 **의사결정 지점** — 아래 |
+| T4.11b 종단 | 고성능 전환 → `embed_missing()` → 검색 | 1024차원 벡터가 `chunk_vectors`에 정상 저장·조회 (스키마는 이미 `(chunk_id, model, dim, vector)`라 변경 불필요) |
+| 검색 품질 | 같은 질의 세트로 경량 vs 고성능 재순위 비교 | Phase 3의 "벡터 재순위가 항상 개선은 아니다" 선례 참고 |
+
+🔴 **처리량이 의사결정 지점이다.** KURE-v1은 568M 파라미터로 ko-sroberta(~110M)의 5배이고 차원도 768→1024다. 권장 사양에서 ko-sroberta가 38청크/초였는데 KURE-v1이 5~10배 느리면 **문서 1천 개(사용자 계획) 인덱싱이 몇 시간 단위**가 된다. 측정 후 "품질 개선폭이 이 비용을 정당화하는가"를 사용자와 확정한다 — 안 되면 고성능 모드는 만들어두되 기본값은 경량 유지.
+
+---
+
+## 5. 테스트
+
+기존 패턴(`tests/test_vector_embedder.py`)을 따른다. **모델 없이 도는 것과 모델이 필요한 것을 나눈다**(`conftest.py`의 `embedder` 픽스처가 이미 미설치 시 skip 처리).
+
+- 순수 로직: `_cls_pool_and_normalize()` 정확성(첫 토큰 선택·정규화), 프로파일 `pooling` 필드 분기
+- 🔴 **회귀 방지**: `LIGHT`가 여전히 mean 풀링을 쓰는지 — 분기를 잘못 넣어 경량 모델까지 CLS로 바뀌면 **기존 인덱스 전체가 조용히 무효**가 된다
+- 모델 필요(skip 가능): KURE-v1 실추론, 차원 1024 확인, 참조 벡터 대조
+
+---
+
+## 6. 실행 순서와 모델 전환 지점
+
+1. **T7.5.1~T7.5.4 (Opus 구간)** — 변환 스크립트, 풀링 분기, 정확성·재현성 검증. 설계 판단이 몰려 있다
+2. ⬅️ **여기서 Sonnet으로 전환 가능** (아티팩트·풀링이 확정된 뒤)
+3. **T7.5.5~T7.5.7 (Sonnet 구간)** — 모델 관리 UI 연동, T4.11b 종단 검증, 품질·처리량 비교 측정
+
+## 7. 문서 갱신 (Phase 완료 체크리스트)
+
+TASK T7.5.1~T7.5.7 체크박스, PLAN Phase 7.5 실행 결과, CLAUDE.md 한 줄 요약, **PLAN §4-C의 "원본 2.27GB" 오기 정정**, `python -m scripts.archive_plan --all`.
+
+**커밋은 이 PC에서 하지 않는다** — 저사양 PC에서 진행한다.
+
+---
+
+<!-- 출처: sequential-snacking-puddle.md · DESKTOP-V42GJBP · 작성 2026-08-10 14:19 · 아카이브 2026-08-10 15:07 -->
+
+# Phase 7: sLM 답변 생성 옵션 모드
+
+## Context
+
+Phase 4에서 사이드바에 "AI 요약 보기" 토글을 만들었지만 **비활성 + "Phase 7에서 지원 예정" 툴팁**으로 두었다(`ui/widgets/search_options.py:33-35`). Phase 6에서 후보 4종을 실측해 **권장 사양 채택 모델을 Qwen3.5-4B로 확정**했고(2026-08-10, 메모리 4.8GB·중앙 지연 18.3초), 이제 그 토글을 실제 동작으로 바꾼다.
+
+핵심은 기능 추가가 아니라 **할루시네이션 억제**다. TECH 5.2가 "추출형 검색이 기본값"인 이유가 그것이고, Phase 6 실측에서 채택 모델조차 객관식 발췌에 대해 **발췌에 없는 답을 근거 번호까지 붙여 지어내는** 실패를 보였다(26문항 중 2건). 그래서 TECH 5.3의 4단계 안전장치를 전부 구현하되, 설계 철학은 "할루시네이션을 100% 막는다"가 아니라 **"사용자가 즉시 검증할 수 있는 구조"**로 간다.
+
+착수 시 확정한 결정 3건 [사용자 확정, 2026-08-10]:
+
+| 결정 | 채택 | 이유 |
+|---|---|---|
+| sLM 서버 수명주기 | **유휴 5분 후 자동 종료** | 이 PC(16GB)에서 안드로이드 스튜디오와 동시 작업이 전제 — 안 쓰는 동안 4.8GB를 물고 있으면 안 된다 |
+| 4단계 적용 범위 | **항상 켜기** (사양 분기 없음) | 겹침도는 문자열 연산이라 비용 ≈ 0이고, 애초에 sLM을 켤 수 있는 PC면 이미 권장 사양이다 |
+| 요약 출력 위치 | **결과 목록 맨 위 요약 카드** | DESIGN에 출력 명세가 없어 새로 정함. 기존 `ResultList` QVBoxLayout에 그대로 들어가고, 요약과 근거 카드를 한 화면에서 대조할 수 있다 |
+
+---
+
+## 1. 서버 수명주기 — `slm/runtime.py` 리팩터 + `slm/service.py` 신설
+
+현재 `runtime.llama_server()`는 `@contextmanager`다(`slm/runtime.py:191-258`). 블록을 벗어나면 죽으므로 "띄워두고 재사용"에 맞지 않는다.
+
+**리팩터**: `_start_server() -> (ServerHandle, Popen)` / `_stop_server(popen)`로 쪼개고, 기존 `llama_server()` 컨텍스트 매니저는 이 둘을 감싸는 얇은 래퍼로 남긴다 — `scripts/benchmark_slm.py:174-177`과 `tests/test_slm_runtime.py`가 그대로 통과해야 한다.
+
+**`slm/service.py` (신설)** — 프로세스를 하나만 유지하는 서비스:
+
+```
+SlmService
+  ensure_ready()      기동돼 있으면 즉시, 아니면 서버를 올린다 (4.7초)
+  summarize(...)      요약 1건 생성. 호출할 때마다 유휴 타이머 리셋
+  shutdown()          서버 종료 (앱 종료 시 필수)
+  is_running / status  UI 표시용
+```
+
+- **유휴 타이머**: `threading.Timer`로 마지막 요청 + `SLM_IDLE_TIMEOUT_SEC`(기본 300초) 뒤 `shutdown()`. 새 요청이 오면 타이머 취소 후 재설정.
+- **`threading.Lock`으로 직렬화**: UI 워커 스레드에서 호출되고, 검색이 겹치면 동시 진입한다. 기동 중 두 번째 요청이 들어와 서버를 두 번 띄우는 것을 막는다.
+- **`profile.extra_server_args`를 반드시 넘긴다** — Qwen3.5는 `--reasoning off`가 없으면 300토큰을 사고에 쓰고 **빈 응답**을 준다(Phase 6 실측, `config/settings.py:152`).
+- 기동 실패(모델 없음·메모리 부족 등)는 예외를 삼키지 않고 사유 문자열로 올려 요약 카드에 그대로 보여준다.
+
+**🔴 앱 종료 시 반드시 `shutdown()`** — 안 하면 4.8GB짜리 llama-server 프로세스가 고아로 남는다. `MainWindow.closeEvent`(`ui/main_window.py:194-211`)에 추가한다. Phase 4·6·T10.4에서 반복해 밟은 자리다.
+
+---
+
+## 2. 4단계 안전장치
+
+### 1단계 — 유사도 임계값 (T7.1) → `slm/summarize.py`
+`HybridResult.similarity`가 이미 계산돼 있다(`search/hybrid_search.py:143-146`). `SIMILARITY_THRESHOLD`(0.5, `config/settings.py:21`)를 **재사용**한다 — DESIGN §5.6의 "관련성 낮음" 기준과 같은 상수여야 화면과 요약이 어긋나지 않는다.
+
+- `similarity >= 0.5`인 결과만 발췌 후보로 삼는다 (= `not is_low_relevance`)
+- **`similarity is None`(임베딩 미사용/실패)은 부적격으로 본다** — 판단 근거가 없는데 요약하면 1단계 취지가 무너진다
+- 적격 발췌 0건이면 **sLM을 호출하지 않고** "관련 문서를 찾을 수 없습니다"를 반환
+
+### 2단계 — 근거 강제 프롬프트 (T7.2) → 기존 자산 재사용
+`slm/prompt.py`의 `SYSTEM_PROMPT` / `build_messages()`를 **그대로 쓴다**. Phase 6에서 4회 반복해 다듬고 26문항으로 검증한 것이고, 규칙을 user 메시지에 싣는 이유(EXAONE 템플릿이 system을 버림)도 거기 문서화돼 있다. `LlamaClient.chat(temperature=0.0)`이 이미 기본값이라 low temperature 요구도 충족한다.
+
+### 3단계 — 문장 단위 출처 표기 (T7.3) → `expand_citations()`
+> **설계 판단 [제안]**: TECH는 `[파일명, 페이지/슬라이드]`를, 기존 프롬프트는 `[N]` 번호를 쓴다. **모델에게 파일명을 직접 쓰게 하지 않는다** — 4B급에 파일명을 인라인으로 적게 하면 그 파일명 자체를 지어낼 여지가 생긴다. Phase 6 실측에서 두 모델 모두 `[1]`~`[3]`을 안정적으로 출력했으므로, **번호는 모델이 달고 표시 단계에서 결정론적으로 치환**한다.
+
+`slm/prompt.py`에 추가: `expand_citations(answer, excerpts) -> str`
+- `\[(\d+)\]` → `[{file_name}, {location}]`. `location`은 `search/chunk_view.py:format_location()` 재사용 (결과 카드와 같은 규칙 — `tests/test_slm_prompt.py:43-50`이 이 일치를 이미 지키고 있다)
+- 발췌 범위를 벗어난 번호(예: 발췌 3건인데 `[5]`)는 치환하지 않고 **검증 실패 신호로 넘긴다** → 4단계가 "확인 필요"로 표시
+
+### 4단계 — 답변-근거 겹침도 (T7.4) → `slm/verify.py` (신설)
+순수 로직이라 모델 없이 테스트된다.
+
+- 답변을 문장 단위로 자른다 (`indexer`의 정규식 분리 방식 재사용 — `kss`는 Phase 3에서 성능 문제로 걷어냈다)
+- 문장별 **문자 bigram 겹침 비율**을 발췌 전체 텍스트 대비 계산. 한국어는 조사·어미가 붙어 어절 단위 매칭이 잘 안 걸려 문자 n-gram이 낫다. `slm/prompt.py:_normalize()`(공백 제거)를 재사용
+- 한 문장이라도 `SLM_OVERLAP_THRESHOLD`(**0.6 [제안]** — 구현 중 실제 답변으로 조정) 미만이면 카드에 **"확인 필요"** 배지
+- 범위 밖 인용 번호가 있어도 "확인 필요"
+- 기권 응답(`is_abstention()`)은 검증 대상에서 제외
+
+---
+
+## 3. UI
+
+### 요약 카드 — `ui/widgets/summary_card.py` (신설)
+`objectName`은 **`"AiSummaryCard"`** — `"ResultCard"`로 하면 `ResultList.card_count()`(`result_list.py:99`)에 잡혀 기존 테스트 전부가 1씩 밀린다.
+
+표시해야 하는 상태:
+
+| 상태 | 문구 |
+|---|---|
+| 서버 기동 중 | "AI 모델을 준비하는 중입니다…" (첫 요청 4.7초) |
+| 생성 중 | "AI 요약을 만드는 중입니다…" |
+| 정상 | 답변 + 문장별 `[파일명, 위치]` + (필요 시) **확인 필요** 배지 |
+| 기권 | "문서에서 찾을 수 없습니다." |
+| 1단계 차단 | "관련 문서를 찾을 수 없습니다" |
+| 실패 | 사유 그대로 (모델 미설치 / 기동 실패 등) |
+
+QSS는 `ui/qss/app.qss`에 `#AiSummaryCard` 계열 셀렉터를 추가한다(기존 `#ResultCard` 스타일을 본뜬다).
+
+### 워커 — `ui/summary_worker.py` (신설)
+`ui/search_worker.py`를 그대로 본뜬다: `QThread`, `succeeded = Signal(int, object)` / `failed = Signal(int, str)`, `request_id`로 늦게 온 결과 폐기.
+
+**🔴 `MainWindow._active_workers`와 같은 방식으로 참조를 붙들어야 한다** — 한 자리에만 두면 다음 요청이 덮어쓰는 순간 실행 중인 QThread가 GC돼 앱이 통째로 죽는다(0xC0000409, Phase 6에서 실측·수정한 그 버그).
+
+### 배선 — `ui/main_window.py`, `ui/widgets/search_options.py`, `ui/state.py`
+- `SearchOptions`: 토글 활성화 + `ai_summary_changed` 시그널 추가. **sLM 미설치면 계속 비활성**, 툴팁을 "모델 관리에서 AI 요약 모델을 설치하세요"로 교체
+- `AppState`: `ai_summary_enabled: bool = False`(기본 OFF — PRD/DESIGN §1), `slm_profile: str` 필드 추가
+- `MainWindow`: 검색 성공 후 토글 ON이면 요약 시작 / 토글을 끄면 요약 카드 제거 / 토글을 켜면 마지막 결과로 즉시 생성 / `closeEvent`에서 `SlmService.shutdown()`
+- `ResultList`: `show_summary(state)` · `clear_summary()` — `insertWidget(0, ...)`으로 맨 위에 넣고, `_clear()`가 요약 카드도 함께 지우도록 한다
+
+---
+
+## 4. 모델 매니저 (T7.6~T7.10) — `ui/widgets/model_manager_dialog.py`
+
+현재 임베딩 섹션만 있고 sLM은 안내 문구 한 줄이다(`:38, :70-72`). 그 자리에 실제 섹션을 넣는다.
+
+> **제품이 제공하는 모델은 2종뿐이다.** `SLM_CANDIDATES` 4종은 Phase 6 **측정 하네스가 계속 참조**하므로(`scripts/benchmark_slm.py --models`) 그대로 두되, 제품 UI에 노출할 목록을 `SLM_OFFERED`(가칭)로 따로 뺀다:
+>
+> | 모델 | 제품 노출 | 근거 |
+> |---|---|---|
+> | `qwen3.5-4b` | ✅ 권장 사양 | 2026-08-10 채택 확정 |
+> | `exaone-4.0-1.2b` | ✅ 최소 사양 | "켠다면 이것" (PLAN §6-B) |
+> | `exaone-3.5-7.8b` | ❌ | 측정만 하고 Qwen에 밀려 탈락 — 노출하면 "메모리 때문에 Qwen을 골랐다"는 결정과 어긋나는 4.77GB 선택지를 다시 권하는 꼴 |
+> | `phi-4-mini` | ❌ | 준수율 문제로 전 사양 제외 |
+
+- **T7.6 sLM 섹션**: `_ModelRow`를 본떠 `_SlmRow`를 만든다 (`SlmProfile`은 `local_dir`이 아니라 `local_path`, 크기 표시 필요). 상태는 항상 실제 파일을 검사해 판정 — 하드코딩 금지(기존 주석 `:10-11`의 원칙)
+- **T7.7 다운로드 안내 팝업**: 링크·파일명·용량·**SHA256**·저장 위치. `SlmProfile`에 `sha256` 필드를 추가하고, **제품 노출 2종(qwen3.5-4b·exaone-4.0-1.2b)의 실제 해시를 이 PC의 파일에서 계산해 기록**한다(둘 다 이미 있다). 나머지 2종은 빈 값 → 검증 생략
+- **T7.8 폴더 열기**: 기존 `_open_folder()`(`:88-92`) 재사용
+- **T7.9 새로고침 검증**: 크기 검사는 즉시(기존 `download._verify()` 재사용), **SHA256은 GB 단위라 백그라운드 스레드**로 돌리고 진행 표시 — UI 블로킹 금지
+- **T7.10 사양별 모델**: 위 2종 매핑(권장=`qwen3.5-4b` / 최소=`exaone-4.0-1.2b`)을 `config/settings.py`에 두고 선택값은 `AppState`에 저장. 기본값은 **권장=Qwen3.5-4B**(이 PC 기준)
+
+---
+
+## 5. 테스트 (T7.11 포함)
+
+기존 3계층 패턴을 그대로 따른다:
+
+| 계층 | 방식 | 대상 |
+|---|---|---|
+| 순수 로직 | 모델·I/O 없음 | 1단계 필터, `expand_citations()`, `slm/verify.py` 겹침도, 문장 분리 |
+| 서비스 | `ThreadingHTTPServer` 스텁(`tests/test_slm_runtime.py:126-171`) + monkeypatch | `SlmService` 기동/재사용/**유휴 타임아웃 종료**/동시 호출 직렬화 |
+| UI | pytest-qt (`qtbot`, `findChild`) | 요약 카드 6개 상태, 토글 ON/OFF 흐름, `card_count()` 불변 확인 |
+| 종단 | `@pytest.mark.slow` + 모델/바이너리 없으면 skip | 실제 요약 1~2건 |
+
+**T7.11 회귀 테스트**: Phase 6 테스트셋(`data/slm_testset.json`, 26문항)을 **앱의 요약 경로(1~4단계 전부 통과)로** 돌려 Phase 6 순수 추론 결과(기권정확도 81.8% / 응답정확도 80.0%)와 대조한다. 안전장치가 정확도를 떨어뜨리지 않았는지, 특히 **Phase 6에서 지어냈던 객관식 2건을 4단계가 "확인 필요"로 잡아내는지**가 관전 포인트다.
+
+---
+
+## 6. 검증 (자동화 테스트만으로는 부족)
+
+Phase 4·5·6·10에서 **자동화 테스트를 전부 통과한 채로 남아 있던 버그를 실제 앱을 띄워서야 잡았다**(QSS 폴리시 타이밍, 신호 미수신, 겹친 검색 크래시, 인덱싱 후 닫기 `AttributeError`). 이번에도 실행 검증을 DoD로 취급한다:
+
+1. `./.venv/Scripts/python.exe -m pytest -q` — 기존 488 passed 유지 + 신규 통과
+2. 실제 앱 실행 후 육안 확인:
+   - 토글 OFF→ON 첫 요약 (서버 기동 4.7초 안내가 뜨는지)
+   - 연속 요약 (재기동 없이 바로 응답하는지)
+   - **5분 방치 후 서버가 실제로 내려가 메모리가 반환되는지** (작업 관리자로 확인)
+   - 요약 생성 중 다른 검색을 던져 겹치게 하기 (크래시·잔상 확인)
+   - 요약 생성 중/후 창 닫기 → **llama-server 고아 프로세스가 남지 않는지**
+   - 모델 미설치 상태에서 토글 (비활성 + 안내가 맞는지)
+3. `python -m scripts.benchmark_slm --rescore` 계열로 T7.11 회귀 수치 대조
+
+## 7. 문서 갱신 (Phase 완료 체크리스트)
+
+TASK T7.1~T7.11 체크박스, PLAN §7 실행 결과, CLAUDE.md 한 줄 요약, **DESIGN에 요약 카드 명세 신규 절**(지금 문서에 출력 영역 명세가 아예 없다). `python -m scripts.archive_plan --list`로 이 계획 원문 아카이브.
+
+**커밋은 이 PC에서 하지 않는다** — 저사양 PC에서 진행한다.
+
+---
+
 # Phase 6: sLM 후보군 실측 검증 구현 계획
 
 ## Context
