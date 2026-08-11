@@ -456,32 +456,17 @@ class TestMixedResultTypes:
         assert win.result_list.findChild(ImageCard) is not None
 
 
-class TestAiSummaryWiring:
-    """AI 요약 토글 배선 (T7.5).
+class TestAiChatWiring:
+    """AI 챗봇 토글 배선 (Phase 7.6, 2단 응답 구조).
 
     실제 sLM을 띄우지 않는다 — 서비스를 스텁으로 바꿔 **배선이 화면까지
     도달하는지**만 본다. T10.3에서 신호가 emit만 되고 받는 곳이 없어 아무
     반응도 없던 버그가 카드 단위 테스트를 다 통과한 채 남아 있었다.
+
+    1단계(즉시 발췌)는 `SearchWorker`만 쓰고 LLM을 부르지 않는다는 것,
+    2단계("AI 요약 보기")를 눌러야만 스텁의 `chat()`이 호출된다는 것도
+    함께 확인한다 — 이게 이번 설계가 은행 앱 수준 응답 속도를 지키는 방식.
     """
-
-    @staticmethod
-    def _grounded_results():
-        """유사도 0.8짜리 근거를 직접 만든다.
-
-        4건짜리 테스트 픽스처는 실제 유사도가 0.5(1단계 임계값) 아래라 그대로
-        쓰면 gate 1이 전부 막아 요약 배선을 지나가지 못한다. 임계값 자체는
-        `test_slm_summarize.py`가 따로 검증하므로, 여기서는 배선만 본다.
-        """
-        from search.hybrid_search import HybridResult
-        from indexer.fts5.search import SearchResult
-
-        result = SearchResult(
-            chunk_id="c1", doc_id="d1", file_path="x", file_name="사규.docx",
-            type=ChunkType.TEXT, page_or_slide=3,
-            content="계약서 검토 시 기준이 되는 조항은 손해배상, 계약 해지 조건이다",
-            caption="", score=-1.0,
-        )
-        return [HybridResult(result, 0.8, False)]
 
     @staticmethod
     def _stub_service(window, text="계약서 기준 조항입니다. [1]"):
@@ -508,55 +493,88 @@ class TestAiSummaryWiring:
         window._slm_service = stub
         return stub
 
+    @staticmethod
+    def _turn_on_chat(window):
+        window.sidebar.search_options.set_ai_summary_available(True)
+        window.sidebar.search_options.ai_summary.setChecked(True)
+        return window._chat_panel
+
     def test_toggle_is_off_by_default(self, window):
         """추출형 검색이 기본값이라는 원칙 (PRD/DESIGN §1, TECH 5.2)."""
         assert window.sidebar.search_options.is_ai_summary() is False
 
-    def test_no_summary_card_when_toggle_off(self, window, qtbot):
+    def test_toggle_on_replaces_cards_with_chat_panel(self, window, qtbot):
         self._stub_service(window)
         window.search_bar.set_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
-        assert window.result_list.has_summary() is False
 
-    def test_turning_toggle_on_summarizes_existing_results(self, window, qtbot):
-        """이미 결과가 떠 있으면 재검색 없이 바로 요약해야 한다."""
-        stub = self._stub_service(window)
+        self._turn_on_chat(window)
+
+        assert window._chat_panel is not None
+        assert window.result_list.card_count() == 0
+
+    def test_toggle_on_auto_sends_last_query_as_first_message(self, window, qtbot):
+        self._stub_service(window)
         window.search_bar.set_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
-        window._last_results = self._grounded_results()
 
-        window.sidebar.search_options.set_ai_summary_available(True)
-        window.sidebar.search_options.ai_summary.setChecked(True)
+        panel = self._turn_on_chat(window)
 
-        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+        assert panel.turn_count() == 1
         qtbot.waitUntil(
-            lambda: "계약서" in window.result_list.summary_card().body_text(),
+            lambda: panel.bubble_for(1).excerpt_text() not in ("", "검색하는 중…"),
             timeout=SEARCH_TIMEOUT_MS,
         )
-        assert window.result_list.card_count() > 0  # 결과 카드는 그대로
 
-    def test_turning_toggle_off_removes_the_card(self, window, qtbot):
+    def test_message_shows_excerpt_without_calling_the_llm(self, window, qtbot):
+        """1단계는 검색만 한다 — sLM은 아직 호출되면 안 된다."""
         stub = self._stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(
+            lambda: bubble.excerpt_text() not in ("", "검색하는 중…"), timeout=SEARCH_TIMEOUT_MS
+        )
+
+        assert stub.calls == 0
+
+    def test_summarize_button_triggers_llm_and_shows_summary(self, window, qtbot):
+        """② AI 요약 — ①이 이미 받은 결과를 그대로 넘겨 검색을 다시 하지 않는다."""
+        stub = self._stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+
+        bubble._summarize_button.click()
+
+        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+        qtbot.waitUntil(lambda: "계약서" in bubble.summary_text(), timeout=SEARCH_TIMEOUT_MS)
+
+    def test_toggle_off_restores_result_cards(self, window, qtbot):
+        self._stub_service(window)
         window.search_bar.set_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
-        window._last_results = self._grounded_results()
+        before = window.result_list.card_count()
 
-        window.sidebar.search_options.set_ai_summary_available(True)
-        window.sidebar.search_options.ai_summary.setChecked(True)
-        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+        self._turn_on_chat(window)
+        assert window._chat_panel is not None
 
         window.sidebar.search_options.ai_summary.setChecked(False)
-        assert window.result_list.has_summary() is False
+
+        assert window._chat_panel is None
+        assert window.result_list.card_count() == before
 
     def test_toggle_state_is_persisted(self, window):
-        window.sidebar.search_options.set_ai_summary_available(True)
-        window.sidebar.search_options.ai_summary.setChecked(True)
-        assert window.state.ai_summary_enabled is True
+        self._turn_on_chat(window)
+        assert window.state.ai_chat_enabled is True
 
         reloaded = AppState.load(path=window.state._path)
-        assert reloaded.ai_summary_enabled is True
+        assert reloaded.ai_chat_enabled is True
 
-    def test_summary_failure_reaches_the_card(self, window, qtbot):
+    def test_summary_failure_reaches_the_bubble(self, window, qtbot):
         """실패가 화면에 도달하는지 — 신호만 나가고 끝나면 사용자는 멈춘 줄 안다."""
         class _Failing:
             def is_available(self):
@@ -572,17 +590,44 @@ class TestAiSummaryWiring:
                 pass
 
         window._slm_service = _Failing()
-        window.search_bar.set_text("계약서")
-        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
-        window._last_results = self._grounded_results()
+        panel = self._turn_on_chat(window)
 
-        window.sidebar.search_options.set_ai_summary_available(True)
-        window.sidebar.search_options.ai_summary.setChecked(True)
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
 
-        qtbot.waitUntil(
-            lambda: "서버 기동 실패" in window.result_list.summary_card().body_text(),
-            timeout=SEARCH_TIMEOUT_MS,
-        )
+        bubble._summarize_button.click()
+
+        qtbot.waitUntil(lambda: "서버 기동 실패" in bubble.summary_text(), timeout=SEARCH_TIMEOUT_MS)
+
+    def test_multiple_turns_do_not_drop_running_workers(self, window, qtbot):
+        """검색 워커와 같은 이유로 여러 턴이 겹쳐도 GC 크래시가 없어야 한다
+        (0xC0000409류, `TestEndToEndSearch.test_second_search_does_not_drop_running_worker`와 같은 계열)."""
+        import gc
+
+        self._stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서")
+        panel.send_message("리눅스")
+
+        assert len(window._active_workers) >= 1
+        gc.collect()
+        assert all(isinstance(w.isRunning(), bool) for w in window._active_workers)
+
+        qtbot.waitUntil(lambda: not window._active_workers, timeout=SEARCH_TIMEOUT_MS)
+        assert panel.turn_count() == 2
+
+    def test_open_button_click_does_not_raise(self, window, qtbot):
+        """존재하지 않는 파일 경로라 열기는 실패하지만, 신호로 안전하게 처리돼야 한다."""
+        self._stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+
+        bubble._open_button.click()  # 예외가 나지 않아야 한다
 
     def test_close_shuts_down_the_slm_server(self, window):
         """🔴 안 내리면 4.8GB짜리 프로세스가 고아로 남는다."""
@@ -603,3 +648,52 @@ class TestAiSummaryWiring:
         window._slm_service = tracker
         window.close()
         assert tracker.shutdown_called is True
+
+
+class TestChatSearchProfileRegression:
+    """🔴 T10.9 재발 방지 — 챗봇 경로도 `SearchWorker`를 그대로 쓰므로 같은
+    버그(embedder=만 넘기고 profile= 누락 → 벡터 차원 불일치 → similarity가
+    전부 None)를 물려받을 수 있다. `tests/test_ui_search_worker.py`가 이미
+    `SearchWorker` 자체를 단위로 검증하지만, 여기서는 `MainWindow`의 챗봇
+    배선(`_on_chat_message_sent`)이 실제로 그 경로를 타는지까지 확인한다."""
+
+    def test_chat_message_with_heavy_embedder_yields_real_similarity(self, qtbot, tmp_path, heavy_embedder):
+        from indexer.fts5.schema import connect
+        from indexer.fts5.store import store_document
+        from indexer.vector.store import embed_missing
+        from parser.schema import Chunk, ChunkType, ParsedDocument
+
+        db_path = tmp_path / "heavy.sqlite3"
+        conn = connect(db_path)
+        document = ParsedDocument(doc_id="d1", file_path="x", file_name="사규.docx", title="사규")
+        document.chunks = [
+            Chunk(
+                chunk_id="c1", doc_id="d1", file_path="x", file_name="사규.docx",
+                type=ChunkType.TEXT, page_or_slide=1,
+                content="계약서 검토 시 기준이 되는 조항은 손해배상과 계약 해지 조건이다",
+            ),
+        ]
+        store_document(conn, document, count_tokens=heavy_embedder.count_tokens)
+        embed_missing(conn, heavy_embedder)
+        conn.close()
+
+        from config.settings import HEAVY
+
+        # `state.model_profile`을 HEAVY로 두고 실제 워밍업 경로(백그라운드
+        # 스레드)를 그대로 태운다 — 워밍업 스레드가 나중에 끝나 `_embedder`를
+        # 직접 대입한 값 위에 덮어쓰는 경합을 피한다(실측으로 확인).
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = HEAVY.key
+        win = MainWindow(db_path=db_path, state=state)
+        qtbot.addWidget(win)
+        qtbot.waitUntil(lambda: win._embedder is not None, timeout=SEARCH_TIMEOUT_MS)
+
+        win.sidebar.search_options.set_ai_summary_available(True)
+        win.sidebar.search_options.ai_summary.setChecked(True)
+        panel = win._chat_panel
+
+        panel.send_message("계약서 손해배상")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+
+        assert bubble.results[0].similarity is not None

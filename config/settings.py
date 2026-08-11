@@ -1,6 +1,6 @@
 """사양별 모델 프로파일과 검색 상수 (T3.7).
 
-TECH 8장의 "설정 파일로 경량/고성능 모드를 토글하는 단일 코드베이스" 요구를
+TECH 8장의 "설정 파일로 경량/권장 모드를 토글하는 단일 코드베이스" 요구를
 구현한다. 모든 경로는 **프로젝트 루트 기준 상대 경로**로 계산해 TECH 9.1의
 포터블 원칙(폴더 통째로 옮겨도 동작)을 지킨다.
 """
@@ -76,7 +76,7 @@ LIGHT = ModelProfile(
     pooling="mean",  # jhgan/ko-sroberta-multitask의 modules.json 기준
 )
 
-# 고성능 모드 (권장 사양 16GB)
+# 권장 모드 (권장 사양 16GB) — 이전 이름 "고성능 모드" [2026-08-11 이름 변경]
 #
 # KURE-v1은 ONNX를 제공하지 않는다(safetensors만) — Phase 7.5에서 우리가 직접
 # 변환한다(`scripts/convert_kure.py`). 커뮤니티 재업로드본이 있지만 변환 품질을
@@ -93,7 +93,7 @@ LIGHT = ModelProfile(
 # 기준이라 실제 파일 크기가 아니다 — 기존 문서의 2.27GB가 맞다.
 HEAVY = ModelProfile(
     key="KURE-v1",
-    label="고성능 모드 (권장 사양)",
+    label="권장 모드 (권장 사양)",
     repo_id="nlpai-lab/KURE-v1",
     onnx_file="onnx/model_int8.onnx",
     dim=1024,

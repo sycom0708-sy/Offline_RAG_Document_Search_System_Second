@@ -10,9 +10,9 @@ from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from parser.schema import ChunkType
 from search.hybrid_search import HybridResult
+from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.image_card import ImageCard
 from ui.widgets.result_card import ResultCard
-from ui.widgets.summary_card import SummaryCard
 from ui.widgets.table_card import TableCard
 
 INITIAL_MESSAGE = "검색어를 입력해 문서를 찾아보세요."
@@ -42,21 +42,16 @@ class ResultList(QScrollArea):
         self._layout.addStretch()
         self.setWidget(self._container)
 
-        # 요약 카드는 결과와 수명이 다르다 — 검색 결과를 새로 그려도 요약은
-        # 이어서 갱신되므로, `_clear()`가 쓸어가지 않도록 참조를 따로 든다.
-        self._summary_card: SummaryCard | None = None
-
         self.show_initial()
 
     def _clear(self) -> None:
-        """이전 카드·메시지를 치운다.
+        """이전 카드·메시지·챗봇 패널을 치운다.
 
         `deleteLater()`만 부르면 실제 파괴는 다음 이벤트 루프까지 미뤄져,
         그 사이엔 같은 objectName의 이전 위젯이 `findChild` 등으로 여전히
         붙잡힌다(실측 확인). `setParent(None)`으로 자식 트리에서 즉시
         떼어낸 뒤 파괴를 예약한다.
         """
-        self._summary_card = None
         while self._layout.count() > 1:  # 마지막 stretch는 남긴다
             item = self._layout.takeAt(0)
             widget = item.widget()
@@ -102,38 +97,23 @@ class ResultList(QScrollArea):
             card.open_failed.connect(self.open_failed)
             self._layout.insertWidget(self._layout.count() - 1, card)
 
-    # --- AI 요약 (T7.5) --------------------------------------------------
+    # --- AI 챗봇 (Phase 7.6) ----------------------------------------------
 
-    def summary_card(self) -> SummaryCard:
-        """요약 카드를 맨 위에 붙이고 돌려준다. 이미 있으면 그것을 재사용한다.
+    def show_chat_mode(self, panel: ChatPanel) -> None:
+        """검색 결과 영역 전체를 챗봇 패널로 채운다 ("AI 챗봇 사용" 토글 ON).
 
-        검색 결과 카드들 **위**(index 0)에 둔다 — 요약과 그 근거를 한 화면에서
-        위아래로 대조할 수 있어야 한다(TECH 5.3의 검증 가능 구조).
+        카드 목록·안내 메시지와 같은 "특수 상태" 취급이다 — `_clear()`가
+        이전 내용을 치우고 이 패널 하나로 채운다. 토글 OFF로 `show_results()`가
+        다시 불리면 `_clear()`를 거쳐 이 패널도 함께 걷힌다(잔상 없음).
         """
-        if self._summary_card is None:
-            card = SummaryCard()
-            self._layout.insertWidget(0, card)
-            self._summary_card = card
-        return self._summary_card
-
-    def clear_summary(self) -> None:
-        """요약 카드를 걷어낸다 (토글 OFF 등). 결과 카드는 그대로 둔다."""
-        if self._summary_card is None:
-            return
-        self._layout.removeWidget(self._summary_card)
-        self._summary_card.setParent(None)
-        self._summary_card.deleteLater()
-        self._summary_card = None
-
-    def has_summary(self) -> bool:
-        return self._summary_card is not None
+        self._clear()
+        self._layout.insertWidget(0, panel)
 
     def card_count(self) -> int:
         """텍스트/표/이미지 세 카드 타입 모두 `objectName("ResultCard")`를
         공유한다(DESIGN §5.1 공통 프레임) — 타입별 isinstance 대신 이걸로 센다.
 
-        요약 카드는 `objectName("AiSummaryCard")`라 여기 잡히지 않는다 —
-        "검색 결과 N건"이 요약 때문에 1 늘어나면 안 된다."""
+        챗봇 패널은 `objectName("ChatPanel")`이라 여기 잡히지 않는다."""
         return sum(
             1
             for i in range(self._layout.count())

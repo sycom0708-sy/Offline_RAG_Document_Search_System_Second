@@ -24,9 +24,13 @@ DB_PATH = DATA_DIR / "index.sqlite3"
 class AppState:
     target_folder: str | None = None
     model_profile: str = LIGHT.key
-    # AI 요약은 **기본 OFF**다 — 추출형 검색이 기본값이라는 설계 원칙
+    # AI 챗봇은 **기본 OFF**다 — 추출형 검색이 기본값이라는 설계 원칙
     # (PRD/DESIGN §1, TECH 5.2)이고, 명시적으로 켜야 하는 옵션이다.
-    ai_summary_enabled: bool = False
+    # Phase 7.6에서 `ai_summary_enabled`(자동 1회 요약)를 `ai_chat_enabled`
+    # (챗봇 모드)로 리네임했다. 필드명이 바뀌어도 별도 마이그레이션은
+    # 필요 없다 — `_load_raw()`가 미지 키를 걸러내므로 옛 값은 조용히
+    # 기본값(False)으로 시작한다.
+    ai_chat_enabled: bool = False
     slm_profile: str = DEFAULT_SLM_PROFILE
 
     def __post_init__(self) -> None:

@@ -73,6 +73,19 @@ QMainWindow, #CentralWidget {
     background: #FFFFFF;
 }
 
+/* 콤보 우측 하단 "모델 관리" — #StatusBarFolderButton과 같은 링크 스타일 */
+#PerformanceComboManageButton {
+    border: none;
+    background: transparent;
+    color: #2563EB;
+    font-size: 12px;
+    padding: 2px 0;
+}
+
+#PerformanceComboManageButton:hover {
+    text-decoration: underline;
+}
+
 /* ---------- 결과 리스트 / 카드 (§5) ---------- */
 
 #ResultList {
@@ -188,6 +201,65 @@ QMainWindow, #CentralWidget {
 
 #ResultCardCopyButton:hover {
     text-decoration: underline;
+}
+
+/* ---------- AI 챗봇 패널 (Phase 7.6) ----------
+   결과 카드·AI 요약 카드와 같은 토큰을 쓴다. 새 색을 만들지 않고
+   #ChatAnswerBubble은 #AiSummaryCard보다 옅은 배경으로 "아직 AI가
+   생성한 게 아니라 검색으로 찾은 원문"이라는 걸 구분한다. */
+#ChatTranscript {
+    background: #F7F8F9;
+    border: none;
+}
+
+#ChatUserMessage {
+    background: #2563EB;
+    color: #FFFFFF;
+    font-size: 14px;
+    border-radius: 8px;
+    padding: 8px 12px;
+}
+
+#ChatAnswerBubble {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+}
+
+#ChatExcerptBody {
+    color: #1F2937;
+    font-size: 14px;
+}
+
+#ChatExcerptSource {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+
+#ChatInput {
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 14px;
+    color: #1F2937;
+    background: #FFFFFF;
+}
+
+#ChatInput:focus {
+    border-color: #2563EB;
+}
+
+#ChatSendButton {
+    background: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 14px;
+}
+
+#ChatSendButton:hover {
+    background: #1D4ED8;
 }
 
 /* 표 카드 (§5.4) */

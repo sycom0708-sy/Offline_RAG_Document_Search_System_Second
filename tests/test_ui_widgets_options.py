@@ -127,6 +127,27 @@ class TestPerformanceCombo:
         assert widget.current_profile() == LIGHT.key  # 되돌아감
         assert widget._combo.currentData() == LIGHT.key
 
+    def test_manage_button_requests_model_manager_for_current_profile(self, qtbot):
+        """미설치 옵션을 고를 때뿐 아니라, 이미 다 설치된 상태에서도 관리 화면을 열 수 있어야 한다."""
+        widget = PerformanceCombo()
+        qtbot.addWidget(widget)
+        requested = []
+        widget.model_manager_requested.connect(requested.append)
+
+        widget._manage_button.click()
+
+        assert requested == [widget.current_profile()]
+
+    def test_manage_button_does_not_change_selection(self, qtbot):
+        """관리 버튼은 조회용 진입점일 뿐 — 누른다고 콤보 선택이 바뀌면 안 된다."""
+        widget = PerformanceCombo()
+        qtbot.addWidget(widget)
+        before = widget.current_profile()
+
+        widget._manage_button.click()
+
+        assert widget.current_profile() == before
+
     def test_refresh_updates_badges(self, qtbot, monkeypatch):
         widget = PerformanceCombo()
         qtbot.addWidget(widget)
@@ -208,7 +229,7 @@ class TestModelManagerDialog:
         assert "최소 사양" in dialog.slm_rows[SLM_MINIMUM]._note.text()
 
     def test_slm_download_button_is_enabled(self, qtbot):
-        """임베딩 고성능과 달리 sLM은 다운로드 안내가 실제로 동작한다."""
+        """임베딩 권장과 달리 sLM은 다운로드 안내가 실제로 동작한다."""
         dialog = ModelManagerDialog(verify_checksums=False)
         qtbot.addWidget(dialog)
         assert dialog.slm_rows[SLM_RECOMMENDED]._download_btn.isEnabled() is True

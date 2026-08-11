@@ -2,7 +2,7 @@
 
 `jhgan/ko-sroberta-multitask`(경량)는 레포가 int8 ONNX를 직접 배포해 변환이
 필요 없었지만(Phase 3), `nlpai-lab/KURE-v1`은 safetensors만 제공한다. 그래서
-고성능 모드는 Phase 3부터 "준비 중"으로 막혀 있었고, 이 스크립트가 그것을 푼다.
+권장 모드는 Phase 3부터 "준비 중"으로 막혀 있었고, 이 스크립트가 그것을 푼다.
 
 ## 🔴 이 스크립트는 런타임이 아니다
 

@@ -144,11 +144,11 @@ def test_two_models_coexist_for_the_same_chunk(db):
     ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks")]
 
     store_vectors(db, ids, _vectors(len(ids)), "경량-모델")
-    store_vectors(db, ids, _vectors(len(ids), dim=1024), "고성능-모델")
+    store_vectors(db, ids, _vectors(len(ids), dim=1024), "권장-모델")
 
-    assert vector_stats(db) == {"경량-모델": len(ids), "고성능-모델": len(ids)}
+    assert vector_stats(db) == {"경량-모델": len(ids), "권장-모델": len(ids)}
     assert fetch_vectors(db, ids, "경량-모델") != {}
-    assert fetch_vectors(db, ids, "고성능-모델") != {}
+    assert fetch_vectors(db, ids, "권장-모델") != {}
 
 
 def test_switching_model_does_not_require_full_reindex(db):
@@ -156,7 +156,7 @@ def test_switching_model_does_not_require_full_reindex(db):
     ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks")]
     store_vectors(db, ids, _vectors(len(ids)), "경량-모델")
 
-    store_vectors(db, ids, _vectors(len(ids), dim=1024), "고성능-모델")
+    store_vectors(db, ids, _vectors(len(ids), dim=1024), "권장-모델")
 
     # 경량 모드로 돌아가도 이미 만들어둔 벡터가 살아 있어야 한다.
     assert missing_chunk_ids(db, "경량-모델") == []

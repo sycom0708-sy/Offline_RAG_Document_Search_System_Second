@@ -52,7 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
 --
 -- 🔴 기본키는 (chunk_id, model) 복합키다 — chunk_id 단독이 아니다.
 -- Phase 7.5에서 KURE-v1로 실제 재인덱싱을 해보고서야 드러난 버그였다:
--- chunk_id 단독 PK였을 때는 청크당 벡터를 하나만 가질 수 있어서, 경량↔고성능
+-- chunk_id 단독 PK였을 때는 청크당 벡터를 하나만 가질 수 있어서, 경량↔권장
 -- 모드를 전환할 때마다 INSERT OR REPLACE가 **이전 모델의 벡터를 지우고
 -- 덮어썼다**. 두 모델 벡터가 공존해야 한다는 Phase 3 설계 의도(모델별 재순위
 -- 비교, 모드 전환 시 재인덱싱 없이 유지)가 스키마 수준에서 애초에 성립하지

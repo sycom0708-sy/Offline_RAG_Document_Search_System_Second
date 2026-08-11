@@ -104,7 +104,7 @@ def test_chunk_vectors_pk_migrates_from_legacy_single_column(tmp_path):
 
     `CREATE TABLE IF NOT EXISTS`는 이미 만들어진 테이블을 바꾸지 않으므로,
     이 마이그레이션이 없으면 기존 사용자의 DB는 영원히 "모델 하나만 저장
-    가능한" 구버전 스키마에 머문다 — 고성능 모드로 전환하는 순간부터 다시
+    가능한" 구버전 스키마에 머문다 — 권장 모드로 전환하는 순간부터 다시
     조용히 벡터가 사라지는 버그가 재발한다.
     """
     db_path = tmp_path / "index.sqlite3"

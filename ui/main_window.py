@@ -21,6 +21,7 @@ from slm.service import SlmService
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
 from ui.summary_worker import SummaryWorker
+from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.folder_dialog import FolderDialog
 from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.model_manager_dialog import ModelManagerDialog
@@ -78,19 +79,25 @@ class MainWindow(QMainWindow):
         self._indexing_thread: IndexingThread | None = None
         self._indexing_progress_dialog: IndexingProgressDialog | None = None
 
-        # AI 요약 (Phase 7). 서버는 첫 요청 때 올라오고 유휴 5분이면 스스로
-        # 내려간다 — 여기서 만드는 것은 관리 객체일 뿐 프로세스가 아니다.
+        # AI 챗봇 (Phase 7.6, 옛 "AI 요약" 기능을 대체). 서버는 첫 요청 때
+        # 올라오고 유휴 5분이면 스스로 내려간다 — 여기서 만드는 것은 관리
+        # 객체일 뿐 프로세스가 아니다.
         self._slm_service = SlmService(self.state.slm_profile)
-        self._summary_seq = 0
         # 검색 워커와 같은 이유로 **실행 중인 요약 워커를 전부 붙들어야 한다** —
         # 참조를 잃으면 실행 중인 QThread가 GC되며 앱이 통째로 죽는다.
         self._active_summary_workers: set[SummaryWorker] = set()
+        # 챗봇 모드가 켜져 있을 때만 값이 있다 — 결과 영역을 누가 갖고 있는지
+        # (카드 목록 vs 이 패널) 판단하는 기준이다.
+        self._chat_panel: ChatPanel | None = None
+        # summarize_requested 신호가 (request_id, results)만 실어 보내 질문
+        # 원문이 없다 — message_sent 때 미리 적어 두고 SummaryWorker에 넘길 때 쓴다.
+        self._chat_questions: dict[int, str] = {}
 
         self._build_ui()
         self._wire_signals()
         self._refresh_format_filter_options()
         self._refresh_status_bar()
-        self._refresh_ai_summary_availability()
+        self._refresh_ai_chat_availability()
         self._start_embedder_warmup()
 
     # --- UI 구성 --------------------------------------------------
@@ -124,7 +131,7 @@ class MainWindow(QMainWindow):
         self.sidebar.format_filter.selection_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.case_sensitive_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.exact_word_changed.connect(self._on_filters_changed)
-        self.sidebar.search_options.ai_summary_changed.connect(self._on_ai_summary_toggled)
+        self.sidebar.search_options.ai_summary_changed.connect(self._on_ai_chat_toggled)
 
         self.sidebar.performance_combo.profile_activated.connect(self._on_profile_activated)
         self.sidebar.performance_combo.model_manager_requested.connect(self._open_model_manager)
@@ -194,74 +201,129 @@ class MainWindow(QMainWindow):
         exact_word = self.sidebar.search_options.is_exact_word()
         self.result_list.show_results(results, self._last_query, case_sensitive, exact_word)
 
-        if self.sidebar.search_options.is_ai_summary():
-            self._start_summary()
-
     def _on_search_failed(self, request_id: int, message: str) -> None:
         if request_id != self._request_seq:
             return
         self.result_list.show_error(message)
 
-    # --- AI 요약 (T7.5) --------------------------------------------------
+    # --- AI 챗봇 (Phase 7.6) ----------------------------------------------
+    #
+    # 2단 응답 구조: ① 메시지를 보내면 SearchWorker(무수정)로 즉시 발췌를
+    # 보여준다(LLM 미사용, 검색 지연 7~14ms). ② 그 턴의 "AI 요약 보기"를
+    # 누르면 그때 받은 결과를 그대로 SummaryWorker(무수정)에 넘긴다 —
+    # 검색을 다시 하지 않는다. 카드 목록 경로(_run_search 등)는 무수정이다.
 
-    def _refresh_ai_summary_availability(self) -> None:
+    def _refresh_ai_chat_availability(self) -> None:
         """모델·실행 바이너리가 모두 있어야 토글을 연다."""
         available = self._slm_service.is_available()
         self.sidebar.search_options.set_ai_summary_available(available)
         if available:
-            self.sidebar.search_options.set_ai_summary(self.state.ai_summary_enabled)
+            self.sidebar.search_options.set_ai_summary(self.state.ai_chat_enabled)
 
-    def _on_ai_summary_toggled(self, enabled: bool) -> None:
-        self.state.ai_summary_enabled = enabled
+    def _on_ai_chat_toggled(self, enabled: bool) -> None:
+        self.state.ai_chat_enabled = enabled
         self.state.save()
 
-        if not enabled:
-            # 켜져 있던 요약을 걷어낸다. 진행 중인 워커는 request_id가 어긋나
-            # 결과가 버려지므로 따로 중단시킬 필요가 없다.
-            self._summary_seq += 1
-            self.result_list.clear_summary()
+        if enabled:
+            self._activate_chat_mode()
+        else:
+            self._deactivate_chat_mode()
+
+    def _activate_chat_mode(self) -> None:
+        panel = ChatPanel()
+        panel.message_sent.connect(self._on_chat_message_sent)
+        panel.summarize_requested.connect(self._on_chat_summarize_requested)
+        panel.open_failed.connect(self._on_open_failed)
+        self._chat_panel = panel
+        self.result_list.show_chat_mode(panel)
+
+        # 검색어가 이미 있으면(상단 검색바에 입력해 둔 상태) 그대로 첫
+        # 메시지로 자동 전송한다 — 패널이 빈 채로 뜨면 토글이 안 먹는
+        # 것처럼 보인다.
+        if self._last_query:
+            panel.send_message(self._last_query)
+
+    def _deactivate_chat_mode(self) -> None:
+        self._chat_panel = None
+        self._render_current_results()
+
+    def _render_current_results(self) -> None:
+        """챗봇 모드를 벗어날 때 결과 영역을 카드 목록으로 되돌린다."""
+        if not self._last_query:
+            self.result_list.show_initial()
             return
+        if not self._last_results:
+            self.result_list.show_empty(self._empty_result_hint())
+            return
+        case_sensitive = self.sidebar.search_options.is_case_sensitive()
+        exact_word = self.sidebar.search_options.is_exact_word()
+        self.result_list.show_results(self._last_results, self._last_query, case_sensitive, exact_word)
 
-        # 이미 결과가 떠 있으면 곧바로 요약한다 — 검색을 다시 하게 만들면
-        # 토글이 안 먹는 것처럼 보인다.
-        if self._last_results:
-            self._start_summary()
+    def _on_chat_message_sent(self, request_id: int, question: str) -> None:
+        """① 즉시 발췌 — 기존 `SearchWorker`를 무수정으로 그대로 쓴다.
 
-    def _start_summary(self) -> None:
-        self._summary_seq += 1
-        request_id = self._summary_seq
+        `SearchWorker._search()`가 이미 `embedder.profile`을 함께 넘긴다
+        (T10.9 재발 방지) — 여기서 따로 챙길 게 없다.
+        """
+        self._chat_questions[request_id] = question
 
-        card = self.result_list.summary_card()
-        card.show_generating()
+        case_sensitive = self.sidebar.search_options.is_case_sensitive()
+        exact_word = self.sidebar.search_options.is_exact_word()
+        extensions = self.sidebar.format_filter.selected_extensions()
 
-        worker = SummaryWorker(
-            self._last_query,
-            self._last_results,
-            self._slm_service,
+        worker = SearchWorker(
+            self.db_path,
+            question,
             request_id,
+            embedder=self._embedder,
+            case_sensitive=case_sensitive,
+            exact_word=exact_word,
+            extensions=extensions,
         )
-        worker.started_loading.connect(self._on_summary_loading)
-        worker.succeeded.connect(self._on_summary_succeeded)
-        worker.failed.connect(self._on_summary_failed)
+        worker.succeeded.connect(self._on_chat_search_succeeded)
+        worker.failed.connect(self._on_chat_search_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda w=worker: self._active_workers.discard(w))
+        self._active_workers.add(worker)
+        worker.start()
+
+    def _on_chat_search_succeeded(self, request_id: int, results: list) -> None:
+        # 턴마다 독립이라 "더 최신 질의가 왔으니 버린다" 판단이 필요 없다 —
+        # ChatPanel이 request_id로 그 턴의 말풍선을 찾아 그리기만 한다.
+        if self._chat_panel is not None:
+            self._chat_panel.show_excerpt(request_id, results)
+
+    def _on_chat_search_failed(self, request_id: int, message: str) -> None:
+        if self._chat_panel is not None:
+            self._chat_panel.show_search_error(request_id, message)
+
+    def _on_chat_summarize_requested(self, request_id: int, results: list) -> None:
+        """② AI 요약 — 그 턴이 ①에서 이미 받은 `results`를 그대로 넘긴다
+        (검색을 다시 하지 않는다). `SummaryWorker`도 무수정."""
+        if self._chat_panel is not None:
+            self._chat_panel.show_summary_generating(request_id)
+
+        question = self._chat_questions.get(request_id, "")
+        worker = SummaryWorker(question, results, self._slm_service, request_id)
+        worker.started_loading.connect(self._on_chat_summary_loading)
+        worker.succeeded.connect(self._on_chat_summary_succeeded)
+        worker.failed.connect(self._on_chat_summary_failed)
         worker.finished.connect(worker.deleteLater)
         worker.finished.connect(lambda w=worker: self._active_summary_workers.discard(w))
         self._active_summary_workers.add(worker)
         worker.start()
 
-    def _on_summary_loading(self, request_id: int) -> None:
-        if request_id != self._summary_seq or not self.result_list.has_summary():
-            return
-        self.result_list.summary_card().show_starting()
+    def _on_chat_summary_loading(self, request_id: int) -> None:
+        if self._chat_panel is not None:
+            self._chat_panel.show_summary_starting(request_id)
 
-    def _on_summary_succeeded(self, request_id: int, summary) -> None:
-        if request_id != self._summary_seq or not self.result_list.has_summary():
-            return
-        self.result_list.summary_card().show_summary(summary)
+    def _on_chat_summary_succeeded(self, request_id: int, summary) -> None:
+        if self._chat_panel is not None:
+            self._chat_panel.show_summary(request_id, summary)
 
-    def _on_summary_failed(self, request_id: int, message: str) -> None:
-        if request_id != self._summary_seq or not self.result_list.has_summary():
-            return
-        self.result_list.summary_card().show_error(message)
+    def _on_chat_summary_failed(self, request_id: int, message: str) -> None:
+        if self._chat_panel is not None:
+            self._chat_panel.show_summary_error(request_id, message)
 
     def _on_open_failed(self, message: str) -> None:
         """"원문 열기" 실패를 사용자에게 보여준다.
@@ -347,8 +409,8 @@ class MainWindow(QMainWindow):
         dialog = ModelManagerDialog(focus_profile=focus_profile, parent=self)
         dialog.exec()
         self.sidebar.performance_combo.refresh()
-        # sLM을 새로 넣었거나 지웠을 수 있다 — AI 요약 토글을 다시 판정한다.
-        self._refresh_ai_summary_availability()
+        # sLM을 새로 넣었거나 지웠을 수 있다 — AI 챗봇 토글을 다시 판정한다.
+        self._refresh_ai_chat_availability()
 
     # --- 폴더 관리 / 인덱싱 --------------------------------------------------
 

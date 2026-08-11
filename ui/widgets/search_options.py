@@ -1,9 +1,14 @@
-"""검색 옵션 3토글 (T4.7~T4.9, T7.5).
+"""검색 옵션 3토글 (T4.7~T4.9, T7.5, T7.6).
 
 DESIGN §4.2 남은 결정 #3은 Phase 4~6 동안 "AI 요약 보기"를 비활성 + "Phase
 7에서 지원 예정" 툴팁으로 두기로 했었다(PLAN §4-B ⑤). Phase 7에서 실제
 동작으로 바꾸되, **모델이 없으면 계속 비활성**이다 — 켰는데 매번 "모델이
 없습니다"만 뜨는 것은 그때 피하려던 "고장처럼 보이는 상황" 그대로다.
+
+Phase 7.6에서 "AI 요약 보기"(검색마다 자동 1회 요약)를 "AI 챗봇 사용"으로
+교체했다 — 라벨·툴팁만 바뀌고 내부 시그널/메서드 이름(`ai_summary_changed`
+등)은 그대로 둔다(호출부 변경을 최소화하기 위한 의도적 선택, PLAN Phase
+7.6 참고).
 """
 
 from __future__ import annotations
@@ -14,9 +19,9 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 from ui.widgets.toggle_switch import ToggleSwitch
 
 SECTION_LABEL = "검색 옵션"
-AI_SUMMARY_TOOLTIP = "검색 결과를 근거로 AI가 답변을 요약합니다 (문서에 없으면 답하지 않습니다)"
+AI_SUMMARY_TOOLTIP = "검색 결과를 근거로 AI 챗봇과 대화합니다 (문서에 없으면 답하지 않습니다)"
 AI_SUMMARY_UNAVAILABLE_TOOLTIP = (
-    "AI 요약 모델이 설치되지 않았습니다. 모델 관리에서 다운로드 안내를 확인하세요."
+    "AI 챗봇 모델이 설치되지 않았습니다. 모델 관리에서 다운로드 안내를 확인하세요."
 )
 
 
@@ -35,7 +40,7 @@ class SearchOptions(QWidget):
         label.setObjectName("SidebarSectionLabel")
         layout.addWidget(label)
 
-        self.ai_summary = ToggleSwitch("AI 요약 보기")
+        self.ai_summary = ToggleSwitch("AI 챗봇 사용")
         self.ai_summary.toggled.connect(self.ai_summary_changed.emit)
         layout.addWidget(self.ai_summary)
         self.set_ai_summary_available(False)  # 실제 설치 여부는 MainWindow가 알려준다
