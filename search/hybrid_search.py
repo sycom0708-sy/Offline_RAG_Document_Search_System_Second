@@ -5,6 +5,10 @@ TECH 5.1의 설계를 그대로 따른다:
     1단계  키워드 필터(BM25, FTS5)로 후보군을 즉시 좁힌다
     2단계  그 후보 **안에서만** 코사인 유사도를 직접 계산해 재순위한다
 
+2단계 정렬은 유사도만 보지 않는다 — **검색어를 더 많이 포함한 청크가 먼저**
+온다(`_rerank` 참고, 2026-08-11). 유사도만으로 세우면 사용자가 입력한 단어를
+전부 담은 청크가 한 단어만 담은 청크에 밀리는 일이 실제로 있었다.
+
 ANN(근사 최근접 탐색)을 쓰지 않는 것이 핵심이다. 전체 벡터를 뒤지지 않고 이미
 좁혀진 후보만 보므로, 인덱스 구조 없이 내적 한 번이면 끝난다(벡터는 저장할 때
 L2 정규화해두었다).
@@ -24,7 +28,11 @@ from config.settings import (
     ModelProfile,
     get_profile,
 )
-from indexer.fts5.search import SearchResult, search as keyword_search
+from indexer.fts5.search import (
+    SearchResult,
+    query_term_variants,
+    search as keyword_search,
+)
 from indexer.vector.store import fetch_vectors
 
 
@@ -35,6 +43,15 @@ class HybridResult:
     result: SearchResult
     similarity: float | None  # 벡터가 없으면 None
     is_low_relevance: bool
+    # 이 청크 본문·캡션에 실제로 들어있는 검색어 수 / 전체 검색어 수.
+    # 재순위 정렬 키이자, 화면에서 "왜 이 순서인가"를 설명할 근거다.
+    matched_terms: int = 0
+    total_terms: int = 0
+
+    @property
+    def is_full_match(self) -> bool:
+        """검색어를 하나도 빠짐없이 포함하는가."""
+        return self.total_terms > 0 and self.matched_terms == self.total_terms
 
     # 자주 쓰는 필드는 그대로 꺼내 쓸 수 있게 열어둔다.
     @property
@@ -95,13 +112,25 @@ def hybrid_search(
     if not candidates:
         return []
 
+    # FTS5와 같은 변형 규칙으로 검색어를 풀어둔다 — 재순위에서 "실제로 몇 개나
+    # 포함하는가"를 셀 때 쓴다.
+    term_variants = query_term_variants(query)
+
     profile = profile or get_profile()
     query_vector = _embed_query(query, embedder, profile)
     if query_vector is None:
-        return [HybridResult(r, None, False) for r in candidates[:limit]]
+        # 임베딩을 못 써도 "검색어를 다 포함한 결과 먼저"는 지킨다.
+        ranked = [
+            _to_result(r, None, False, term_variants, case_sensitive)
+            for r in candidates
+        ]
+        ranked.sort(key=lambda h: -h.matched_terms)  # 안정 정렬 — 동점은 BM25 순서 유지
+        return ranked[:limit]
 
     vectors = fetch_vectors(conn, [r.chunk_id for r in candidates], profile.key)
-    scored = _rerank(candidates, vectors, query_vector, threshold)
+    scored = _rerank(
+        candidates, vectors, query_vector, threshold, term_variants, case_sensitive
+    )
     return scored[:limit]
 
 
@@ -117,35 +146,99 @@ def _embed_query(query: str, embedder, profile: ModelProfile) -> np.ndarray | No
         return None
 
 
+def count_matched_terms(
+    result: SearchResult,
+    term_variants: list[tuple[str, ...]],
+    *,
+    case_sensitive: bool = False,
+) -> int:
+    """청크가 실제로 포함한 검색어 수를 센다.
+
+    **파일명은 세지 않는다.** `chunks_fts`는 `file_name`도 색인하므로(Phase 2
+    설계, 본문의 2배 가중치) 파일명만 걸린 청크도 결과에 낀다 — 실측: "코치
+    윤리규정 준수" 질의에서 파일명까지 세면 상위 10건이 전부 3/3 동점이 되어
+    순위가 하나도 안 바뀐다(T10.6이 지적한 것과 같은 뿌리).
+
+    반대로 **표의 `caption`은 센다.** 캡션은 `content`에 들어있지 않은데(실측
+    확인) 파일 경로가 아니라 엄연한 문서 내용이라, 빼면 표 청크가 부당하게
+    낮게 매겨진다.
+    """
+    haystack = f"{result.content}\n{result.caption}"
+    if not case_sensitive:
+        haystack = haystack.lower()
+
+    matched = 0
+    for forms in term_variants:
+        if not case_sensitive:
+            forms = tuple(form.lower() for form in forms)
+        if any(form in haystack for form in forms):
+            matched += 1
+    return matched
+
+
+def _to_result(
+    result: SearchResult,
+    similarity: float | None,
+    is_low_relevance: bool,
+    term_variants: list[tuple[str, ...]],
+    case_sensitive: bool,
+) -> HybridResult:
+    return HybridResult(
+        result,
+        similarity,
+        is_low_relevance,
+        count_matched_terms(result, term_variants, case_sensitive=case_sensitive),
+        len(term_variants),
+    )
+
+
 def _rerank(
     candidates: list[SearchResult],
     vectors: dict[str, np.ndarray],
     query_vector: np.ndarray,
     threshold: float,
+    term_variants: list[tuple[str, ...]],
+    case_sensitive: bool,
 ) -> list[HybridResult]:
-    """벡터가 있는 후보는 유사도로, 없는 후보는 BM25 순서로 정렬한다.
+    """벡터가 있는 후보는 재순위하고, 없는 후보는 뒤에 붙인다.
+
+    정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 유사도 ↓)** 순이다 [2026-08-11].
+
+    - **일치 개수가 유사도보다 우선한다**: 사용자가 입력한 단어를 다 담은 청크가
+      먼저 보여야 한다. 실측으로 `rpm 패키지 삭제 옵션` 질의에서 4개를 전부
+      담은 청크가 1개만 담은 청크(유사도가 더 높다)에 밀려 2위였다.
+    - **다만 "관련성 낮음"은 그보다 앞선다**: 흐림 처리된 카드가 1위에 오면
+      고장처럼 보인다(DESIGN §5.6의 흐림은 "이건 약한 결과"라는 신호다).
+      정상 결과를 먼저 보여주고, 흐림 그룹 안에서 다시 같은 규칙을 적용한다.
 
     벡터가 없다고 결과에서 빼지는 않는다 — 키워드로 걸린 문서를 임베딩 누락
-    때문에 잃으면 사용자는 "분명 있는데 안 나온다"를 겪게 된다. 대신 유사도로
-    정렬된 결과 **뒤에** 붙인다.
+    때문에 잃으면 사용자는 "분명 있는데 안 나온다"를 겪게 된다.
     """
     with_vector: list[HybridResult] = []
     without_vector: list[HybridResult] = []
 
-    for rank, result in enumerate(candidates):
+    for result in candidates:
         vector = vectors.get(result.chunk_id)
         if vector is None or vector.shape[0] != query_vector.shape[0]:
             # 차원이 다르면 다른 모델로 만든 벡터다 — 비교 자체가 성립하지 않는다.
-            without_vector.append(HybridResult(result, None, False))
+            without_vector.append(
+                _to_result(result, None, False, term_variants, case_sensitive)
+            )
             continue
 
         # 양쪽 다 L2 정규화되어 있으므로 내적이 곧 코사인 유사도다.
         similarity = float(np.dot(query_vector, vector))
         with_vector.append(
-            HybridResult(result, similarity, similarity < threshold)
+            _to_result(
+                result, similarity, similarity < threshold, term_variants, case_sensitive
+            )
         )
 
-    with_vector.sort(key=lambda h: h.similarity, reverse=True)
+    with_vector.sort(
+        key=lambda h: (h.is_low_relevance, -h.matched_terms, -h.similarity)
+    )
+    # 벡터 없는 쪽은 유사도가 없으니 일치 개수만으로 정렬한다(동점은 BM25 순서).
+    without_vector.sort(key=lambda h: -h.matched_terms)
     return [*with_vector, *without_vector]
 
 

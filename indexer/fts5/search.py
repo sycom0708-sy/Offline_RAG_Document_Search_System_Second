@@ -78,6 +78,24 @@ def _strip_korean_suffix(term: str) -> str | None:
     return None
 
 
+def query_term_variants(query: str) -> list[tuple[str, ...]]:
+    """검색어별 매칭 후보(원형 + 조사를 뗀 어간)를 검색어 순서대로 반환한다.
+
+    `build_match_query()`가 FTS5 표현식을 만들 때 쓰는 것과 **같은 변형 규칙**이다.
+    재순위 단계에서 "이 청크가 검색어를 실제로 포함하는가"를 셀 때 이 함수를
+    재사용해야 FTS5가 매치시킨 것과 판정이 어긋나지 않는다 — 두 곳에 따로
+    구현하면 조사 처리가 갈리는 순간 "전체 일치인데 상단에 안 온다"가 된다.
+    """
+    variants: list[tuple[str, ...]] = []
+    for term in _split_terms(query):
+        forms = [term]
+        stem = _strip_korean_suffix(term)
+        if stem:
+            forms.append(stem)
+        variants.append(tuple(forms))
+    return variants
+
+
 def build_match_query(
     terms: Sequence[str],
     exact_word: bool,
