@@ -65,6 +65,13 @@ class SearchWorker(QThread):
                 conn,
                 self._query,
                 embedder=self._embedder,
+                # 🔴 반드시 embedder가 실제로 쓴 프로파일과 같이 넘겨야 한다.
+                # 안 넘기면 hybrid_search가 내부적으로 get_profile()(기본 LIGHT)로
+                # 벡터를 조회해, 권장 모드(HEAVY)에서 만든 벡터를 못 찾는다 —
+                # 차원이 안 맞는 것으로 처리돼 모든 결과의 similarity가 None이
+                # 되고, AI 요약 1단계가 "관련 문서를 찾을 수 없습니다"로 전부
+                # 막힌다(실사용에서 발견, 2026-08-11).
+                profile=self._embedder.profile if self._embedder is not None else None,
                 case_sensitive=self._case_sensitive,
                 exact_word=self._exact_word,
                 limit=fetch_limit,
