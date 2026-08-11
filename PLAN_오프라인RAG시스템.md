@@ -968,6 +968,48 @@ T4.11b 종단 검증으로 실제 재인덱싱을 처음 돌려보고서야 발�
 
 ---
 
+# Phase 7.6: AI 요약을 AI 챗봇으로 교체 (2단 응답 구조)
+
+## 실행 결과 — 완료 (DoD 충족) [2026-08-11]
+
+**배경**: Phase 7의 "AI 요약 보기"(검색마다 자동 1회 요약)를 실사용해보니 필요성이 불분명했다. 사용자가 원한 건 검색 결과를 근거로 후속 질문을 이어가는 챗봇이었다.
+
+### 설계 반려 2회 — 속도가 발목을 잡았다
+
+1. **1차: 문서별 팝업 챗봇** — 검색 결과 카드에 "대화" 버튼을 달아 문서 하나를 골라 대화하는 안. 사용자가 전체 문서 범위 챗봇으로 방향을 틀며 자연히 넘어감.
+2. **2차: 자동 전체 생성 챗봇** — 메시지를 보내면 곧바로 LLM이 전체 답변을 합성하는 안. 실측 지연(발췌 4~5개·긴 출력 기준 11~79초)이 "은행 앱 챗봇처럼 빠르게 답해야 한다"는 요구와 정면 충돌해 반려. **"미리 생성"이라는 표현이 "자동 사전 생성"을 뜻하는 게 아니라 "질문하면 최대한 빨리 답해달라"는 속도 요구였다는 걸 이 단계에서 명확히 했다.**
+
+### 채택된 설계 — 2단 응답 구조 [사용자가 목업 2장으로 직접 제시, 확정]
+
+1. **① 즉시 발췌(기본, LLM 미사용)** — `hybrid_search()`의 top-1 발췌를 원문 그대로 보여준다(검색 지연 7~14ms, 이미 측정된 값 재사용).
+2. **② AI 요약(선택, LLM 사용)** — "AI 요약 보기"를 눌렀을 때만 그 턴이 ①에서 이미 받은 결과를 그대로 넘겨 `SummaryWorker`를 기동한다 — **검색을 다시 하지 않는다.**
+3. 메시지마다 독립 처리(stateless) — 매번 전체 문서 범위로 새로 검색한다.
+
+### 새 백엔드 코드가 거의 없었다
+
+`SearchWorker`(①)·`SummaryWorker`(②)·`SummaryCard`(상태 분기 렌더링)·4단계 안전장치 전부 **무수정으로 재사용**했다. 새 프롬프트(`build_chat_messages`)는 계획에서 뺐다 — ②가 원문을 이미 보여준 뒤라 Phase 6~7에서 다듬은 3문장 요약 프롬프트가 그대로 맞는 역할이었다.
+
+### 구현
+
+- `ui/widgets/search_options.py`/`ui/state.py`: 토글 라벨 "AI 요약 보기"→"AI 챗봇 사용", `AppState.ai_summary_enabled`→`ai_chat_enabled` 리네임. 시그널·메서드명은 배선 최소 변경을 위해 유지
+- `ui/widgets/chat_panel.py`(신설): 턴 단위 구조. `_AnswerBubble`이 ①(QLabel PlainText)과 ②(기존 `SummaryCard`를 그대로 끼워 넣음) 둘 다 갖는다. 워커를 직접 만들지 않고 신호(`message_sent`/`summarize_requested`)로만 요청
+- `ui/widgets/result_list.py`: `show_chat_mode(panel)` 추가. 옛 `summary_card()`/`clear_summary()`/`has_summary()`와 `self._summary_card`는 챗봇 패널이 완전히 대체하므로 **제거**(추가가 아니라 교체이기 때문)
+- `ui/main_window.py`: `_on_ai_chat_toggled`(구 `_on_ai_summary_toggled`)가 `_activate_chat_mode()`/`_deactivate_chat_mode()`로 분기. 챗봇 메시지는 `_on_chat_message_sent()`가 **기존** `SearchWorker`를 그대로 기동(T10.9의 `profile=` 전달 로직도 자동 상속), "AI 요약 보기"는 `_on_chat_summarize_requested()`가 **기존** `SummaryWorker`를 기동. `summarize_requested` 신호가 `(request_id, results)`만 실어 보내 질문 원문이 없는 문제는, `message_sent` 시점에 `self._chat_questions[request_id] = question`으로 따로 기억해두는 방식으로 해결(패널 내부 신호 구조는 안 건드림). 카드 검색 경로(`_run_search`/`_on_search_succeeded` 등)는 무수정 — 자동 요약 트리거 블록만 제거
+
+### 검증
+
+**테스트**: 옛 `tests/test_ui_summary.py`를 `tests/test_ui_chat.py`로 이름·대상 모두 교체 — `TestSummaryCard`(옛 테스트 그대로, 말풍선이 그 위젯을 재사용하므로 검증 대상이 안 바뀜) + `TestResultListChatMode` + `TestChatPanel`(신규 15건, 워커 없이 패널 자체의 신호·렌더링 위임만 검증). `test_ui_main_window.py`의 `TestAiSummaryWiring`→`TestAiChatWiring`(2단 응답 흐름, "AI 요약 보기" 전까지 LLM 미호출 확인, 다중 턴 GC 안전성). 🔴 T10.9 재발 방지 회귀 테스트(`TestChatSearchProfileRegression`, `heavy_embedder`로 챗봇 검색 경로의 `profile=` 전달을 확인 — 처음엔 `win._embedder`에 직접 대입했다가 백그라운드 워밍업 스레드가 나중에 끝나 덮어쓰는 경합을 실측으로 발견, `state.model_profile=HEAVY.key`로 정식 워밍업 경로를 태우는 방식으로 수정). 테스트 11건 추가(누적 603 passed / 5 skipped, 이전 592 대비 +11).
+
+**실제 앱 종단 검증**: 실제 인덱스(문서 19건·청크 607개, 표 64·이미지 117·텍스트 426)로 "코치인증자격시험 응시방법 찾아줘" 전송 → 즉시 발췌 렌더링(체감 무지연) → "AI 요약 보기" 클릭 → 채택 모델(Qwen3.5-4B)이 근거([코치인증자격시험 세부사항_인증_1_28_v3.doc]) 딸린 정답 생성, "확인 필요" 배지 없음(4단계 통과)까지 스크린샷으로 확인. 표·이미지 청크가 top-1인 질의("검진항목표", "KMI AI솔루션도입") 2턴 연속 전송도 크래시 없이 렌더링 — 표는 `TableData.to_text()`의 `|` 구분 평탄화, 이미지는 짧은 캡션 텍스트로 나와 가독성은 다듬어지지 않았지만 화면은 무너지지 않는다(이번 범위 밖으로 남김). `tasklist`로 창 닫은 뒤 `llama-server` 고아 프로세스 없음 확인.
+
+### 잡은 함정
+
+1. 옛 `ResultList.summary_card()`류 API를 챗봇 패널과 나란히 남겨두려다, 자동 요약 카드가 **대체**되는 것이지 **추가**되는 게 아니라는 걸 재확인하고 통째로 제거 — 남겨뒀으면 아무도 안 부르는 죽은 코드가 됐을 것이다.
+2. `_AnswerBubble`의 요약 상태 분기(정상/기권/근거없음/실패 + "확인 필요" 배지)를 처음엔 새로 구현하려다, `SummaryCard`를 그대로 끼워 넣는 쪽으로 방향을 바꿔 Phase 7에서 이미 검증된 로직을 재사용했다.
+3. T10.9 회귀 테스트 작성 중, `MainWindow._embedder`에 `heavy_embedder`를 직접 대입해도 `__init__`이 이미 띄워둔 백그라운드 워밍업 스레드가 나중에 끝나며 그 값을 경량 모델로 덮어써 테스트가 실패했다 — `state.model_profile = HEAVY.key`로 두고 실제 워밍업 경로를 그대로 타게 하는 방식으로 해결.
+
+---
+
 # Phase 8: 증분 인덱싱 / 폴더 감시
 
 **의존**: Phase 2(인덱싱), Phase 5(썸네일 캐시)
