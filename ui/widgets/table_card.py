@@ -23,7 +23,12 @@ from PySide6.QtWidgets import (
 
 from parser.schema import TableData
 from search.hybrid_search import HybridResult
-from ui.widgets.card_common import build_card_header, open_source_file, parse_table_data
+from ui.widgets.card_common import (
+    apply_low_relevance_style,
+    build_card_header,
+    open_source_file,
+    parse_table_data,
+)
 
 
 class TableCard(QFrame):
@@ -57,6 +62,8 @@ class TableCard(QFrame):
             fallback.setObjectName("ResultCardBody")
             layout.addWidget(fallback)
             copy_button.setEnabled(False)
+
+        apply_low_relevance_style(self, hybrid_result)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 이벤트 핸들러 네이밍
         super().showEvent(event)

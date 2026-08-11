@@ -9,13 +9,11 @@ DESIGN §5.1(공통 프레임) / §5.3(텍스트 카드) / §5.6(관련성 낮�
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 from search.hybrid_search import HybridResult
 from ui.highlight import highlighted_excerpt
-from ui.widgets.card_common import build_card_header, open_source_file
-
-LOW_RELEVANCE_OPACITY = 0.5  # DESIGN §5.6 / §11 (0.5 이하로 내리지 않음)
+from ui.widgets.card_common import apply_low_relevance_style, build_card_header, open_source_file
 
 
 class ResultCard(QFrame):
@@ -50,13 +48,7 @@ class ResultCard(QFrame):
         layout.addLayout(header)
         layout.addWidget(body_label)
 
-        if hybrid_result.is_low_relevance:
-            effect = QGraphicsOpacityEffect(self)
-            effect.setOpacity(LOW_RELEVANCE_OPACITY)
-            self.setGraphicsEffect(effect)
-            self.setProperty("relevance", "low")
-        else:
-            self.setProperty("relevance", "normal")
+        apply_low_relevance_style(self, hybrid_result)
 
     def _open_source(self) -> None:
         error = open_source_file(self._result.result.file_path)

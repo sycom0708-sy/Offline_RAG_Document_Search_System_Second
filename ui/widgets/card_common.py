@@ -12,7 +12,7 @@ from typing import Sequence
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton
 
 # 청크 해석·위치 표기는 sLM 프롬프트(Phase 6)도 같은 규칙으로 써야 해서
 # PySide6에 묶이지 않는 `search/chunk_view.py`로 옮겼다. 카드 쪽 호출부가
@@ -25,7 +25,11 @@ __all__ = [
     "parse_table_data",
     "open_source_file",
     "build_card_header",
+    "apply_low_relevance_style",
 ]
+
+# DESIGN §5.6 / §11 — 0.5 이하로 내리지 않는다.
+LOW_RELEVANCE_OPACITY = 0.5
 
 
 def open_source_file(file_path: str) -> str | None:
@@ -78,3 +82,21 @@ def build_card_header(
     header.addWidget(open_button)
 
     return header, open_button
+
+
+def apply_low_relevance_style(card: QFrame, hybrid_result) -> None:
+    """DESIGN §5.6 — 카드 전체를 흐리게 + QSS `[relevance="low"]` 훅.
+
+    🔴 원래 `ResultCard`(텍스트 카드)에만 있던 로직이다. "관련성 낮음" **라벨**은
+    `build_card_header()`가 세 카드 공통으로 붙여주지만, 실제로 흐려 보이게
+    하는 이 효과는 표·이미지 카드에 옮겨 붙이는 걸 빠뜨렸다 — 라벨은 있는데
+    흐림은 없는 카드가 나온 이유(실사용에서 발견, 2026-08-11). 세 카드
+    생성자 마지막에서 반드시 이 함수를 불러야 한다.
+    """
+    if hybrid_result.is_low_relevance:
+        effect = QGraphicsOpacityEffect(card)
+        effect.setOpacity(LOW_RELEVANCE_OPACITY)
+        card.setGraphicsEffect(effect)
+        card.setProperty("relevance", "low")
+    else:
+        card.setProperty("relevance", "normal")

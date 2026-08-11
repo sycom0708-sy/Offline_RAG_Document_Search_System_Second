@@ -143,6 +143,31 @@ class TestTableCard:
         card._open_source()
         assert "파일을 찾을 수 없습니다" in failures[0]
 
+    def test_low_relevance_shows_label_and_dims_card(self, qtbot):
+        """🔴 원래 라벨만 붙고 흐림은 안 됐다 — `apply_low_relevance_style()` 공유 전.
+
+        `ResultCard`(텍스트 카드)에만 있던 흐림 효과가 표 카드에는 빠져 있어서,
+        "관련성 낮음" 라벨은 보이는데 카드가 흐려지지는 않았다(실사용에서 발견,
+        2026-08-11). `card_common.build_card_header()`가 라벨은 세 카드 공통으로
+        붙여주지만 흐림 효과는 별도라 놓치기 쉬웠다.
+        """
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        card = TableCard(_hybrid(_table_result(table), low=True))
+        qtbot.addWidget(card)
+
+        label = card.findChild(QLabel, "ResultCardRelevanceLabel")
+        assert label is not None and label.text() == "관련성 낮음"
+        assert card.graphicsEffect() is not None
+        assert card.graphicsEffect().opacity() == 0.5
+
+    def test_normal_relevance_has_no_dimming(self, qtbot):
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        card = TableCard(_hybrid(_table_result(table), low=False))
+        qtbot.addWidget(card)
+
+        assert card.findChild(QLabel, "ResultCardRelevanceLabel") is None
+        assert card.graphicsEffect() is None
+
 
 class TestImageCard:
     def test_valid_image_shows_thumbnail_and_notice(self, qtbot, tmp_path, monkeypatch):
@@ -198,6 +223,25 @@ class TestImageCard:
         card.open_failed.connect(failures.append)
         card._zoom()  # 다이얼로그 대신 방어 분기(파일 없음)만 실행됨
         assert "이미지를 찾을 수 없습니다" in failures[0]
+
+    def test_low_relevance_shows_label_and_dims_card(self, qtbot):
+        """🔴 표 카드와 같은 이유로 이미지 카드도 라벨만 있고 흐림이 빠져 있었다."""
+        image = ImageData(image_path="아무경로.png")
+        card = ImageCard(_hybrid(_image_result(image), low=True))
+        qtbot.addWidget(card)
+
+        label = card.findChild(QLabel, "ResultCardRelevanceLabel")
+        assert label is not None and label.text() == "관련성 낮음"
+        assert card.graphicsEffect() is not None
+        assert card.graphicsEffect().opacity() == 0.5
+
+    def test_normal_relevance_has_no_dimming(self, qtbot):
+        image = ImageData(image_path="아무경로.png")
+        card = ImageCard(_hybrid(_image_result(image), low=False))
+        qtbot.addWidget(card)
+
+        assert card.findChild(QLabel, "ResultCardRelevanceLabel") is None
+        assert card.graphicsEffect() is None
 
 
 class TestTypeBasedRouting:

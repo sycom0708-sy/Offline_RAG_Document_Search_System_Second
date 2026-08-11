@@ -23,7 +23,12 @@ from PySide6.QtWidgets import (
 
 from search.hybrid_search import HybridResult
 from ui.thumbnail_cache import get_thumbnail_path
-from ui.widgets.card_common import build_card_header, open_source_file, parse_image_data
+from ui.widgets.card_common import (
+    apply_low_relevance_style,
+    build_card_header,
+    open_source_file,
+    parse_image_data,
+)
 
 IMAGE_TEXT_NOT_RECOGNIZED_NOTICE = "이미지 내 텍스트는 인식되지 않았습니다."
 NO_PREVIEW_TEXT = "미리보기를 표시할 수 없습니다."
@@ -75,6 +80,8 @@ class ImageCard(QFrame):
         layout.setSpacing(8)
         layout.addLayout(header)
         layout.addLayout(body)
+
+        apply_low_relevance_style(self, hybrid_result)
 
     def _load_thumbnail(self) -> QPixmap | None:
         if self._image_data is None:
