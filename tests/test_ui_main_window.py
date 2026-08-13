@@ -62,16 +62,38 @@ def window(qtbot, indexed_db, tmp_path):
 
 class TestEndToEndSearch:
     def test_search_shows_matching_cards(self, qtbot, window):
-        window.search_bar.set_text("계약서 검토 기준이 뭐였지")
+        window.input_bar.submit_text("계약서 검토 기준이 뭐였지")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         assert window.result_list.card_count() >= 1
 
     def test_empty_query_resets_to_initial(self, qtbot, window):
-        window.search_bar.set_text("계약서")
+        window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
-        window.search_bar.set_text("")
-        qtbot.wait(400)  # debounce 통과
+        window.input_bar.submit_text("")  # InputBar는 빈 문자열도 그대로 emit한다
+
+        assert window.result_list.card_count() == 0
+
+    def test_header_close_button_clears_query_and_results(self, qtbot, window):
+        """헤더 ✕ — 검색어·결과를 모두 지우고 초기 안내로 되돌린다 (Phase 7.7)."""
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        assert window.result_header.isVisibleTo(window)
+
+        window.result_header._close_button.click()
+
+        assert window.result_list.card_count() == 0
+        assert window._last_query == ""
+        assert not window.result_header.isVisibleTo(window)
+        assert window.input_bar.text() == ""
+
+    def test_toggling_filter_after_header_close_does_not_resurrect_results(self, qtbot, window):
+        """✕ 이후 `_last_query`가 안 비면 옵션 토글이 지운 검색을 되살린다(회귀 방지)."""
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        window.result_header._close_button.click()
+        window.sidebar.search_options.case_sensitive.setChecked(True)
 
         assert window.result_list.card_count() == 0
 
@@ -104,8 +126,7 @@ class TestEndToEndSearch:
         assert all(w.isFinished() for w in window._active_workers)
 
     def test_no_matching_query_shows_empty_state(self, qtbot, window):
-        window.search_bar.set_text("전혀관련없는외계어단어조합")
-        qtbot.wait(400)
+        window.input_bar.submit_text("전혀관련없는외계어단어조합")
 
         def has_message():
             return window.result_list._layout.count() >= 1 and window.result_list.card_count() == 0
@@ -115,7 +136,7 @@ class TestEndToEndSearch:
 
     def test_open_button_click_does_not_raise(self, qtbot, window):
         """존재하지 않는 파일 경로라 열기는 실패하지만, 시그널로 안전하게 처리돼야 한다."""
-        window.search_bar.set_text("계약서 검토 기준이 뭐였지")
+        window.input_bar.submit_text("계약서 검토 기준이 뭐였지")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         from ui.widgets.result_card import ResultCard
@@ -133,7 +154,7 @@ class TestEndToEndSearch:
         받는 연결 자체가 없어, 신호는 나가는데 아무 데도 안 들리는 상태였다
         — 원문 열기 실패 시 화면에 아무 반응도 없던 실제 버그다.
         """
-        window.search_bar.set_text("계약서 검토 기준이 뭐였지")
+        window.input_bar.submit_text("계약서 검토 기준이 뭐였지")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         from ui.widgets.result_card import ResultCard
@@ -152,8 +173,7 @@ class TestNoIndexState:
         win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
-        win.search_bar.set_text("아무 질의")
-        qtbot.wait(400)
+        win.input_bar.submit_text("아무 질의")
 
         from PySide6.QtWidgets import QLabel
 
@@ -166,7 +186,7 @@ class TestSidebarOptionsAffectResults:
 
     def test_format_filter_narrows_to_selected_extension(self, qtbot, window):
         window.sidebar.format_filter.set_available_formats([".docx", ".txt", ".pptx"])
-        window.search_bar.set_text("계약")
+        window.input_bar.submit_text("계약")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         baseline_count = window.result_list.card_count()
 
@@ -183,7 +203,7 @@ class TestSidebarOptionsAffectResults:
         """메모.txt는 "API"(대문자), 공지.txt는 "api"(소문자)를 담고 있다."""
         from ui.widgets.result_card import ResultCard
 
-        window.search_bar.set_text("API")
+        window.input_bar.submit_text("API")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         before_names = {c._result.file_name for c in window.result_list.findChildren(ResultCard)}
         assert {"메모.txt", "공지.txt"} <= before_names  # 대소문자 구분 OFF: 둘 다 잡힘
@@ -202,7 +222,7 @@ class TestSidebarOptionsAffectResults:
     def test_exact_word_excludes_mid_token_match(self, qtbot, window):
         """'계약'으로 검색 시 일치단어 ON이면 '계약서'(부분 포함)는 빠져야 한다."""
         window.sidebar.search_options.exact_word.setChecked(True)
-        window.search_bar.set_text("계약")
+        window.input_bar.submit_text("계약")
         # `_layout.count() >= 1`은 "검색 중" placeholder만으로도 참이 되어 실제
         # 검색 완료를 기다리지 못했다(실측 재현됨) — card_count로 완료를 확인한다.
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
@@ -220,13 +240,12 @@ class TestSidebarOptionsAffectResults:
     def test_options_persist_across_new_search(self, qtbot, window):
         """옵션을 켠 채로 검색어를 바꿔도 옵션이 유지돼야 한다."""
         window.sidebar.search_options.exact_word.setChecked(True)
-        window.search_bar.set_text("계약")
-        qtbot.wait(500)
+        window.input_bar.submit_text("계약")
         assert window.sidebar.search_options.is_exact_word() is True
 
     def test_changing_option_reruns_last_query(self, qtbot, window):
         """DESIGN 요구: 옵션 변경 시 검색을 다시 눌러야 하는 게 아니라 자동 반영돼야 한다."""
-        window.search_bar.set_text("계약")
+        window.input_bar.submit_text("계약")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         before = window.result_list.card_count()
 
@@ -238,6 +257,76 @@ class TestSidebarOptionsAffectResults:
 
         cards = window.result_list.findChildren(ResultCard)
         assert all(c._result.file_name.endswith(".docx") for c in cards)
+
+
+class TestPerformanceComboStartupSync:
+    """PC 성능 콤보 표시가 저장된 `state.model_profile`과 어긋나던 버그 회귀 방지.
+
+    `PerformanceCombo`는 자기 `__init__`에서 `PROFILE_ORDER[0]`(경량)으로
+    초기화되고, `MainWindow`가 시작 시 이를 동기화하는 코드가 없었다 —
+    저장된 프로파일이 권장이어도 화면은 항상 "경량"으로 보였다. 실제로는
+    권장으로 검색되는데 화면은 경량이라고 말하는 어긋난 상태(실사용 중 발견).
+    """
+
+    def test_combo_reflects_saved_heavy_profile_on_startup(self, qtbot, indexed_db, tmp_path):
+        from config.settings import HEAVY
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = HEAVY.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win.sidebar.performance_combo.current_profile() == HEAVY.key
+
+    def test_combo_reflects_saved_light_profile_on_startup(self, qtbot, window):
+        from config.settings import LIGHT
+
+        assert window.sidebar.performance_combo.current_profile() == LIGHT.key
+
+
+class TestRecentSearchWiring:
+    """공용 입력창 제출 → 최근 검색 기록 → 사이드바 갱신 → 항목 클릭 시
+    재실행까지 (Phase 7.7, 2026-08-13 재작업)."""
+
+    def test_submitting_a_query_records_it_in_state_and_sidebar(self, qtbot, window):
+        window.input_bar.submit_text("계약서 검토 기준이 뭐였지")
+
+        assert window.state.recent_searches[0] == "계약서 검토 기준이 뭐였지"
+        assert window.sidebar.recent_searches._all_items[0] == "계약서 검토 기준이 뭐였지"
+
+    def test_submitting_blank_text_does_not_record_a_recent_search(self, qtbot, window):
+        window.input_bar.submit_text("계약서")
+        window.result_header._close_button.click()  # _last_query 초기화
+        window.input_bar.submit_text("")
+
+        assert window.state.recent_searches == ["계약서"]
+
+    def test_recent_search_is_persisted_across_reload(self, qtbot, indexed_db, tmp_path):
+        state_path = tmp_path / "state.json"
+        win = MainWindow(db_path=indexed_db, state=AppState.load(path=state_path))
+        qtbot.addWidget(win)
+        win.input_bar.submit_text("계약서 검토 기준이 뭐였지")
+
+        reloaded = AppState.load(path=state_path)
+
+        assert reloaded.recent_searches == ["계약서 검토 기준이 뭐였지"]
+
+    def test_clicking_a_recent_search_item_reruns_it(self, qtbot, window):
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+        window.input_bar.submit_text("리눅스")
+        qtbot.waitUntil(lambda: window._last_query == "리눅스", timeout=SEARCH_TIMEOUT_MS)
+
+        # 사이드바에는 실측 전이라 폴백 개수만큼 보인다 — "계약서" 항목을 찾아 클릭한다.
+        button = next(
+            window.sidebar.recent_searches._list_layout.itemAt(i).widget()
+            for i in range(window.sidebar.recent_searches._list_layout.count())
+            if window.sidebar.recent_searches._list_layout.itemAt(i).widget().toolTip() == "계약서"
+        )
+        button.click()
+
+        assert window._last_query == "계약서"
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
 
 class TestReindexFlow:
@@ -448,7 +537,7 @@ class TestMixedResultTypes:
         win = MainWindow(db_path=db_path, state=AppState.load(path=tmp_path / "state.json"))
         qtbot.addWidget(win)
 
-        win.search_bar.set_text("예산")
+        win.input_bar.submit_text("예산")
         qtbot.waitUntil(lambda: win.result_list.card_count() >= 3, timeout=SEARCH_TIMEOUT_MS)
 
         assert win.result_list.findChild(ResultCard) is not None
@@ -505,7 +594,7 @@ class TestAiChatWiring:
 
     def test_toggle_on_replaces_cards_with_chat_panel(self, window, qtbot):
         self._stub_service(window)
-        window.search_bar.set_text("계약서")
+        window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         self._turn_on_chat(window)
@@ -515,7 +604,7 @@ class TestAiChatWiring:
 
     def test_toggle_on_auto_sends_last_query_as_first_message(self, window, qtbot):
         self._stub_service(window)
-        window.search_bar.set_text("계약서")
+        window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         panel = self._turn_on_chat(window)
@@ -555,7 +644,7 @@ class TestAiChatWiring:
 
     def test_toggle_off_restores_result_cards(self, window, qtbot):
         self._stub_service(window)
-        window.search_bar.set_text("계약서")
+        window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         before = window.result_list.card_count()
 

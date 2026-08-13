@@ -96,3 +96,62 @@ def test_explicit_save_path_still_overrides_remembered_path(tmp_path):
 
     assert explicit.is_file()
     assert not remembered.is_file()
+
+
+def test_default_state_has_no_recent_searches():
+    assert AppState().recent_searches == []
+
+
+def test_add_recent_search_puts_newest_first():
+    state = AppState()
+    state.add_recent_search("계약서")
+    state.add_recent_search("리눅스")
+    assert state.recent_searches == ["리눅스", "계약서"]
+
+
+def test_add_recent_search_moves_duplicate_to_front_without_growing():
+    state = AppState()
+    state.add_recent_search("계약서")
+    state.add_recent_search("리눅스")
+    state.add_recent_search("계약서")
+    assert state.recent_searches == ["계약서", "리눅스"]
+
+
+def test_add_recent_search_trims_to_limit():
+    from ui.state import RECENT_SEARCHES_LIMIT
+
+    state = AppState()
+    for i in range(RECENT_SEARCHES_LIMIT + 3):
+        state.add_recent_search(f"검색어{i}")
+
+    assert len(state.recent_searches) == RECENT_SEARCHES_LIMIT
+    assert state.recent_searches[0] == f"검색어{RECENT_SEARCHES_LIMIT + 2}"
+
+
+def test_add_recent_search_ignores_blank_query():
+    state = AppState()
+    state.add_recent_search("   ")
+    assert state.recent_searches == []
+
+
+def test_recent_searches_round_trip_through_save_and_load(tmp_path):
+    path = tmp_path / "app_state.json"
+    original = AppState()
+    original.add_recent_search("계약서")
+    original.add_recent_search("리눅스")
+    original.save(path)
+
+    loaded = AppState.load(path)
+    assert loaded.recent_searches == ["리눅스", "계약서"]
+
+
+def test_load_without_recent_searches_field_defaults_to_empty_list(tmp_path):
+    """Phase 7.7 이전에 저장된 옛 app_state.json에는 이 필드가 없다 —
+    `_load_raw()`의 미지 키 필터링 경로로 빈 목록이 채워져야 한다."""
+    import json
+
+    path = tmp_path / "app_state.json"
+    path.write_text(json.dumps({"target_folder": "D:/x"}), encoding="utf-8")
+
+    state = AppState.load(path)
+    assert state.recent_searches == []

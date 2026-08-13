@@ -4,6 +4,235 @@
 
 ---
 
+<!-- 출처: typed-percolating-fountain.md · DESKTOP-V42GJBP · 작성 2026-08-13 11:11 · 아카이브 2026-08-13 11:39 -->
+
+# UI 전면 재구성 — HTML 목업 컨셉 적용
+
+## Context
+
+사용자가 목업 2장(`rag_ui_concept_chatbot.html`, `rag_ui_concept_searchresult.html`)을 제시하며 적용 가능성을 물었고, 검토 결과 **기능은 이미 100% 구현돼 있고 화면 배치만 다르다**는 것이 확인됐다. Phase 7.6에서 만든 2단 응답 챗봇(즉시 발췌 → 선택적 AI 요약)은 목업과 동작이 일치한다.
+
+차이는 **입력창의 위치**다. 현재 앱은 상단 검색바가 항상 떠 있고 챗봇 모드일 때만 하단에 채팅 입력창이 하나 더 생긴다 — 입력 지점이 두 곳이다. 목업은 두 화면 모두 **하단 입력창 하나**로 통일돼 있다. 사용자가 이 구조로의 전면 재구성을 선택했다.
+
+**의도한 결과**: 입력 지점이 한 곳인 화면. 검색 결과 모드는 상단에 현재 검색어 헤더가 붙고, 챗봇 모드는 헤더 없이 대화만 흐른다. 사이드바는 최근 검색과 관리 버튼을 품어 목업과 같아진다.
+
+### 사용자 확정 사항
+
+| 항목 | 결정 |
+|---|---|
+| 화면 구조 | 컨셉대로 전면 재구성 (상단 검색바 → 하단 입력창) |
+| 사이드바 | 최근 검색 목록 추가 + 모델·폴더 관리 버튼 이동 |
+| 상태바 | 새로고침·고급 설정 버튼은 **추가 안 함** |
+| 강조색 | 현재 `#2563EB` 유지 (컨셉의 `#1e90ff` 미채택) |
+| 애니메이션 | 이번엔 제외 (슬라이드 인, 토글 슬라이드 모두) |
+| 검색 트리거 | Enter·보내기 버튼으로만 (**300ms debounce 폐기**) |
+| 헤더 ✕ | 검색어·결과 모두 지우고 초기 안내로 |
+| 최근 검색 | `app_state.json`에 영구 저장, 최근 10건 |
+
+---
+
+## 목표 구조
+
+```
+QHBoxLayout(central)
+├── Sidebar (220px 고정)
+│   ├── 문서 형식 필터          (기존 FormatFilter)
+│   ├── 검색 옵션 토글 3종       (기존 SearchOptions)
+│   ├── PC 성능 선택            (기존 PerformanceCombo)
+│   ├── (stretch)
+│   ├── 최근 검색 목록           ← 신규 RecentSearches
+│   └── [모델 관리] [폴더 관리]   ← 신규 배치, 기존 다이얼로그 재사용
+└── QVBoxLayout main_area
+    ├── ResultHeader (검색어 + ✕)  ← 신규, 검색 결과 모드에서만 표시
+    ├── ResultList (stretch=1)     ← 기존, ChatPanel을 품는 구조 유지
+    ├── InputBar (입력창 + 보내기)  ← SearchBar를 개조해 하단으로 이동
+    └── StatusBar                  ← 기존, 폴더 관리 버튼만 제거
+```
+
+---
+
+## 설계 결정
+
+### 1. 입력창은 MainWindow가 소유하고 두 모드가 공유한다
+
+`ChatPanel`이 갖고 있던 자체 입력창(`ChatInput` + `ChatSendButton`)을 **제거**하고, 하단 `InputBar` 하나가 두 모드의 입력을 모두 받는다. `MainWindow`가 현재 모드를 보고 분기한다:
+
+```python
+def _on_input_submitted(self, text: str) -> None:
+    if self._chat_panel is not None:
+        self._chat_panel.send_message(text)
+    else:
+        self._on_search_requested(text)
+```
+
+**이유**: 목업이 요구하는 "입력 지점 하나"를 구조로 보장한다. 입력창을 모드별로 두 개 두고 교체하면 포커스·플레이스홀더·히스토리가 모드마다 갈라져, 지금의 "입력 지점 두 곳" 문제가 형태만 바꿔 남는다.
+
+`ChatPanel.send_message(text)`는 **이미 공개 API로 존재한다**(`chat_panel.py:225`, 챗봇 모드 진입 시 직전 검색어를 자동 전송하는 데 쓰던 것) — 새로 만들 게 아니라 주 진입점으로 승격된다. 내부 `_send()`는 `self._input.text()`를 읽는 대신 `text` 인자를 받도록 시그니처만 바꾼다.
+
+**테스트 영향이 거의 없다**: `tests/test_ui_chat.py`의 모든 케이스가 `_input`/`_send_button`을 직접 건드리지 않고 `send_message()`만 쓴다(176~281행, 11곳). 입력창을 떼어내도 기존 케이스는 그대로 통과한다 — Phase 7.6이 "테스트·검증용 공개 API"를 따로 둔 설계가 여기서 값을 한다.
+
+### 2. 말풍선 좌/우 정렬은 QHBoxLayout 래퍼로 한다
+
+Qt QSS는 `max-width`와 `margin-left: auto`를 지원하지 않으므로 CSS 방식이 통하지 않는다. `_transcript_layout`(QVBoxLayout)에 행마다 QHBoxLayout을 끼우고 `addStretch()`의 위치로 정렬을 결정한다:
+
+- 사용자 메시지: `addStretch()` → `addWidget(label)` (우측)
+- AI 말풍선: `addWidget(bubble)` → `addStretch()` (좌측)
+
+최대 폭 65%는 `_transcript` 폭 기준으로 계산해 `setMaximumWidth()`를 준다. 창 크기가 바뀌면 다시 계산해야 하므로 `ChatPanel.resizeEvent()`에서 살아 있는 말풍선들의 최대 폭을 갱신한다.
+
+**주의**: 기존 삽입 관행(`insertWidget(count() - 1, ...)` — 마지막 stretch 앞)은 그대로 유지하되, 래퍼는 위젯이 아니라 레이아웃이므로 `insertLayout()`을 쓴다. `ResultList._clear()`가 `takeAt().widget()`으로만 정리하는 것과 달리, 레이아웃은 `widget()`이 `None`이라 그냥 두면 정리되지 않는다 — `ChatPanel`은 통째로 교체되므로 실무상 문제는 없지만, 래퍼를 `QWidget`으로 감싸면 이 함정 자체가 사라진다. **래퍼를 QWidget + QHBoxLayout으로 만든다.**
+
+### 3. debounce 폐기에 따른 테스트 수정
+
+`SearchBar`의 300ms debounce(`search_bar.py:41-50`)를 제거한다. `textChanged` 연결을 끊고 `returnPressed` + 보내기 버튼만 남긴다.
+
+`tests/test_ui_main_window.py`가 `window.search_bar.set_text(...)` 후 debounce로 검색이 자동 실행되기를 기다리는 패턴을 **16곳**에서 쓴다(65, 70, 73, 107, 118, 136, 155, 169, 186, 205, 223, 229, 451, 508, 518, 558행). `set_text()`는 이제 입력만 하고 검색을 트리거하지 않으므로 전부 깨진다.
+
+`InputBar`에 `submit_text(text)`를 둔다 — 텍스트를 넣고 즉시 제출하는 헬퍼로, `ChatPanel.send_message()`와 같은 성격이다. 테스트의 `set_text(...)` → `submit_text(...)`로 치환한다. 빈 문자열 제출(`test_empty_query_resets_to_initial`)은 초기 안내로 되돌아가는 기존 동작이 `_on_search_requested`에 이미 있어 그대로 통한다.
+
+`tests/test_ui_widgets_basic.py::TestSearchBar`(74~130행)는 debounce 동작 자체를 검증하므로 해당 케이스를 제거하고 Enter·버튼 제출 테스트로 대체한다.
+
+### 4. AppState에 recent_searches 추가
+
+`ui/state.py`의 `AppState`에 필드를 하나 더한다:
+
+```python
+recent_searches: list[str] = dataclasses.field(default_factory=list)
+```
+
+**마이그레이션 불필요**: `_load_raw()`(`state.py:57-70`)가 이미 미지 키를 걸러내고 없는 필드는 기본값으로 채운다 — Phase 7.6의 `ai_summary_enabled` → `ai_chat_enabled` 리네임 때 검증된 경로다.
+
+**T10.5 회귀 방지**: `save()`를 인자 없이 부르면 `load()`한 경로에 쓴다는 규칙(`state.py:36-40`, `72-75`)을 깨지 않는다. 최근 검색 갱신 시에도 `self.state.save()`만 부른다 — 경로를 새로 넘기지 않는다.
+
+중복 검색어는 맨 앞으로 올리고, 최대 10건에서 잘라낸다.
+
+### 5. "모델 관리" 버튼 중복 해소
+
+`PerformanceCombo`는 콤보 우측 하단에 이미 "모델 관리" 링크 버튼을 갖고 있다(`performance_combo.py:54-60`). 사이드바 하단에 같은 버튼을 하나 더 두면 **같은 기능의 버튼이 두 개**가 된다.
+
+**콤보의 링크 버튼을 제거하고 사이드바 하단 버튼으로 일원화한다.** 그 링크는 "이미 다 설치된 사용자는 모델 관리를 열 방법이 없다"는 문제를 풀려고 추가된 것인데(주석에 기록됨), 사이드바 하단 버튼이 그 역할을 그대로 대신하므로 문제가 재발하지 않는다.
+
+`model_manager_requested(str)` 신호는 **그대로 유지한다** — 미설치 프로파일을 콤보에서 고르면 팝업이 열리는 Option A 동작(`performance_combo.py:3-6`)이 이 신호를 쓰고, 그건 이번 변경과 무관하다. 사이드바 버튼은 현재 프로파일을 실어 같은 신호를 낸다.
+
+`tests/test_ui_widgets_options.py`의 `_manage_button` 직접 클릭 테스트 2건(130행, 141행)은 사이드바 버튼 테스트로 옮긴다. 콤보에서 미설치 프로파일 선택 → 팝업 요청 경로(121행)는 무수정으로 남는다.
+
+### 6. 헤더 ✕ 동작
+
+검색어·결과를 모두 지우고 초기 안내로 되돌린다. `ResultList.show_initial()`과 `InputBar.clear()`를 함께 부르고 `_last_query`/`_last_results`를 비운다. 챗봇 모드에서는 헤더 자체가 숨겨지므로 이 경로를 타지 않는다.
+
+---
+
+## 변경 파일
+
+| 파일 | 변경 |
+|---|---|
+| `ui/widgets/search_bar.py` | `InputBar`로 개조 — debounce 제거, 보내기 버튼 추가, `submit_text()` 추가 |
+| `ui/widgets/chat_panel.py` | 자체 입력창 제거, `_send(text)` 시그니처 변경, 말풍선 좌/우 정렬 래퍼 |
+| `ui/widgets/result_header.py` | **신규** — 검색어 표시 + ✕ 버튼 |
+| `ui/widgets/recent_searches.py` | **신규** — 최근 검색 목록, 항목 클릭 시 `search_requested(str)` |
+| `ui/widgets/sidebar.py` | 최근 검색 + 모델·폴더 관리 버튼 배치 |
+| `ui/widgets/performance_combo.py` | 중복된 "모델 관리" 링크 버튼 제거 (신호는 유지) |
+| `ui/widgets/status_bar.py` | 폴더 관리 버튼 제거(사이드바로 이동) |
+| `ui/main_window.py` | 레이아웃 재조립, 입력 라우팅, 헤더 표시/숨김, 최근 검색 저장 |
+| `ui/state.py` | `recent_searches` 필드 추가 |
+| `ui/qss/app.qss` | 신규 objectName 스타일 추가 |
+| `tests/test_ui_main_window.py` | `set_text` → `submit_text` 치환(16곳), 헤더·최근 검색 테스트 추가 |
+| `tests/test_ui_widgets_basic.py` | debounce 테스트 제거, 제출 테스트로 대체 |
+| `tests/test_ui_chat.py` | 말풍선 정렬 테스트 추가 (**기존 케이스는 무수정** — 아래 참고) |
+| `tests/test_ui_state.py` | `recent_searches` 저장·복원 테스트 |
+| `tests/test_ui_widgets_options.py` | `_manage_button` 클릭 테스트 2건을 사이드바 버튼 테스트로 이동 |
+
+**재사용할 기존 자산** (새로 만들지 않는다):
+- `ChatPanel.send_message()` — 이미 있는 공개 API를 주 진입점으로 승격
+- `FolderDialog`, `ModelManagerDialog` — 버튼 위치만 바뀌고 다이얼로그는 무수정
+- `SearchWorker`, `SummaryWorker`, `SummaryCard`, 4단계 안전장치 — 전부 무수정
+- `#ResultCardCopyButton` / `#ResultCardOpenButton` QSS — 말풍선 버튼이 계속 공유
+
+---
+
+## QSS 추가분
+
+기존 토큰만 쓴다 (`#2563EB` 강조 / `#F7F8F9` 페이지 / `#FFFFFF` 패널 / `#E5E7EB` 테두리 / `#1F2937` 본문 / `#9CA3AF` 보조).
+
+| objectName | 용도 |
+|---|---|
+| `#ResultHeader` | 흰 배경 + 하단 테두리 |
+| `#ResultHeaderTitle` | 현재 검색어, 14px 본문색 |
+| `#ResultHeaderClose` | ✕ 버튼, 보조색 → hover 시 본문색 |
+| `#InputBar` | 흰 배경 + 상단 테두리 |
+| `#RecentSearchItem` | 12px 보조색 → hover 시 강조색 |
+| `#SidebarActionButton` | 모델·폴더 관리 버튼 (연회색 배경 + 테두리) |
+
+기존 `#ChatInput`·`#ChatSendButton` 규칙은 `#InputBar` 하위 셀렉터로 이름을 옮긴다. `#SearchBar`·`#SearchIcon`·`#SearchInput` 규칙은 제거한다.
+
+---
+
+## 작업 순서
+
+각 단계마다 앱이 실행 가능한 상태를 유지한다.
+
+1. **AppState 확장** — `recent_searches` 필드 + 테스트. 화면 변화 없음, 독립적으로 검증 가능
+2. **InputBar 개조** — debounce 제거, 보내기 버튼, `submit_text()`. 아직 상단에 있는 채로 동작 확인
+3. **레이아웃 재배치** — InputBar를 하단으로, StatusBar 폴더 버튼 제거. 검색 결과 모드가 정상 동작하는지 실행 확인
+4. **ChatPanel 입력창 제거** — `_send(text)` 시그니처 변경, MainWindow 라우팅. 챗봇 모드 실행 확인
+5. **말풍선 좌/우 정렬** — QWidget 래퍼 + 최대 폭 65%
+6. **ResultHeader 신규** — 검색어 표시 + ✕
+7. **사이드바 확장** — 최근 검색 + 관리 버튼 2개, 콤보의 중복 링크 제거
+8. **QSS 정리** — 신규 규칙 추가, 죽은 규칙 제거
+9. **테스트 일괄 수정 및 전체 실행**
+
+---
+
+## 문서 갱신
+
+이 프로젝트는 Phase 완료 시 문서 갱신을 체크리스트의 일부로 취급한다(`CLAUDE.md`).
+
+- **DESIGN §2.1** — 레이아웃 구조표(검색바 상단 고정)를 하단 입력창 구조로 개정
+- **DESIGN §3.1~3.2** — 검색바 절을 입력 영역으로 개정, **debounce 명세 폐기 사유 명기**
+- **DESIGN §4** — 사이드바에 최근 검색·관리 버튼 블록 추가
+- **DESIGN §5.8** — 챗봇 패널이 자체 입력창을 갖지 않게 된 점 반영
+- **DESIGN §6** — 상태바에서 폴더 관리 버튼이 빠진 점 반영
+- **TASK / PLAN** — 이번 작업을 **Phase 7.7**로 등록할 것을 제안한다(T10 계열 단발 수정과 달리 화면 구조 전면 개편이라 Phase 단위가 맞다). 착수 시 확정 필요
+- **plan 원문 아카이브** — `python -m scripts.archive_plan --list` 후 `--all`
+
+## 위험 요소
+
+이 프로젝트는 Phase 4·5·7에서 **"화면 부착 전/후" 함정**을 세 번 반복해서 겪었다 — `QTableWidget` 헤더 높이(24px→34px), `QLabel.isVisible()`이 부모 미표시 상태에서 False, `StyledCheckbox` QSS 폴리시 타이밍. 셋 다 자동화 테스트는 통과하고 실제 창을 띄운 시각 검증에서만 드러났다.
+
+이번 변경에서 같은 종류가 나올 지점:
+
+1. **말풍선 최대 폭 65%** — 창에 부착되기 전 `_transcript.width()`는 실제 값이 아니다. 생성 시점에 계산하면 엉뚱한 폭이 나온다. `resizeEvent()`에서 갱신하도록 짜고, **실제 창을 띄워** 폭을 눈으로 확인한다.
+2. **ResultHeader 표시/숨김** — Phase 7에서 `isVisible()`이 물린 그 함정이다. 테스트는 `isVisibleTo(parent)`로 검증한다.
+3. **레이아웃 교체 시 잔상** — `ResultList._clear()`가 `setParent(None)` 없이는 이전 위젯이 `findChild`에 계속 잡힌다는 것이 이미 주석에 기록돼 있다(`result_list.py:47-61`). 헤더·입력창을 모드별로 토글할 때 같은 문제가 나올 수 있다.
+
+추가 위험:
+
+4. **DESIGN 문서와의 불일치** — §2.1 레이아웃 구조와 §3.2 debounce 명세가 이 변경으로 무효가 된다. 구현과 함께 DESIGN 문서를 갱신하지 않으면 다음 Phase에서 "명세와 다르다"로 되돌아온다.
+5. **`_activate_chat_mode()`의 자동 전송** — 현재 상단 검색바에 입력해 둔 검색어를 챗봇 진입 시 자동 전송한다(`main_window.py:240-244`). 입력창이 공유되면 "검색 결과를 보다가 토글을 켜면 같은 질의가 챗봇으로 넘어간다"는 동작이 되는데, 이게 자연스러운지 실행해서 확인한다.
+
+---
+
+## 검증
+
+```bash
+./.venv/Scripts/python.exe -m pytest -q
+```
+
+기준선은 **603 passed / 5 skipped**. 테스트 수정 후 이 수치가 유지되거나 신규 테스트만큼 늘어야 한다.
+
+자동화 테스트만으로는 부족하다 — 이 프로젝트에서 UI 버그는 매번 실제 창에서만 드러났다. 실제 인덱스(문서 19건)로 다음을 실행해 `QWidget.grab()` 스크린샷으로 확인한다:
+
+1. 하단 입력창에 질의 → Enter → 결과 카드 목록 + 상단 헤더에 검색어 표시
+2. 헤더 ✕ 클릭 → 입력창 비고 초기 안내로 복귀
+3. "AI 챗봇 사용" 토글 ON → 헤더 사라지고 대화 화면, 같은 입력창으로 메시지 전송
+4. 말풍선 좌/우 정렬과 폭 65% 확인, **창 크기를 바꿔가며** 폭이 따라오는지 확인
+5. "AI 요약 보기" 클릭 → 요약 생성 (LLM 실동작, 중앙 18.3초)
+6. 사이드바 최근 검색 항목 클릭 → 해당 질의 재실행
+7. 사이드바 모델 관리·폴더 관리 버튼 → 각 다이얼로그 정상 표시
+8. 앱 재시작 → 최근 검색이 복원되는지 확인
+
+---
+
 <!-- 출처: sequential-snacking-puddle.md · DESKTOP-V42GJBP · 작성 2026-08-11 14:26 · 아카이브 2026-08-11 15:15 -->
 
 # Phase 7.6: AI 요약을 AI 챗봇으로 교체 (2단 응답 구조)

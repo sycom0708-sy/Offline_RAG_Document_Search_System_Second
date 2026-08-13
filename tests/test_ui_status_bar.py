@@ -100,11 +100,6 @@ class TestStatusBar:
         bar.set_warning(None)
         assert bar._warning_label.isVisibleTo(bar) is False
 
-    def test_folder_button_exists(self, qtbot):
-        bar = StatusBar()
-        qtbot.addWidget(bar)
-        assert bar.folder_button.text() == "폴더 관리"
-
 
 class TestFolderDialog:
     def test_shows_no_folder_message_when_none(self, qtbot):

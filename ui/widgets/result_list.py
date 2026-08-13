@@ -105,9 +105,15 @@ class ResultList(QScrollArea):
         카드 목록·안내 메시지와 같은 "특수 상태" 취급이다 — `_clear()`가
         이전 내용을 치우고 이 패널 하나로 채운다. 토글 OFF로 `show_results()`가
         다시 불리면 `_clear()`를 거쳐 이 패널도 함께 걷힌다(잔상 없음).
+
+        stretch=1을 반드시 줘야 한다 — 안 주면 `panel`은 자기 sizeHint
+        높이만 차지하고, `__init__`에서 미리 넣어둔 트레일링
+        `addStretch()`(카드 목록을 위쪽으로 붙이는 용도)가 나머지 여백을
+        전부 먹어, 챗봇의 실제 스크롤 영역이 입력창 위까지 안 닿고 화면
+        중간에서 끊겨 보인다(실사용 중 실제로 발견됨).
         """
         self._clear()
-        self._layout.insertWidget(0, panel)
+        self._layout.insertWidget(0, panel, 1)
 
     def card_count(self) -> int:
         """텍스트/표/이미지 세 카드 타입 모두 `objectName("ResultCard")`를

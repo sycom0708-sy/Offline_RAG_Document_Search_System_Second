@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>오프라인 RAG 문서 검색 - UI 컨셉 v2</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .container {
+            display: flex;
+            height: 100vh;
+        }
+        
+        /* ===== 사이드바 (좌측) ===== */
+        .sidebar {
+            width: 220px;
+            background: #ffffff;
+            border-right: 1px solid #e5e5e5;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            overflow-y: auto;
+        }
+        
+        .sidebar-section {
+            margin-bottom: 20px;
+        }
+        
+        .sidebar-section-title {
+            font-size: 11px;
+            font-weight: 700;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+        }
+        
+        /* 필터 섹션 - 체크박스 2열 */
+        .filter-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+        
+        .filter-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: #333;
+            cursor: pointer;
+        }
+        
+        .filter-item input[type="checkbox"] {
+            cursor: pointer;
+            width: 14px;
+            height: 14px;
+            accent-color: #1e90ff;
+        }
+        
+        /* 검색 설정 - 토글 스위치 */
+        .setting-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            font-size: 12px;
+            color: #333;
+        }
+        
+        .toggle-switch {
+            width: 40px;
+            height: 22px;
+            background: #ccc;
+            border-radius: 11px;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.25s;
+        }
+        
+        .toggle-switch.on {
+            background: #1e90ff;
+        }
+        
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            background: white;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: left 0.25s;
+        }
+        
+        .toggle-switch.on::after {
+            left: 20px;
+        }
+        
+        /* PC 성능 선택 */
+        .performance-select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #333;
+            background: white;
+            cursor: pointer;
+        }
+        
+        /* 최근 검색 */
+        .recent-searches {
+            margin-top: auto;
+            padding-top: 16px;
+            border-top: 1px solid #f0f0f0;
+        }
+        
+        .recent-search-item {
+            padding: 6px 0;
+            font-size: 12px;
+            color: #666;
+            cursor: pointer;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .recent-search-item:hover {
+            color: #1e90ff;
+        }
+        
+        /* 좌하단 버튼들 */
+        .sidebar-footer {
+            display: flex;
+            gap: 8px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #f0f0f0;
+        }
+        
+        .sidebar-btn {
+            flex: 1;
+            padding: 8px;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #333;
+            cursor: pointer;
+            transition: all 0.15s;
+            text-align: center;
+        }
+        
+        .sidebar-btn:hover {
+            background: #e8e8e8;
+            border-color: #ccc;
+        }
+        
+        /* ===== 메인 영역 (우측) ===== */
+        .main-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #fafafa;
+        }
+        
+        /* 메시지 영역 */
+        .messages-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .message-group {
+            display: flex;
+            margin-bottom: 4px;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* AI 메시지 (좌측) */
+        .message-group.ai {
+            justify-content: flex-start;
+        }
+        
+        .message-group.ai .message-bubble {
+            background: #e5e5ea;
+            color: #333;
+            border-radius: 16px 16px 16px 4px;
+        }
+        
+        /* 사용자 메시지 (우측) */
+        .message-group.user {
+            justify-content: flex-end;
+        }
+        
+        .message-group.user .message-bubble {
+            background: #1e90ff;
+            color: white;
+            border-radius: 16px 16px 4px 16px;
+        }
+        
+        .message-bubble {
+            max-width: 65%;
+            padding: 10px 14px;
+            font-size: 13px;
+            line-height: 1.4;
+            word-wrap: break-word;
+        }
+        
+        /* AI 응답 추가 정보 영역 */
+        .ai-response-wrapper {
+            max-width: 65%;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .ai-response-detail {
+            background: white;
+            border: 1px solid #f0f0f0;
+            border-radius: 8px;
+            padding: 10px 12px;
+            font-size: 11px;
+            color: #666;
+        }
+        
+        .ai-response-detail-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+            font-size: 12px;
+        }
+        
+        .ai-response-detail-content {
+            color: #999;
+            font-size: 11px;
+            line-height: 1.4;
+        }
+        
+        /* 메시지 액션 버튼 (AI 응답 우측) */
+        .message-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 6px;
+            margin-left: 12px;
+        }
+        
+        .message-action-btn {
+            padding: 4px 10px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 10px;
+            color: #1e90ff;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        
+        .message-action-btn:hover {
+            background: #f0f8ff;
+            border-color: #1e90ff;
+        }
+        
+        /* 입력 영역 */
+        .input-area {
+            padding: 16px 24px 20px;
+            background: white;
+            border-top: 1px solid #e5e5e5;
+        }
+        
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .input-field {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 12px;
+            font-family: inherit;
+            resize: none;
+            max-height: 80px;
+            transition: all 0.2s;
+            color: #333;
+        }
+        
+        .input-field::placeholder {
+            color: #999;
+        }
+        
+        .input-field:focus {
+            outline: none;
+            border-color: #1e90ff;
+            box-shadow: 0 0 0 2px rgba(30, 144, 255, 0.1);
+        }
+        
+        .input-btn {
+            padding: 10px 20px;
+            background: #1e90ff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        
+        .input-btn:hover {
+            background: #0066cc;
+            transform: translateY(-1px);
+        }
+        
+        .input-btn:active {
+            transform: translateY(0);
+        }
+        
+        /* 스크롤바 */
+        .messages-area::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .messages-area::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .messages-area::-webkit-scrollbar-thumb {
+            background: #ddd;
+            border-radius: 3px;
+        }
+        
+        .messages-area::-webkit-scrollbar-thumb:hover {
+            background: #bbb;
+        }
+        
+        /* 우하단 상태바 */
+        .footer-status {
+            padding: 8px 24px;
+            background: #f9f9f9;
+            border-top: 1px solid #e5e5e5;
+            font-size: 10px;
+            color: #999;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .footer-btn {
+            padding: 4px 10px;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 10px;
+            color: #1e90ff;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        
+        .footer-btn:hover {
+            background: #e8e8e8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 사이드바 -->
+        <div class="sidebar">
+            <!-- 문서 필터 -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">문서 필터</div>
+                <div class="filter-grid">
+                    <label class="filter-item">
+                        <input type="checkbox" checked>
+                        <span>전체</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>doc</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>docx</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>pdf</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>hwp</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>txt</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>hwpx</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>xls</span>
+                    </label>
+                    <label class="filter-item">
+                        <input type="checkbox">
+                        <span>xlsx</span>
+                    </label>
+                </div>
+            </div>
+            
+            <!-- 검색 설정 -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">검색 설정</div>
+                <div class="setting-item">
+                    <span>AI 챗봇 사용</span>
+                    <div class="toggle-switch on"></div>
+                </div>
+                <div class="setting-item">
+                    <span>대/소문자 구분</span>
+                    <div class="toggle-switch"></div>
+                </div>
+                <div class="setting-item">
+                    <span>완전일치 단어</span>
+                    <div class="toggle-switch"></div>
+                </div>
+            </div>
+            
+            <!-- PC 성능 선택 -->
+            <div class="sidebar-section">
+                <div class="sidebar-section-title">PC 성능 선택</div>
+                <select class="performance-select">
+                    <option>경량 모드 - 설치원</option>
+                    <option>표준 모드</option>
+                    <option>고성능 모드</option>
+                </select>
+            </div>
+            
+            <!-- 최근 검색 -->
+            <div class="recent-searches">
+                <div class="sidebar-section-title">최근 검색</div>
+                <div class="recent-search-item">서류검증 1</div>
+                <div class="recent-search-item">서류검증 2</div>
+            </div>
+            
+            <!-- 좌하단 버튼 -->
+            <div class="sidebar-footer">
+                <button class="sidebar-btn">📊 모델 관리</button>
+                <button class="sidebar-btn">📁 폴더 관리</button>
+            </div>
+        </div>
+        
+        <!-- 메인 영역 -->
+        <div class="main-area">
+            <!-- 메시지 영역 -->
+            <div class="messages-area">
+                <!-- AI 메시지 1 -->
+                <div class="message-group ai">
+                    <div class="ai-response-wrapper">
+                        <div class="message-bubble">
+                            검색 시스템 준비 완료입니다. 어떤 정보를 찾으시나요?
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 사용자 메시지 1 -->
+                <div class="message-group user">
+                    <div class="message-bubble">
+                        서류검증 (서류 종류 별 하단 설명)
+                    </div>
+                </div>
+                
+                <!-- AI 메시지 2 (액션 버튼 포함) -->
+                <div class="message-group ai">
+                    <div class="ai-response-wrapper">
+                        <div class="message-bubble">
+                            KPC(Korea Professional Coach): 코치인증자격 2단계 / KAC 취득 6개월 경과 후 응시가능 1. 서류검증(서류 종류 별 하단 설명)
+                        </div>
+                        <div class="ai-response-detail">
+                            <div class="ai-response-detail-title">📄 검색 결과</div>
+                            <div class="ai-response-detail-content">
+                                코치인증자격시_세부사항_인증_1_28_v3.doc
+                            </div>
+                        </div>
+                        <div class="message-actions">
+                            <button class="message-action-btn">AI 요약 보기</button>
+                            <button class="message-action-btn">파일 열기</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 사용자 메시지 2 -->
+                <div class="message-group user">
+                    <div class="message-bubble">
+                        더 자세히 알려줄 수 있어?
+                    </div>
+                </div>
+                
+                <!-- AI 메시지 3 -->
+                <div class="message-group ai">
+                    <div class="ai-response-wrapper">
+                        <div class="message-bubble">
+                            시험은 객관식 50문제, 90분 진행됩니다. 합격선은 70점입니다.
+                        </div>
+                        <div class="ai-response-detail">
+                            <div class="ai-response-detail-title">📊 추가 정보</div>
+                            <div class="ai-response-detail-content">
+                                응시수수료: 60,000원 | 시험 장소: 서울, 대구, 부산
+                            </div>
+                        </div>
+                        <div class="message-actions">
+                            <button class="message-action-btn">AI 요약 보기</button>
+                            <button class="message-action-btn">파일 열기</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 입력 영역 -->
+            <div class="input-area">
+                <div class="input-container">
+                    <textarea class="input-field" placeholder="질문을 입력하세요" rows="1"></textarea>
+                    <button class="input-btn">보내기</button>
+                </div>
+            </div>
+            
+            <!-- 우하단 상태바 -->
+            <div class="footer-status">
+                <span>문서 21개 인덱싱 중 · 마지막 갱신 1분 전</span>
+                <div style="display: flex; gap: 8px;">
+                    <button class="footer-btn">🔄 새로고침</button>
+                    <button class="footer-btn">⚙️ 고급 설정</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,4 +1,5 @@
-"""AI 챗봇 패널 (T7.6) — 검색 결과 영역을 통째로 차지하는 채팅 화면.
+"""AI 챗봇 패널 (T7.6, Phase 7.7에서 입력창을 MainWindow 공용으로 이관) —
+검색 결과 영역을 통째로 차지하는 채팅 화면.
 
 Phase 7의 "AI 요약 보기"(검색마다 자동 1회 요약)를 대체한다. 실측(속도
 79초 vs 은행 앱 수준 요구)이 부딪혀 응답을 2단으로 나눴다
@@ -17,16 +18,20 @@ MainWindow가 하고, 이 패널은 신호로 요청하고 결과를 받아 그�
 
 메시지마다 독립 처리(stateless)다 — 매번 검색어 전체 범위로 새로 검색한다.
 "두 번째는요?" 같은 대명사 참조는 지원하지 않는다.
+
+Phase 7.7부터 이 패널은 자체 입력창을 갖지 않는다 — 목업(`rag_ui_concept_
+chatbot.html`)이 검색 결과 모드와 챗봇 모드에서 입력 지점을 하나로 통일해,
+`MainWindow`가 소유한 공용 입력창(`InputBar`)이 `send_message()`를 호출한다.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -39,12 +44,19 @@ from slm.summarize import Summary
 from ui.widgets.card_common import open_source_file
 from ui.widgets.summary_card import SummaryCard
 
-SEND_BUTTON_LABEL = "보내기"
-INPUT_PLACEHOLDER = "질문을 입력하세요"
 SUMMARIZE_BUTTON_LABEL = "AI 요약 보기"
 OPEN_BUTTON_LABEL = "파일 열기 ↗"
 SEARCHING_TEXT = "검색하는 중…"
 NO_RESULTS_TEXT = "관련 문서를 찾을 수 없습니다."
+
+# 말풍선 최대 폭(70%) — 목업 기준값(65%)에서 사용자 확인 후 넓혔다
+# [2026-08-13]. Qt QSS는 max-width를 지원하지 않아 위젯의
+# setMaximumWidth()로 직접 계산한다(ChatPanel.resizeEvent 참고).
+MAX_BUBBLE_WIDTH_RATIO = 0.70
+
+# QSS #ChatUserMessage의 padding(8px 12px)에 여유를 더한 근사값 — 아래
+# _natural_single_line_width()에서 쓴다.
+_LABEL_HORIZONTAL_PADDING = 30
 
 
 class _AnswerBubble(QFrame):
@@ -175,6 +187,9 @@ class ChatPanel(QWidget):
     채운다. objectName은 `ResultCard`를 쓰지 않는다 — 쓰면
     `ResultList.card_count()`("검색 결과 N건")에 잡혀버린다
     (`AiSummaryCard`가 이미 피한 것과 같은 함정).
+
+    입력창을 갖지 않는다 — `MainWindow`가 소유한 공용 `InputBar`가
+    `send_message()`를 호출해 메시지를 넣는다(Phase 7.7).
     """
 
     message_sent = Signal(int, str)  # (request_id, question)
@@ -186,6 +201,9 @@ class ChatPanel(QWidget):
         self.setObjectName("ChatPanel")
         self._next_id = 0
         self._bubbles: dict[int, _AnswerBubble] = {}
+        # 좌/우 정렬 행에 들어간 위젯들(사용자 라벨 + AI 말풍선) — 창 크기가
+        # 바뀔 때마다 최대 폭(65%)을 다시 계산해야 해서 전부 기억해 둔다.
+        self._bubble_widgets: list[QWidget] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -204,29 +222,17 @@ class ChatPanel(QWidget):
         self._scroll.setWidget(self._transcript)
         layout.addWidget(self._scroll, stretch=1)
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(12, 8, 12, 12)
-        input_row.setSpacing(8)
-        self._input = QLineEdit()
-        self._input.setObjectName("ChatInput")
-        self._input.setPlaceholderText(INPUT_PLACEHOLDER)
-        self._input.returnPressed.connect(self._send)
-        input_row.addWidget(self._input, stretch=1)
-
-        self._send_button = QPushButton(SEND_BUTTON_LABEL)
-        self._send_button.setObjectName("ChatSendButton")
-        self._send_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._send_button.clicked.connect(self._send)
-        input_row.addWidget(self._send_button)
-        layout.addLayout(input_row)
-
     # --- 공개 API -------------------------------------------------------
 
     def send_message(self, text: str) -> None:
-        """외부(MainWindow)에서 메시지를 대신 보낼 때 쓴다 — 챗봇 모드를 켜면
-        검색어를 그대로 첫 질문 삼아 자동 전송하는 데 쓰인다."""
-        self._input.setText(text)
-        self._send()
+        """메시지를 보낸다 — 이 패널의 유일한 입력 경로다.
+
+        `MainWindow`의 공용 입력창(`InputBar`)이 챗봇 모드일 때 이 메서드를
+        호출한다. 빈 문자열(공백만 포함)은 조용히 무시한다."""
+        text = text.strip()
+        if not text:
+            return
+        self._send(text)
 
     def show_excerpt(self, request_id: int, results: list) -> None:
         bubble = self._bubbles.get(request_id)
@@ -268,19 +274,14 @@ class ChatPanel(QWidget):
 
     # --- 내부 -----------------------------------------------------------
 
-    def _send(self) -> None:
-        text = self._input.text().strip()
-        if not text:
-            return
-        self._input.clear()
-
+    def _send(self, text: str) -> None:
         self._next_id += 1
         request_id = self._next_id
 
         user_label = QLabel(text)
         user_label.setObjectName("ChatUserMessage")
         user_label.setWordWrap(True)
-        self._transcript_layout.insertWidget(self._transcript_layout.count() - 1, user_label)
+        self._add_row(user_label, align_right=True)
 
         bubble = _AnswerBubble()
         bubble.show_searching()
@@ -289,10 +290,73 @@ class ChatPanel(QWidget):
         )
         bubble.open_requested.connect(lambda b=bubble: self._open_top_result(b))
         self._bubbles[request_id] = bubble
-        self._transcript_layout.insertWidget(self._transcript_layout.count() - 1, bubble)
+        self._add_row(bubble, align_right=False)
 
-        self._scroll_to_bottom()
+        # 방금 넣은 위젯은 아직 레이아웃이 안 돌아 `bar.maximum()`이 직전
+        # 값이다 — 지금 부르면 한 턴 늦게 스크롤된다. 다음 이벤트 루프로
+        # 미룬다.
+        QTimer.singleShot(0, self._scroll_to_bottom)
         self.message_sent.emit(request_id, text)
+
+    def _add_row(self, widget: QWidget, *, align_right: bool) -> None:
+        """`widget`을 좌/우 정렬 행으로 감싸 대화창 맨 끝(stretch 앞)에 넣는다.
+
+        QSS는 margin-left:auto나 max-width를 지원하지 않으므로, 정렬은
+        QHBoxLayout의 addStretch() 위치로, 최대 폭은 setMaximumWidth()로
+        각각 직접 계산한다. 래퍼를 QWidget으로 만드는 이유는 `insertWidget`
+        관행(`_transcript_layout.count() - 1`)을 유지하면서, 레이아웃만
+        넣으면 정리(clear) 시 `widget()`이 None이라 놓치는 함정을 피하기
+        위해서다.
+        """
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        if align_right:
+            row_layout.addStretch()
+            row_layout.addWidget(widget)
+        else:
+            row_layout.addWidget(widget)
+            row_layout.addStretch()
+
+        self._transcript_layout.insertWidget(self._transcript_layout.count() - 1, row)
+        self._bubble_widgets.append(widget)
+        self._apply_max_width(widget)
+
+    def _apply_max_width(self, widget: QWidget) -> None:
+        # 창에 아직 부착되지 않은 시점(생성 직후)엔 `_transcript.width()`가
+        # 0이다(Phase 4·5·7에서 반복된 "부착 전/후" 함정과 같은 종류). 그대로
+        # 두면 상한이 안 걸려 말풍선이 첫 프레임에 폭 전체로 그려졌다가 다음
+        # 이벤트 루프에 확 줄어드는 게 보인다 — 자신의 폭, 그마저 없으면
+        # 고정된 임시값으로 상한을 미리 걸어 두고 resizeEvent가 실제 크기로
+        # 바로잡게 한다.
+        width = self._transcript.width() or self.width() or 640
+        cap = int(width * MAX_BUBBLE_WIDTH_RATIO)
+
+        if isinstance(widget, QLabel):
+            # QLabel.wordWrap()의 기본 sizeHint는 텍스트를 정사각형에
+            # 가깝게 배치하려 해, 한 줄로 충분히 들어가는 짧은 문장도
+            # 불필요하게 두 줄로 접는다(실사용 중 발견) — 한 줄 폭을 직접
+            # 계산해 최소 폭으로 줘서, 상한(cap) 안에서는 줄바꿈이 강제되지
+            # 않도록 한다. 텍스트가 상한보다 길 때만 실제로 줄바꿈된다.
+            #
+            # 🔴 `ensurePolished()`가 반드시 먼저 와야 한다 — 이 시점
+            # (insertWidget 직후, 아직 화면에 안 보임)엔 QSS의
+            # `font-size: 14px`가 아직 위젯에 반영되지 않아 `widget.font()`가
+            # 앱 기본 폰트(10pt)를 돌려준다. 그 폰트로 폭을 계산해 두면
+            # 나중에 실제 14px 폰트로 그려질 때 계산이 작아서 여전히
+            # 줄바꿈된다(실측으로 확인: 201px vs 실제 217px).
+            widget.ensurePolished()
+            metrics = QFontMetrics(widget.font())
+            natural = metrics.horizontalAdvance(widget.text()) + _LABEL_HORIZONTAL_PADDING
+            widget.setMinimumWidth(min(natural, cap))
+
+        widget.setMaximumWidth(cap)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().resizeEvent(event)
+        for widget in self._bubble_widgets:
+            self._apply_max_width(widget)
 
     def _open_top_result(self, bubble: _AnswerBubble) -> None:
         if not bubble.results:

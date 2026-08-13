@@ -18,6 +18,7 @@ from config.settings import DEFAULT_SLM_PROFILE, LIGHT, PROJECT_ROOT
 DATA_DIR = PROJECT_ROOT / "data"
 STATE_PATH = DATA_DIR / "app_state.json"
 DB_PATH = DATA_DIR / "index.sqlite3"
+RECENT_SEARCHES_LIMIT = 10
 
 
 @dataclass
@@ -32,6 +33,9 @@ class AppState:
     # 기본값(False)으로 시작한다.
     ai_chat_enabled: bool = False
     slm_profile: str = DEFAULT_SLM_PROFILE
+    # 사이드바 "최근 검색" 목록(Phase 7.7). 최신이 맨 앞, 최대
+    # RECENT_SEARCHES_LIMIT건 — 목록 갱신은 ui.state 밖(MainWindow)에서 한다.
+    recent_searches: list[str] = dataclasses.field(default_factory=list)
 
     def __post_init__(self) -> None:
         # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자
@@ -68,6 +72,15 @@ class AppState:
             return cls(**filtered)
         except TypeError:
             return cls()
+
+    def add_recent_search(self, query: str) -> None:
+        """검색어를 최근 검색 맨 앞에 올린다. 중복은 앞으로 옮기고,
+        최대 `RECENT_SEARCHES_LIMIT`건에서 오래된 것부터 잘라낸다."""
+        query = query.strip()
+        if not query:
+            return
+        self.recent_searches = [query] + [q for q in self.recent_searches if q != query]
+        del self.recent_searches[RECENT_SEARCHES_LIMIT:]
 
     def save(self, path: Path | None = None) -> None:
         target = path if path is not None else self._path

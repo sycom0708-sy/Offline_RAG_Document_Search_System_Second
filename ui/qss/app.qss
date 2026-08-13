@@ -10,30 +10,34 @@ QMainWindow, #CentralWidget {
     background: #F7F8F9;
 }
 
-/* ---------- 검색바 (§3.1) ---------- */
+#MainArea {
+    background: #F7F8F9;
+}
 
-#SearchBar {
+/* ---------- 검색 결과 헤더 (Phase 7.7) ----------
+   검색 결과 모드에서만 보인다 — 챗봇 모드는 헤더 없이 대화만 흐른다
+   (DESIGN §5.8). */
+#ResultHeader {
     background: #FFFFFF;
     border-bottom: 1px solid #E5E7EB;
 }
 
-#SearchIcon {
-    color: #9CA3AF;
-    font-size: 14px;
-}
-
-#SearchInput {
-    border: 1px solid #E5E7EB;
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 14px;
+#ResultHeaderTitle {
     color: #1F2937;
-    background: #FFFFFF;
-    margin: 8px 0;
+    font-size: 14px;
+    font-weight: 700;
 }
 
-#SearchInput:focus {
-    border-color: #2563EB;
+#ResultHeaderClose {
+    border: none;
+    background: transparent;
+    color: #9CA3AF;
+    font-size: 16px;
+    padding: 2px 6px;
+}
+
+#ResultHeaderClose:hover {
+    color: #1F2937;
 }
 
 /* ---------- 사이드바 (§4) ---------- */
@@ -73,17 +77,33 @@ QMainWindow, #CentralWidget {
     background: #FFFFFF;
 }
 
-/* 콤보 우측 하단 "모델 관리" — #StatusBarFolderButton과 같은 링크 스타일 */
-#PerformanceComboManageButton {
+/* 사이드바 하단 "최근 검색" (Phase 7.7) */
+#RecentSearchItem {
     border: none;
     background: transparent;
-    color: #2563EB;
+    color: #9CA3AF;
     font-size: 12px;
-    padding: 2px 0;
+    padding: 5px 0;
+    text-align: left;
 }
 
-#PerformanceComboManageButton:hover {
-    text-decoration: underline;
+#RecentSearchItem:hover {
+    color: #2563EB;
+}
+
+/* 사이드바 하단 "모델 관리"·"폴더 관리" (Phase 7.7 — 각각 PerformanceCombo·
+   StatusBar에 흩어져 있던 것을 옮겼다) */
+#SidebarFooterButton {
+    background: #F7F8F9;
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+    color: #1F2937;
+    font-size: 12px;
+    padding: 8px 4px;
+}
+
+#SidebarFooterButton:hover {
+    background: #E5E7EB;
 }
 
 /* ---------- 결과 리스트 / 카드 (§5) ---------- */
@@ -217,6 +237,7 @@ QMainWindow, #CentralWidget {
     color: #FFFFFF;
     font-size: 14px;
     border-radius: 8px;
+    border-bottom-right-radius: 2px;  /* 말풍선 꼬리 방향 — 컨셉 목업 참고 */
     padding: 8px 12px;
 }
 
@@ -224,6 +245,7 @@ QMainWindow, #CentralWidget {
     background: #FFFFFF;
     border: 1px solid #E5E7EB;
     border-radius: 8px;
+    border-bottom-left-radius: 2px;
 }
 
 #ChatExcerptBody {
@@ -236,7 +258,15 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
-#ChatInput {
+/* ---------- 공용 입력창 (Phase 7.7) ----------
+   검색 결과 모드·챗봇 모드가 함께 쓴다. 옛 #ChatInput/#ChatSendButton(챗봇
+   전용 시절)과 #SearchInput(검색 전용 시절)을 이 규칙으로 통합했다. */
+#InputBar {
+    background: #FFFFFF;
+    border-top: 1px solid #E5E7EB;
+}
+
+#InputBarField {
     border: 1px solid #E5E7EB;
     border-radius: 8px;
     padding: 8px 12px;
@@ -245,11 +275,11 @@ QMainWindow, #CentralWidget {
     background: #FFFFFF;
 }
 
-#ChatInput:focus {
+#InputBarField:focus {
     border-color: #2563EB;
 }
 
-#ChatSendButton {
+#InputBarSendButton {
     background: #2563EB;
     color: #FFFFFF;
     border: none;
@@ -258,7 +288,7 @@ QMainWindow, #CentralWidget {
     font-size: 14px;
 }
 
-#ChatSendButton:hover {
+#InputBarSendButton:hover {
     background: #1D4ED8;
 }
 
@@ -313,17 +343,6 @@ QMainWindow, #CentralWidget {
     /* DESIGN에 경고색 지정이 없어 자체 판단[제안] — amber 계열 */
     color: #B45309;
     font-size: 12px;
-}
-
-#StatusBarFolderButton {
-    border: none;
-    background: transparent;
-    color: #2563EB;
-    font-size: 12px;
-}
-
-#StatusBarFolderButton:hover {
-    text-decoration: underline;
 }
 
 /* ---------- 모델 관리 팝업 ---------- */

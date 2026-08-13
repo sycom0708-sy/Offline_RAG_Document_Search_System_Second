@@ -1,15 +1,18 @@
-"""하단 상태바 (T4.16, DESIGN §6).
+"""하단 상태바 (T4.16, DESIGN §6, Phase 7.7).
 
 인덱싱 진행 중에는 문서 수 텍스트를 "인덱싱 중… N/M"으로 바꾸고 진행바를
 덧댄다 — TECH 4.6의 "진행 바와 함께 백그라운드 수행" 요구를 목업이 담지
 못해서 DESIGN §6이 제안한 방식이다.
+
+Phase 7.7에서 "폴더 관리" 버튼을 사이드바 하단(모델 관리 옆)으로 옮겼다 —
+목업(`rag_ui_concept_*.html`)이 두 관리 버튼을 사이드바에 나란히 둔다.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QPushButton, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QWidget
 
 IDLE_NO_DOCS_MESSAGE = "인덱싱된 문서가 없습니다"
 
@@ -54,16 +57,12 @@ class StatusBar(QWidget):
         self._progress.setFixedWidth(160)
         self._progress.hide()
 
-        self.folder_button = QPushButton("폴더 관리")
-        self.folder_button.setObjectName("StatusBarFolderButton")
-
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 6, 16, 6)
         layout.addWidget(self._info_label)
         layout.addWidget(self._warning_label)
         layout.addWidget(self._progress)
         layout.addStretch()
-        layout.addWidget(self.folder_button)
 
     def set_idle(self, document_count: int, last_indexed_at: datetime | None) -> None:
         self._progress.hide()

@@ -13,6 +13,9 @@ Phase 7.6에서 챗봇 패널이 자동 요약 카드를 완전히 대체하며 
 
 from __future__ import annotations
 
+from PySide6.QtGui import QFontMetrics
+from PySide6.QtWidgets import QApplication, QLabel
+
 from indexer.fts5.search import SearchResult
 from parser.schema import ChunkType
 from search.hybrid_search import HybridResult
@@ -168,6 +171,19 @@ class TestResultListChatMode:
         assert widget.card_count() == 1
         assert widget._layout.indexOf(panel) == -1
 
+    def test_panel_gets_stretch_to_fill_the_area_down_to_the_input_bar(self, qtbot):
+        """stretch=1 없이 넣으면 패널이 sizeHint 높이만 차지하고, `__init__`의
+        트레일링 `addStretch()`가 나머지 여백을 먹어 대화 영역이 화면 중간에서
+        끊겨 보인다(실사용 중 실제로 발견된 버그) — 인덱스 0의 stretch factor로
+        확인한다."""
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        panel = ChatPanel()
+
+        widget.show_chat_mode(panel)
+
+        assert widget._layout.stretch(0) == 1
+
 
 class TestChatPanel:
     """`ChatPanel`/`_AnswerBubble` 단독 테스트 — 워커는 MainWindow가 기동하므로
@@ -286,3 +302,96 @@ class TestChatPanel:
         assert panel.turn_count() == 2
         assert "계약서" in panel.bubble_for(1).excerpt_text()
         assert "리눅스" in panel.bubble_for(2).excerpt_text()
+
+
+class TestBubbleAlignment:
+    """말풍선 좌/우 정렬 + 최대 폭 70% (Phase 7.7, 목업 기준값 65%에서 사용자 확인 후 조정).
+
+    Qt QSS는 margin-left:auto·max-width를 지원하지 않아 정렬은
+    QHBoxLayout의 addStretch() 위치로, 최대 폭은 setMaximumWidth()로 직접
+    계산한다 — 둘 다 objectName만으로는 검증할 수 없는 기하 속성이라
+    레이아웃 아이템을 직접 들여다본다.
+    """
+
+    @staticmethod
+    def _last_row(panel):
+        """`_transcript_layout`의 마지막 stretch 바로 앞 항목(가장 최근 행)."""
+        layout = panel._transcript_layout
+        item = layout.itemAt(layout.count() - 2)
+        return item.widget()
+
+    def test_user_message_row_is_right_aligned(self, qtbot):
+        """사용자 메시지 행은 stretch가 먼저(왼쪽) 와야 위젯이 오른쪽에 붙는다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+
+        rows = [panel._transcript_layout.itemAt(i).widget() for i in range(panel._transcript_layout.count() - 1)]
+        user_row = rows[0]  # 사용자 메시지가 AI 말풍선보다 먼저 들어간다
+        row_layout = user_row.layout()
+
+        assert row_layout.itemAt(0).spacerItem() is not None  # 왼쪽 stretch
+        assert row_layout.itemAt(1).widget().objectName() == "ChatUserMessage"
+
+    def test_answer_bubble_row_is_left_aligned(self, qtbot):
+        """AI 말풍선 행은 위젯이 먼저(왼쪽) 오고 stretch가 뒤(오른쪽)여야 한다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+
+        bubble_row = self._last_row(panel)
+        row_layout = bubble_row.layout()
+
+        assert row_layout.itemAt(0).widget().objectName() == "ChatAnswerBubble"
+        assert row_layout.itemAt(1).spacerItem() is not None  # 오른쪽 stretch
+
+    def test_bubbles_get_a_max_width_even_before_being_shown(self, qtbot):
+        """창에 부착되기 전에도 임시 상한이 걸려야 한다 — 안 그러면 첫 프레임에
+        말풍선이 폭 전체로 그려졌다가 다음 이벤트 루프에 확 줄어드는 게 보인다
+        (Phase 4·5·7에서 반복된 "부착 전/후" 함정과 같은 종류)."""
+        panel = ChatPanel()  # qtbot.addWidget()도, show()도 하지 않은 상태
+        panel.send_message("계약서")
+
+        bubble = panel.bubble_for(1)
+        assert 0 < bubble.maximumWidth() < 16777215  # Qt 기본 무제한 값보다 작아야 한다
+
+    def test_resize_updates_bubble_max_width_to_70_percent(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.show()
+        panel.resize(1000, 600)
+        qtbot.wait(50)  # 레이아웃이 실제로 다시 계산될 시간을 준다
+        panel.send_message("계약서")
+        qtbot.wait(50)
+
+        bubble = panel.bubble_for(1)
+        expected = int(panel._transcript.width() * 0.70)
+        # eliding·레이아웃 반올림 오차를 감안해 근사 비교한다.
+        assert abs(bubble.maximumWidth() - expected) <= 2
+
+    def test_short_user_message_does_not_wrap_despite_qss_font_override(self, qtbot):
+        """실사용 중 발견 — `#ChatUserMessage`의 QSS `font-size` 오버라이드가
+        위젯 생성 직후(첫 폴리시 전)엔 아직 `font()`에 반영되지 않는다. 그
+        폰트로 한 줄 폭을 계산해 두면, 실제로 그려질 때 쓰는(더 큰) 폰트
+        기준으로는 폭이 모자라 한 줄로 충분한 문장도 두 줄로 잘렸다
+        (`ensurePolished()` 없이 재현됨, 수정 후 통과 확인)."""
+        app = QApplication.instance()
+        original_style = app.styleSheet()
+        # 기본보다 눈에 띄게 큰 폰트로 QSS 재폴리시 필요성을 과장해 재현한다.
+        app.setStyleSheet("#ChatUserMessage { font-size: 22px; }")
+        try:
+            panel = ChatPanel()
+            qtbot.addWidget(panel)
+            panel.resize(1000, 600)
+
+            text = "코치 인증 자격시험 응시 방법 찾아줘"
+            panel.send_message(text)
+
+            user_label = panel._transcript.findChild(QLabel, "ChatUserMessage")
+            user_label.ensurePolished()
+            metrics = QFontMetrics(user_label.font())
+            expected_min = metrics.horizontalAdvance(text) + 30
+            # 폴리시 전 폰트로 계산됐다면 이보다 훨씬 작게 잡혔을 것이다.
+            assert user_label.minimumWidth() >= expected_min - 2
+        finally:
+            app.setStyleSheet(original_style)

@@ -1,7 +1,9 @@
-"""레이아웃 셸 조립 (T4.1) — 검색바 / 사이드바 / 결과 리스트 / 상태바.
+"""레이아웃 셸 조립 (T4.1, Phase 7.7 전면 재구성) — 사이드바 / 결과 헤더 /
+결과 리스트 / 공용 입력창 / 상태바.
 
-DESIGN §2.1 구조를 그대로 옮긴다. 이 파일이 사이드바 옵션·검색바·검색
-워커·모델 관리·폴더 관리를 전부 이어 붙이는 조립부다.
+목업(`rag_ui_concept_*.html`)에 맞춰 상단 고정 검색바를 없애고 하단 공용
+입력창(`InputBar`) 하나로 검색·챗봇 두 모드를 함께 받는다. 이 파일이
+사이드바 옵션·입력·검색 워커·모델 관리·폴더 관리를 전부 이어 붙이는 조립부다.
 """
 
 from __future__ import annotations
@@ -25,8 +27,9 @@ from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.folder_dialog import FolderDialog
 from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.model_manager_dialog import ModelManagerDialog
+from ui.widgets.result_header import ResultHeader
 from ui.widgets.result_list import ResultList
-from ui.widgets.search_bar import SearchBar
+from ui.widgets.search_bar import InputBar
 from ui.widgets.sidebar import Sidebar
 from ui.widgets.status_bar import StatusBar
 
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
         self._refresh_format_filter_options()
         self._refresh_status_bar()
         self._refresh_ai_chat_availability()
+        self.sidebar.set_recent_searches(self.state.recent_searches)
         self._start_embedder_warmup()
 
     # --- UI 구성 --------------------------------------------------
@@ -105,28 +109,41 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         central.setObjectName("CentralWidget")
-        root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        root = _hbox(central)
 
-        self.search_bar = SearchBar()
-        root.addWidget(self.search_bar)
+        # PC 성능 콤보가 저장된 프로파일로 바로 시작하도록 생성 시점에
+        # 넘긴다 — 기본값으로 만든 뒤 따로 맞추면 화면은 "경량"인데 실제로는
+        # 권장으로 검색되는 어긋난 상태가 됐었다(실사용 중 발견).
+        self.sidebar = Sidebar(initial_profile=self.state.model_profile)
+        root.addWidget(self.sidebar)
 
-        body = QWidget()
-        body_layout = _hbox(body)
-        self.sidebar = Sidebar()
-        body_layout.addWidget(self.sidebar)
+        main_area = QWidget()
+        main_area.setObjectName("MainArea")
+        main_layout = QVBoxLayout(main_area)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # 검색 결과 모드에서만 보인다(DESIGN §5.8: 챗봇 모드는 헤더 없이
+        # 대화만 흐른다) — 기본값은 숨김이다.
+        self.result_header = ResultHeader()
+        self.result_header.setVisible(False)
+        main_layout.addWidget(self.result_header)
+
         self.result_list = ResultList()
-        body_layout.addWidget(self.result_list, stretch=1)
-        root.addWidget(body, stretch=1)
+        main_layout.addWidget(self.result_list, stretch=1)
+
+        self.input_bar = InputBar()
+        main_layout.addWidget(self.input_bar)
 
         self.status_bar_widget = StatusBar()
-        root.addWidget(self.status_bar_widget)
+        main_layout.addWidget(self.status_bar_widget)
 
+        root.addWidget(main_area, stretch=1)
         self.setCentralWidget(central)
 
     def _wire_signals(self) -> None:
-        self.search_bar.search_requested.connect(self._on_search_requested)
+        self.input_bar.submitted.connect(self._on_input_submitted)
+        self.result_header.close_requested.connect(self._clear_all)
 
         self.sidebar.format_filter.selection_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.case_sensitive_changed.connect(self._on_filters_changed)
@@ -135,9 +152,52 @@ class MainWindow(QMainWindow):
 
         self.sidebar.performance_combo.profile_activated.connect(self._on_profile_activated)
         self.sidebar.performance_combo.model_manager_requested.connect(self._open_model_manager)
+        self.sidebar.model_manager_requested.connect(self._open_model_manager)
+        self.sidebar.folder_requested.connect(self._open_folder_dialog)
+        self.sidebar.recent_search_selected.connect(self.input_bar.submit_text)
 
-        self.status_bar_widget.folder_button.clicked.connect(self._open_folder_dialog)
         self.result_list.open_failed.connect(self._on_open_failed)
+
+    # --- 입력 라우팅 (Phase 7.7) --------------------------------------------
+
+    def _on_input_submitted(self, text: str) -> None:
+        """공용 입력창(`InputBar`)의 유일한 진입점.
+
+        현재 모드를 보고 챗봇 메시지 전송/검색 실행으로 분기한다 — 입력창
+        자체는 어느 모드인지 모른다(Phase 7.7 설계, PLAN 참고)."""
+        if text.strip():
+            self.state.add_recent_search(text)
+            self.state.save()  # 인자 없이 — T10.5가 기억해둔 경로로 저장된다
+            self.sidebar.set_recent_searches(self.state.recent_searches)
+
+        if self._chat_panel is not None:
+            self._chat_panel.send_message(text)
+            return
+
+        self._on_search_requested(text)
+        self._sync_result_header()
+
+    def _clear_all(self) -> None:
+        """헤더 ✕ — 검색어·결과를 모두 지우고 초기 안내로 되돌린다.
+
+        `_last_query`까지 반드시 비워야 한다. 안 비우면 ① 옵션 토글이
+        `_on_filters_changed`에서 지운 검색을 되살리고, ② 이후 챗봇 모드를
+        켤 때 `_activate_chat_mode()`가 지운 질문을 유령 첫 메시지로
+        자동 전송한다.
+        """
+        self._last_query = ""
+        self._last_results = []
+        self.input_bar.clear()
+        self.result_list.show_initial()
+        self._sync_result_header()
+
+    def _sync_result_header(self) -> None:
+        """검색 결과 모드 + 검색어가 있을 때만 헤더를 보여준다."""
+        if self._chat_panel is not None or not self._last_query.strip():
+            self.result_header.setVisible(False)
+            return
+        self.result_header.set_query(self._last_query)
+        self.result_header.setVisible(True)
 
     # --- 검색 --------------------------------------------------
 
@@ -236,16 +296,18 @@ class MainWindow(QMainWindow):
         panel.open_failed.connect(self._on_open_failed)
         self._chat_panel = panel
         self.result_list.show_chat_mode(panel)
+        self._sync_result_header()  # 챗봇 모드는 헤더가 없다(DESIGN §5.8)
 
-        # 검색어가 이미 있으면(상단 검색바에 입력해 둔 상태) 그대로 첫
-        # 메시지로 자동 전송한다 — 패널이 빈 채로 뜨면 토글이 안 먹는
-        # 것처럼 보인다.
+        # 검색어가 이미 있으면(직전에 검색 결과 모드에서 입력해 둔 상태)
+        # 그대로 첫 메시지로 자동 전송한다 — 패널이 빈 채로 뜨면 토글이
+        # 안 먹는 것처럼 보인다.
         if self._last_query:
             panel.send_message(self._last_query)
 
     def _deactivate_chat_mode(self) -> None:
         self._chat_panel = None
         self._render_current_results()
+        self._sync_result_header()
 
     def _render_current_results(self) -> None:
         """챗봇 모드를 벗어날 때 결과 영역을 카드 목록으로 되돌린다."""

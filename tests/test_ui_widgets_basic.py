@@ -1,11 +1,11 @@
-"""기본 위젯 테스트 — toggle_switch, search_bar, format_filter (T4.2~T4.6)."""
+"""기본 위젯 테스트 — toggle_switch, input_bar, format_filter (T4.2~T4.6, Phase 7.7)."""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 
 from ui.widgets.format_filter import FormatFilter
-from ui.widgets.search_bar import DEBOUNCE_MS, SearchBar
+from ui.widgets.search_bar import PLACEHOLDER, InputBar
 from ui.widgets.toggle_switch import ToggleSwitch, _SwitchIndicator
 
 
@@ -71,56 +71,76 @@ class TestToggleSwitch:
         assert toggle.isChecked() is False
 
 
-class TestSearchBar:
-    def test_placeholder_matches_design_spec(self, qtbot):
-        bar = SearchBar()
-        qtbot.addWidget(bar)
-        assert bar._input.placeholderText() == "계약서 검토 기준이 뭐였지"
+class TestInputBar:
+    """Phase 7.7: 검색 결과 모드·챗봇 모드가 공유하는 하단 입력창.
 
-    def test_enter_triggers_immediate_search(self, qtbot):
-        bar = SearchBar()
+    300ms debounce는 폐기했다 — Enter·보내기 버튼으로만 제출한다
+    [사용자 확정, 2026-08-13].
+    """
+
+    def test_placeholder_matches_concept_mockup(self, qtbot):
+        bar = InputBar()
+        qtbot.addWidget(bar)
+        assert bar._input.placeholderText() == PLACEHOLDER
+
+    def test_enter_emits_submitted(self, qtbot):
+        bar = InputBar()
         qtbot.addWidget(bar)
         received = []
-        bar.search_requested.connect(received.append)
+        bar.submitted.connect(received.append)
 
         bar.set_text("계약서 검토")
         qtbot.keyClick(bar._input, Qt.Key.Key_Return)
 
         assert received == ["계약서 검토"]
 
-    def test_typing_debounces_before_emitting(self, qtbot):
-        """`qtbot.keyClicks`는 US 키보드 레이아웃으로 키 이벤트를 합성하는데,
-        한글은 대응하는 가상 키가 없어 멈춘다(실측 확인) — 실제 IME 입력이
-        아니라 테스트 도구의 한계이므로, `setText()`로 textChanged를 직접
-        트리거해 debounce 로직 자체를 검증한다."""
-        bar = SearchBar()
+    def test_submit_clears_the_input(self, qtbot):
+        """보낸 메시지가 입력창에 남아 있으면 챗봇 모드에서 어색하다 — 검색
+        모드에서는 대신 ResultHeader가 현재 검색어를 보여준다."""
+        bar = InputBar()
+        qtbot.addWidget(bar)
+
+        bar.set_text("계약서 검토")
+        qtbot.keyClick(bar._input, Qt.Key.Key_Return)
+
+        assert bar.text() == ""
+
+    def test_send_button_click_emits_submitted(self, qtbot):
+        bar = InputBar()
         qtbot.addWidget(bar)
         received = []
-        bar.search_requested.connect(received.append)
+        bar.submitted.connect(received.append)
 
-        bar.set_text("계약")
-        assert received == []  # debounce 대기 중이라 아직 안 나감
+        bar.set_text("리눅스")
+        qtbot.mouseClick(bar._send_button, Qt.MouseButton.LeftButton)
 
-        qtbot.wait(DEBOUNCE_MS + 150)
-        assert received == ["계약"]
+        assert received == ["리눅스"]
 
-    def test_rapid_typing_only_emits_once_with_final_text(self, qtbot):
-        bar = SearchBar()
+    def test_typing_alone_does_not_emit(self, qtbot):
+        """debounce가 없으므로 텍스트만 바꿔서는 아무 것도 나가지 않는다."""
+        bar = InputBar()
         qtbot.addWidget(bar)
         received = []
-        bar.search_requested.connect(received.append)
+        bar.submitted.connect(received.append)
 
-        bar.set_text("계")
-        qtbot.wait(50)
-        bar.set_text("계약")
-        qtbot.wait(50)
         bar.set_text("계약서")
+        qtbot.wait(400)
 
-        qtbot.wait(DEBOUNCE_MS + 150)
-        assert received == ["계약서"]  # 중간 상태(계, 계약)는 나가지 않아야 함
+        assert received == []
+
+    def test_submit_text_sets_and_emits_immediately(self, qtbot):
+        """최근 검색 항목 클릭 시 쓰는 헬퍼 — 텍스트를 넣고 즉시 제출한다."""
+        bar = InputBar()
+        qtbot.addWidget(bar)
+        received = []
+        bar.submitted.connect(received.append)
+
+        bar.submit_text("서류검증")
+
+        assert received == ["서류검증"]
 
     def test_clear_empties_input(self, qtbot):
-        bar = SearchBar()
+        bar = InputBar()
         qtbot.addWidget(bar)
         bar.set_text("무언가")
         bar.clear()
@@ -210,3 +230,28 @@ class TestFormatFilter:
         widget.set_available_formats([".docx", ".pdf"])
 
         assert widget.selected_extensions() is None
+
+    def test_checkboxes_fill_two_columns_top_to_bottom(self, qtbot):
+        """세로 우선 채우기(Phase 7.7, 사용자 확정) — 알파벳순 목록을 반으로
+        잘라 왼쪽 열을 먼저 채우고 오른쪽 열로 넘어간다. 8개 형식 기준
+        doc/docx/hwp/hwpx가 왼쪽 열, pdf/txt/xls/xlsx가 오른쪽 열에 온다."""
+        widget = FormatFilter()
+        qtbot.addWidget(widget)
+        widget.set_available_formats(
+            [".doc", ".docx", ".hwp", ".hwpx", ".pdf", ".txt", ".xls", ".xlsx"]
+        )
+
+        grid = widget._grid
+        positions = {
+            ext: (grid.getItemPosition(grid.indexOf(cb))[0], grid.getItemPosition(grid.indexOf(cb))[1])
+            for ext, cb in widget._format_checkboxes.items()
+        }
+
+        assert positions[".doc"] == (0, 0)
+        assert positions[".docx"] == (1, 0)
+        assert positions[".hwp"] == (2, 0)
+        assert positions[".hwpx"] == (3, 0)
+        assert positions[".pdf"] == (0, 1)
+        assert positions[".txt"] == (1, 1)
+        assert positions[".xls"] == (2, 1)
+        assert positions[".xlsx"] == (3, 1)

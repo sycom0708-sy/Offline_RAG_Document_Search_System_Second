@@ -300,6 +300,32 @@
 
 ---
 
+## Phase 7.7: UI 전면 재구성 — 목업 컨셉 적용 (완료)
+
+**목표**: 사용자가 제시한 HTML 목업 2장(`rag_ui_concept_chatbot.html`/`rag_ui_concept_searchresult.html`)에 맞춰 화면 구조를 재구성한다. Phase 4~7.6까지 완성된 기능(검색·필터·2단 응답 챗봇)은 무수정으로 재사용하고, **입력창 위치**만 바꾼다.
+
+**착수 배경 [사용자 확정, 2026-08-13]**: 기존 앱은 상단 고정 검색바(debounce 자동검색)와 챗봇 모드 전용 하단 입력창이 공존해 입력 지점이 두 곳이었다. 목업 두 화면 모두 **하단 입력창 하나**로 통일돼 있어, 그 구조로 전면 재구성하기로 확정했다. 함께 확정한 사항: 사이드바에 최근 검색·모델/폴더 관리 버튼 추가, 강조색은 목업의 `#1e90ff` 대신 기존 `#2563EB` 유지, 슬라이드 애니메이션은 이번 범위 제외, 검색 트리거는 300ms debounce 폐기하고 Enter·보내기로만.
+
+**의존성**: Phase 4~7.6 (`SearchWorker`/`ChatPanel`/`SummaryCard`/4단계 안전장치 등 전부 무수정 재사용)
+
+### 작업 목록
+- [x] T7.7.1 `AppState.recent_searches` 필드 추가 — `add_recent_search()`로 최신순 승격·중복 제거·최대 10건 절단. `_load_raw()`의 미지 키 필터링으로 마이그레이션 불필요(Phase 7.6의 `ai_chat_enabled` 리네임과 같은 경로)
+- [x] T7.7.2 `ui/widgets/search_bar.py`를 `InputBar`로 개조 — 300ms debounce 제거, `submitted(str)` 신호로 Enter·보내기 버튼 제출만 지원. 제출과 동시에 입력창을 비운다. `submit_text()`로 외부(최근 검색 클릭)에서 대신 제출 가능
+- [x] T7.7.3 `MainWindow` 레이아웃 재조립 — 최상위를 `QHBoxLayout`(사이드바 | 메인 영역)으로, 메인 영역을 `QVBoxLayout`(결과 헤더 → 결과 리스트 → 공용 입력창 → 상태바)으로. 사이드바가 창 왼쪽 세로 전체를 차지하도록 변경(기존엔 상태바와 나란한 폭이었음)
+- [x] T7.7.4 `ChatPanel`에서 자체 입력창(`ChatInput`/`ChatSendButton`) 제거 — `send_message(text)`를 유일한 진입점으로 승격. `MainWindow._on_input_submitted()`가 챗봇 모드 여부를 보고 `ChatPanel.send_message()`/검색 실행으로 분기. 기존 `send_message()` 호출부(자동 전송)와 `tests/test_ui_chat.py`(공개 API만 사용)는 **무수정으로 통과**
+- [x] T7.7.5 말풍선 좌/우 정렬 — 사용자 메시지(우측, 파란)·AI 말풍선(좌측, 흰색)을 `QWidget`+`QHBoxLayout` 래퍼로 감싸 `addStretch()` 위치로 정렬. 최대 폭 65%는 Qt QSS가 `max-width`를 지원하지 않아 `setMaximumWidth()`로 직접 계산, `resizeEvent()`에서 창 크기 변화에 맞춰 갱신. 위젯이 창에 부착되기 전(폭 0) 첫 프레임에 상한이 안 걸려 폭 전체로 그려졌다가 줄어드는 것을 막기 위해 생성 시점에 자신의 폭 또는 고정 임시값(640)으로 미리 상한을 건다
+- [x] T7.7.6 `ResultHeader` 신설 — 검색 결과 모드에서만 표시(챗봇 모드는 숨김), 현재 검색어 + ✕ 버튼. ✕ 클릭 시 `_last_query`/`_last_results`까지 모두 비워야 한다 — 안 비우면 ① 옵션 토글이 지운 검색을 되살리고 ② 챗봇 모드 진입 시 지운 질문이 유령 첫 메시지로 자동 전송된다(둘 다 회귀 테스트로 확인)
+- [x] T7.7.7 사이드바 확장 — `RecentSearches`(최근 검색, 화면엔 최대 5건만 노출 — 10건을 다 늘어놓으면 세로 오버플로로 위쪽 블록이 찌그러진다) + 모델·폴더 관리 버튼 2개 신설. `PerformanceCombo`의 기존 "모델 관리" 링크 버튼은 제거(사이드바 버튼과 중복이라 일원화), `StatusBar`의 "폴더 관리" 버튼도 제거(사이드바로 이동)
+- [x] T7.7.8 QSS 정리 — `#SearchBar`/`#SearchIcon`/`#SearchInput`/`#PerformanceComboManageButton`/`#StatusBarFolderButton` 삭제, `#ChatInput`/`#ChatSendButton`을 `#InputBarField`/`#InputBarSendButton`으로 이름 변경(검색·챗봇 공유를 반영), `#ResultHeader*`/`#RecentSearchItem`/`#SidebarFooterButton`/`#MainArea` 신설. 기존 토큰(`#2563EB` 등)만 사용
+- [x] T7.7.9 테스트 정리 — `test_ui_main_window.py`의 `search_bar.set_text()` 16곳을 `input_bar.submit_text()`로 치환(debounce 대기용 `qtbot.wait()`도 함께 제거), 헤더 ✕ 회귀 테스트 2건 신설. `test_ui_widgets_basic.py::TestSearchBar` → `TestInputBar`로 교체(debounce 테스트 제거, 제출·클리어 테스트로 대체). `test_ui_widgets_options.py`의 `PerformanceCombo` 관리 버튼 테스트 2건 제거(사이드바 버튼으로 기능 이관). `test_ui_status_bar.py`의 폴더 버튼 테스트 제거. `test_ui_chat.py`에 말풍선 정렬·최대 폭 회귀 테스트 4건, `test_ui_state.py`에 최근 검색 테스트 7건 신설. 전체 626 passed / 5 skipped(누적)
+- [x] T7.7.10 실제 앱 종단 검증 — 실제 인덱스(문서 19건)로 초기 화면 → 검색("코치인증자격") → 헤더·결과 카드 표시 → 헤더 ✕ → 초기 복귀 → AI 챗봇 토글 ON → 메시지 전송 → 말풍선 좌/우 정렬 확인 → 창 리사이즈 시 말풍선 폭 65% 추종 → 모델 관리·폴더 관리 다이얼로그 정상 표시까지 스크린샷으로 확인. 사이드바 "최근 검색"이 `app_state.json`에서 실제로 복원되는 것도 확인
+
+**완료 기준(DoD)**: 목업 두 화면(검색 결과 모드/챗봇 모드)과 동일한 레이아웃(하단 공용 입력창, 사이드바 최근 검색·관리 버튼)으로 재구성되고, 기존 검색·필터·2단 응답 챗봇 기능이 회귀 없이 그대로 동작하며, 자동화 테스트 전체 통과 + 실제 인덱스로 시각 검증 완료.
+
+**산출물**: `ui/widgets/search_bar.py`(`InputBar`), `ui/widgets/result_header.py`, `ui/widgets/recent_searches.py`, `ui/main_window.py`/`ui/widgets/sidebar.py`/`ui/widgets/chat_panel.py` 개정, `ui/qss/app.qss` 갱신
+
+---
+
 ## Phase 8: 증분 인덱싱 / 폴더 감시 기능
 
 **목표**: 파일 변경사항만 재인덱싱하는 증분 갱신과 이미지 썸네일 캐시 갱신을 구현한다.
