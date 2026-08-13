@@ -62,8 +62,14 @@ def _image_result(
     )
 
 
-def _hybrid(result: SearchResult, similarity: float | None = 0.7, low: bool = False) -> HybridResult:
-    return HybridResult(result, similarity, low)
+def _hybrid(
+    result: SearchResult,
+    similarity: float | None = 0.7,
+    low: bool = False,
+    matched_terms: int = 0,
+    total_terms: int = 0,
+) -> HybridResult:
+    return HybridResult(result, similarity, low, matched_terms, total_terms)
 
 
 class TestParseHelpers:
@@ -168,6 +174,16 @@ class TestTableCard:
         assert card.findChild(QLabel, "ResultCardRelevanceLabel") is None
         assert card.graphicsEffect() is None
 
+    def test_filename_only_match_shows_badge(self, qtbot):
+        """T10.6: build_card_header() 공유 함수라도 카드별 검증이 없으면
+        다음에 또 빠뜨릴 수 있다(T10.10과 같은 이유)."""
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        card = TableCard(_hybrid(_table_result(table), matched_terms=0, total_terms=1))
+        qtbot.addWidget(card)
+
+        label = card.findChild(QLabel, "ResultCardFileNameMatchLabel")
+        assert label is not None and label.text() == "파일명 매치"
+
 
 class TestImageCard:
     def test_valid_image_shows_thumbnail_and_notice(self, qtbot, tmp_path, monkeypatch):
@@ -242,6 +258,15 @@ class TestImageCard:
 
         assert card.findChild(QLabel, "ResultCardRelevanceLabel") is None
         assert card.graphicsEffect() is None
+
+    def test_filename_only_match_shows_badge(self, qtbot):
+        """T10.6: 표 카드와 같은 이유로 회귀 테스트를 따로 둔다."""
+        image = ImageData(image_path="아무경로.png")
+        card = ImageCard(_hybrid(_image_result(image), matched_terms=0, total_terms=1))
+        qtbot.addWidget(card)
+
+        label = card.findChild(QLabel, "ResultCardFileNameMatchLabel")
+        assert label is not None and label.text() == "파일명 매치"
 
 
 class TestTypeBasedRouting:

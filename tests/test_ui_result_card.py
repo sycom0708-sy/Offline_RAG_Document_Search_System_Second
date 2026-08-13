@@ -33,8 +33,14 @@ def _search_result(
     )
 
 
-def _hybrid(result: SearchResult | None = None, similarity: float | None = 0.7, low: bool = False) -> HybridResult:
-    return HybridResult(result or _search_result(), similarity, low)
+def _hybrid(
+    result: SearchResult | None = None,
+    similarity: float | None = 0.7,
+    low: bool = False,
+    matched_terms: int = 0,
+    total_terms: int = 0,
+) -> HybridResult:
+    return HybridResult(result or _search_result(), similarity, low, matched_terms, total_terms)
 
 
 class TestFormatLocation:
@@ -125,6 +131,27 @@ class TestResultCard:
         qtbot.addWidget(card)
         assert card.findChild(QLabel, "ResultCardRelevanceLabel") is None
         assert card.graphicsEffect() is None
+
+    def test_filename_only_match_shows_badge(self, qtbot):
+        """T10.6: 검색어가 파일명에만 있고 본문엔 없는 결과는 표시해야 한다."""
+        card = ResultCard(_hybrid(matched_terms=0, total_terms=1), "김성용")
+        qtbot.addWidget(card)
+
+        label = card.findChild(QLabel, "ResultCardFileNameMatchLabel")
+        assert label is not None
+        assert label.text() == "파일명 매치"
+
+    def test_body_match_has_no_filename_badge(self, qtbot):
+        card = ResultCard(_hybrid(matched_terms=1, total_terms=1), "계약서")
+        qtbot.addWidget(card)
+        assert card.findChild(QLabel, "ResultCardFileNameMatchLabel") is None
+
+    def test_low_relevance_and_filename_match_can_show_together(self, qtbot):
+        card = ResultCard(_hybrid(low=True, matched_terms=0, total_terms=1), "김성용")
+        qtbot.addWidget(card)
+
+        assert card.findChild(QLabel, "ResultCardRelevanceLabel") is not None
+        assert card.findChild(QLabel, "ResultCardFileNameMatchLabel") is not None
 
     def test_opening_missing_file_emits_open_failed(self, qtbot):
         result = _search_result(file_path=r"D:\없는\경로\파일.docx")

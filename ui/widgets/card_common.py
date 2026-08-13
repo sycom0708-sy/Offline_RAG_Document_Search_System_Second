@@ -45,7 +45,7 @@ def build_card_header(
     hybrid_result,
     extra_buttons: Sequence[QPushButton] = (),
 ) -> tuple[QHBoxLayout, QPushButton]:
-    """파일명 · 위치 · (관련성 낮음) · 부가 버튼 · 원문 열기 순으로 헤더를 조립한다.
+    """파일명 · 위치 · (관련성 낮음) · (파일명 매치) · 부가 버튼 · 원문 열기 순으로 헤더를 조립한다.
 
     `open_button`은 클릭 시그널 연결을 호출부가 하도록 그대로 반환한다 —
     "원문 열기 실패" 처리(사유 emit 등)는 카드마다 어느 시그널에 실어 보낼지
@@ -72,6 +72,13 @@ def build_card_header(
         relevance_label = QLabel("관련성 낮음")
         relevance_label.setObjectName("ResultCardRelevanceLabel")
         header.addWidget(relevance_label)
+
+    if hybrid_result.is_filename_only_match:
+        # T10.6: 검색어가 파일명에만 있고 본문·캡션엔 없는 결과 — "관련성
+        # 낮음"과 독립적인 신호라 동시에 뜰 수 있다.
+        filename_match_label = QLabel("파일명 매치")
+        filename_match_label.setObjectName("ResultCardFileNameMatchLabel")
+        header.addWidget(filename_match_label)
 
     for button in extra_buttons:
         header.addWidget(button)

@@ -53,6 +53,17 @@ class HybridResult:
         """검색어를 하나도 빠짐없이 포함하는가."""
         return self.total_terms > 0 and self.matched_terms == self.total_terms
 
+    @property
+    def is_filename_only_match(self) -> bool:
+        """검색어가 파일명에만 걸리고 본문·캡션엔 하나도 없는 경우 (T10.6).
+
+        `chunks_fts`가 file_name도 함께 색인해 FTS5가 행 단위로 매치하다 보니,
+        파일명에만 있는 단어를 검색해도 그 파일의 모든 청크가 결과에 낀다.
+        `matched_terms`는 파일명을 세지 않으므로(`count_matched_terms` 참고),
+        0이면 정확히 이 상황이다.
+        """
+        return self.total_terms > 0 and self.matched_terms == 0
+
     # 자주 쓰는 필드는 그대로 꺼내 쓸 수 있게 열어둔다.
     @property
     def chunk_id(self) -> str:

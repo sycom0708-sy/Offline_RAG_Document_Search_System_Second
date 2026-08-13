@@ -325,3 +325,33 @@ def test_falls_back_to_keyword_when_embedding_unavailable(db):
 
     assert results
     assert all(r.similarity is None for r in results)
+
+
+class TestIsFilenameOnlyMatch:
+    """T10.6: matched_terms==0(본문·캡션에 검색어가 하나도 없음)이 정확히
+    "파일명에만 걸린 결과"를 뜻하는지 확인한다."""
+
+    def _result(self) -> SearchResult:
+        return SearchResult(
+            chunk_id="c1", doc_id="d1", file_path="x", file_name="김성용.docx",
+            type=ChunkType.TEXT, page_or_slide=None, content="본문 내용", caption="", score=-1.0,
+        )
+
+    def test_zero_matched_with_terms_is_filename_only(self):
+        from search.hybrid_search import HybridResult
+
+        result = HybridResult(self._result(), 0.7, False, matched_terms=0, total_terms=1)
+        assert result.is_filename_only_match is True
+
+    def test_nonzero_matched_is_not_filename_only(self):
+        from search.hybrid_search import HybridResult
+
+        result = HybridResult(self._result(), 0.7, False, matched_terms=1, total_terms=1)
+        assert result.is_filename_only_match is False
+
+    def test_no_terms_at_all_is_not_filename_only(self):
+        """total_terms==0(빈 질의 등)은 "매치 없음"과 다르다 — 오탐 방지."""
+        from search.hybrid_search import HybridResult
+
+        result = HybridResult(self._result(), 0.7, False, matched_terms=0, total_terms=0)
+        assert result.is_filename_only_match is False

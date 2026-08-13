@@ -194,6 +194,11 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
+#ResultCardFileNameMatchLabel {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+
 #ResultCardBody {
     color: #1F2937;
     font-size: 14px;
