@@ -21,7 +21,7 @@ def store_document(
     conn: sqlite3.Connection,
     document: ParsedDocument,
     count_tokens: Callable[[str], int] | None = None,
-) -> None:
+) -> list[str]:
     """document를 저장한다. 같은 doc_id가 이미 있으면 통째로 교체한다.
 
     `count_tokens`를 넘기면 청크를 **토큰 수** 기준으로 자른다. 임베딩을 만들
@@ -29,9 +29,24 @@ def store_document(
     입력 한계를 넘겨 뒷부분이 조용히 잘린다 (`indexer/chunker.py` 참고).
 
     chunks 삭제는 documents 삭제에 딸린 ON DELETE CASCADE로 처리되고,
-    FTS 인덱스는 schema.py의 트리거가 함께 정리한다 (증분 갱신은 Phase 8 소관 —
-    여기서는 "다시 인덱싱하면 항상 최신 상태"만 보장한다).
+    FTS 인덱스는 schema.py의 트리거가 함께 정리한다.
+
+    반환값은 교체되기 전 이 문서에 있던 이미지 청크의 chunk_id 목록이다
+    (Phase 8, T8.4). `chunk_id`는 `doc_id+type+ordinal` 기반이라 이미지
+    내용이 바뀌어도 ordinal이 같으면 chunk_id가 그대로다 — 즉 썸네일 캐시
+    키가 안 바뀌어 옛 이미지가 계속 나올 수 있다. 이 함수는 파일 내용이
+    실제로 바뀐 경우에만 호출되므로(`indexer.incremental.needs_reindex`가
+    걸러낸 뒤), 옛 이미지 청크를 조건 없이 모아 반환해도 안전하다 — 호출부가
+    해당 chunk_id의 캐시 파일을 지우면 다음 조회 때 최신 원본으로 재생성된다.
     """
+    stale_image_chunk_ids = [
+        row[0]
+        for row in conn.execute(
+            "SELECT chunk_id FROM chunks WHERE doc_id = ? AND type = 'image'",
+            (document.doc_id,),
+        )
+    ]
+
     conn.execute("DELETE FROM documents WHERE doc_id = ?", (document.doc_id,))
     conn.execute(
         """
@@ -55,6 +70,7 @@ def store_document(
         _store_chunk(conn, chunk, count_tokens)
 
     conn.commit()
+    return stale_image_chunk_ids
 
 
 def _table_caption_text(chunk: Chunk) -> str:

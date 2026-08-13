@@ -23,7 +23,7 @@
 | **Phase 6** | sLM 후보군 실측 검증 | ✅ **완료** | 최소 사양: sLM 기본 OFF, 켠다면 EXAONE-4.0-1.2B(Phi-4-mini 전 사양 제외). **권장 사양(16GB): Qwen3.5-4B 채택 확정**[사용자 확정, 2026-08-10] — 준수율은 EXAONE-3.5-7.8B와 동일하나 메모리(4.8GB vs 8.3GB)가 절반이라 동시 작업(안드로이드 스튜디오 등) 안정성 우선. §6-B T6.8 참고. 그 사이 진행된 Phase 10 작업 포함 누적 테스트 **488 passed / 5 skipped**, 실패 0건 |
 | **Phase 7** | sLM 답변 생성 옵션 모드 | ✅ **완료** | 4단계 안전장치 전부 구현, 채택 모델(Qwen3.5-4B) 적용. 회귀 측정(26문항)에서 Phase 6 순수 추론과 **동일 수치**(기권정확도 81.8%/응답정확도 80.0%) 유지하며 놓쳤던 할루시네이션 2건을 4단계가 전부 포착. 테스트 558 passed / 5 skipped (누적) |
 | **Phase 7.5** | KURE-v1 임베딩 변환 파이프라인 | ✅ **완료** | 변환·검증·모델 매니저 UI·T4.11b 종단 검증 전부 완료. 풀링이 mean이 아니라 CLS임을 실측으로 확인(안 잡았으면 검색 품질이 조용히 나빠질 뻔함), `chunk_vectors` PK 버그(모델 전환 시 벡터 삭제) 발견·수정. **처리량 5.4배 느림, 품질은 이 코퍼스로 결론 미확정 → 기본값은 경량 유지**[사용자 확정]. 테스트 16건 추가(누적 574 passed / 5 skipped) |
-| Phase 8 | 증분 인덱싱 / 폴더 감시 | 대기 | T10.5가 "이번 스캔에 없는 문서 지우기"까지 선행 구현함 — 남은 건 "변경 안 된 파일은 재파싱 안 하기"(mtime·해시 스킵) |
+| **Phase 8** | 증분 인덱싱 / 폴더 감시 | ✅ **완료 (핵심 범위)** | mtime→해시 2단계 비교로 변경 없는 파일은 재파싱 생략(`indexer/incremental/needs_reindex()`), 재파싱 시 옛 이미지 썸네일 캐시도 무효화. 실측: 전체 재인덱싱 117초 → 무변경 재실행 0.87초, 1개 파일 변경 시 1.0초(18/19 스킵). **T8.5(watchdog 실시간 감시)는 후속 작업으로 분리**[사용자 확정]. 테스트 29건 추가(누적 655 passed / 5 skipped) |
 | Phase 9 | exe 패키징 및 배포 테스트 | 대기 | — |
 | Phase 10 | 배포 후 개선 백로그 (todo list) | 대기(상시 누적) | T10.2~T10.5 완료(변환 실패 안내·원문 열기 무반응·인덱싱 팝업·재인덱싱 누적 버그). **T10.1·T10.6·T10.7 미착수**로 열려 있음 |
 
@@ -1012,12 +1012,30 @@ T4.11b 종단 검증으로 실제 재인덱싱을 처음 돌려보고서야 발�
 
 # Phase 8: 증분 인덱싱 / 폴더 감시
 
+## 8-A. 착수 시점 계획
+
 **의존**: Phase 2(인덱싱), Phase 5(썸네일 캐시)
 
 - `Chunk.source_mtime` / `source_hash`는 **Phase 1에서 이미 채워지고 있다** — 이 값을 그대로 비교에 쓴다
 - 썸네일 캐시도 함께 증분 갱신
 - watchdog 실시간 감시는 옵션. 최소 사양에서는 기본 OFF 검토
 - Phase 1 이월: pyhwp 핸들 미해제로 캐시 삭제가 막히는 현상 확인
+
+## 8-B. 실행 결과 — 완료 (DoD 충족, 핵심 범위) [2026-08-13]
+
+**범위 확정**: T8.5(watchdog 실시간 폴더 감시)는 이번 Phase에서 제외했다[사용자 확정] — DESIGN에 이 기능의 UI 목업이 없고 TASK에도 "옵션, 최소 사양 기본 OFF 검토"로만 적혀 있어, UI 토글·백그라운드 감시 스레드·DB 동시성까지 얹으면 핵심(mtime/해시 스킵) 검증이 묻힌다고 판단했다. T8.1~T8.4·T8.6을 이번에 완료하고, T8.5는 TASK에 미체크 상태로 남겨 별도 후속 작업으로 분리했다.
+
+**착수 전 확인 — 기반은 이미 Phase 1에서 깔려 있었다**: `documents`/`chunks` 테이블의 `source_mtime`/`source_hash` 컬럼(T8.1)과 `parser/utils/hashing.py`의 `file_sha256`/`file_mtime`은 Phase 1부터 있었고, 코드 docstring이 이미 "Phase 8에서 재사용"이라고 못박아뒀다. 이번 Phase는 스키마 작업 없이 판별 로직(T8.2)·파이프라인 통합(T8.3)·썸네일 캐시 연동(T8.4)·테스트(T8.6)만 하면 됐다.
+
+**설계**: `indexer/incremental/needs_reindex()`가 mtime을 먼저 보고(공짜에 가까움), 다를 때만 SHA-256 해시를 계산해(파일 전체를 읽어야 해서 비용 있음) 실제 내용 변경 여부를 확인하는 2단계 비교로 구현했다. mtime만 다르고 해시가 같은 경우(저장 도구가 내용 변경 없이 재저장한 경우)는 재파싱은 건너뛰되 DB의 `source_mtime`만 갱신해 다음 실행에서 같은 해시 계산을 반복하지 않게 했다. 조회는 `file_path` 문자열 비교가 아니라 `make_doc_id()`(정규화된 경로의 uuid5, PK)로 한다.
+
+**🔴 T8.4(썸네일 캐시 증분 갱신)를 설계하다 잠재 버그를 하나 더 발견했다.** `chunk_id`가 `doc_id+type+ordinal` 기반이라, 문서를 재파싱해도 이미지의 위치(ordinal)가 같으면 chunk_id가 그대로다 — 즉 **이미지 내용이 바뀌어도 캐시 키가 안 바뀌어 옛 썸네일이 계속 나올 수 있는 경로**가 있었다(Phase 5의 썸네일 캐시 docstring은 "재인덱싱하면 chunk_id가 바뀌어 자연 무효화된다"고 적어뒀는데, 그건 문서 전체가 통째로 바뀌는 극단적인 경우에만 맞는 얘기였다). `indexer/fts5/store.py`의 `store_document()`가 교체 직전 옛 이미지 청크 id를 모아 반환하도록 고치고(이 함수는 T8.3 스킵 로직 적용 후로는 "파일이 실제로 바뀐 경우"에만 불리므로 조건 없이 모아도 안전), `IndexReport.stale_image_chunk_ids`를 거쳐 `MainWindow._on_indexing_done()`이 `ui/thumbnail_cache.evict_thumbnails()`로 캐시 파일을 지운다. `indexer/`는 UI 의존성이 없는 계층이라 `ui.thumbnail_cache`를 직접 import하지 않고 데이터(chunk_id 목록)만 `IndexReport`로 넘기는 기존 계층 구조를 그대로 지켰다.
+
+**T8.6 성능 테스트**: 시간 기반 assert는 CI 환경에서 flaky해서 피하고, "변경 없는 파일에서는 `parse_file` 호출 자체가 안 일어난다"를 monkeypatch 카운팅으로 결정론적으로 확인했다. 실사용 검증(`../exdoc` 폴더, 실제 문서 19개, CLI)에서: 전체 최초 인덱싱 117초(구버전 doc/xls LibreOffice 변환 포함) → 무변경 재실행 0.87초(19/19 스킵) → 파일 1개만 수정 후 재실행 1.0초(18/19 스킵). 실사용 검증은 원본 폴더가 아니라 `/tmp`에 복사한 사본으로 진행했다(실수로 원본 폴더에 파일을 하나 만들었다가 즉시 지운 해프닝이 있었다 — 아래 함정 참고).
+
+**잡은 함정**: 실사용 검증 중 `cp "../exdoc/README.txt" ...`로 백업을 만들려다 실패했다 — 실제 `README.txt`는 폴더 최상위가 아니라 `exdoc/sub1/README.txt`에 있었는데, 그 뒤에 이어진 `echo "..." >> "../exdoc/README.txt"`가 **존재하지 않던 경로에 새 파일을 만들어버렸다**(리다이렉트는 대상이 없으면 만든다). 실제 사용자 문서 폴더에 스트레이 파일이 생긴 것을 바로 발견해 사용자 확인 후 삭제했다 — 이후 검증은 전부 `/tmp`의 사본에서 진행하도록 바꿨다. 코드 버그는 아니지만, 실제 사용자 폴더를 대상으로 한 검증에서는 셸 명령 하나하나가 그 폴더에 흔적을 남길 수 있다는 걸 다시 확인했다.
+
+**테스트**: `tests/test_indexer_incremental.py`(신설, `needs_reindex()` 단위 4건 + `index_folder()` 스킵 통합 2건 + 프루닝 시 이미지 청크 id 보고 1건) · `tests/test_ui_thumbnail_cache.py`(신설, `evict_thumbnails()` 2건) · `tests/test_indexer_store.py`(`store_document()`가 옛 이미지 청크 id를 반환하는지 2건 추가). 전체 655 passed / 5 skipped(기존 626에서 +29). 이 PC에서 재현되는 pre-existing 크래시(`test_ui_main_window.py::TestPerformanceComboStartupSync`, ONNX 워밍업 스레드 access violation)는 수정 전 `main`에서도 동일하게 재현됨을 확인해 이번 변경과 무관함을 확인했다.
 
 ---
 

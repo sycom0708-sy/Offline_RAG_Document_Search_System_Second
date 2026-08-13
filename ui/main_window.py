@@ -23,6 +23,7 @@ from slm.service import SlmService
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
 from ui.summary_worker import SummaryWorker
+from ui.thumbnail_cache import evict_thumbnails
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.folder_dialog import FolderDialog
 from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
@@ -529,6 +530,9 @@ class MainWindow(QMainWindow):
         self._refresh_format_filter_options()
         self._refresh_status_bar()
         self.status_bar_widget.set_warning(self._libreoffice_warning(report))
+        if report.stale_image_chunk_ids:
+            # 재파싱·정리로 사라진 이미지 청크의 옛 썸네일을 지운다 (Phase 8, T8.4).
+            evict_thumbnails(report.stale_image_chunk_ids)
         if self._indexing_progress_dialog is not None:
             self._indexing_progress_dialog.close()
             self._indexing_progress_dialog = None

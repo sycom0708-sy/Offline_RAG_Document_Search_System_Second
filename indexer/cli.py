@@ -34,7 +34,7 @@ def _cmd_index(args: argparse.Namespace) -> int:
     vector_count = conn.execute("SELECT COUNT(*) FROM chunk_vectors").fetchone()[0]
     print(
         f"인덱싱 완료: 문서 {doc_count}개, 청크 {chunk_count}개, "
-        f"벡터 {vector_count}개 -> {args.db}"
+        f"벡터 {vector_count}개, 건너뜀 {report.skipped}개 -> {args.db}"
     )
 
     for warning in report.warnings:

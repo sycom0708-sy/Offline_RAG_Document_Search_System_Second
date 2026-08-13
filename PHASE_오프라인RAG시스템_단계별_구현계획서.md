@@ -4,6 +4,79 @@
 
 ---
 
+<!-- 출처: serene-strolling-garden.md · DESKTOP-V42GJBP · 작성 2026-08-13 14:55 · 아카이브 2026-08-13 15:41 -->
+
+# Phase 8: 증분 인덱싱 / 폴더 감시 (핵심 범위)
+
+## Context
+
+Phase 2~7.7까지 완료된 지금, 재인덱싱은 매번 대상 폴더의 **모든 파일을 처음부터 다시 파싱**한다(`indexer/pipeline.py`의 `index_folder()`). 문서 수가 많아질수록(또는 구버전 포맷이 섞여 있을수록, Phase 1 실측 건당 2.47초) 파일 하나만 고쳐도 전체를 다시 돌려야 해 인덱싱이 느려진다. Phase 8은 "바뀐 파일만 다시 파싱하고 나머지는 기존 인덱스를 그대로 쓴다"를 구현한다.
+
+이미 깔려 있는 기반: `documents`/`chunks` 테이블에 `source_mtime`/`source_hash` 컬럼이 Phase 1부터 있고 매 파싱마다 채워진다(`parser/base.py`의 `BaseParser.parse()` → `_stamp_source_info()`). 해시 유틸(`parser/utils/hashing.py`)도 이미 있고 docstring이 "Phase 8에서 재사용"이라고 못박아뒀다. 즉 **스키마 작업(T8.1)은 이미 끝나 있고, 이번 Phase는 판별 로직 + 파이프라인 통합 + 썸네일 캐시 연동만 하면 된다.**
+
+**T8.5(watchdog 실시간 폴더 감시)는 이번 범위에서 제외**한다 — 사용자 확정. DESIGN에 이 기능의 UI 목업이 없고 TASK에도 "옵션, 최소 사양 기본 OFF 검토"로만 적혀 있어, UI 토글·백그라운드 감시 스레드·DB 동시성까지 얹으면 핵심(mtime/해시 스킵) 검증이 묻힌다. T8.1~T8.4·T8.6을 먼저 완료해 커밋하고, T8.5는 별도 후속 작업으로 분리한다(TASK 체크리스트에는 미완료로 남겨두고 각주로 분리 사유를 남긴다).
+
+## 설계 결정
+
+**mtime을 먼저 보고, 다르면 그때 해시로 확인한다(2단계 비교).** stat()은 사실상 공짜지만 SHA-256 파일 해시는 파일 전체를 읽어야 해서 비용이 있다 — mtime이 같으면 해시 계산 자체를 생략한다. mtime은 다른데 해시가 같은 경우(예: 저장 도구가 내용 변경 없이 재저장)는 재파싱은 건너뛰되 DB의 `source_mtime`만 갱신해 다음 실행에서 다시 해시 계산을 반복하지 않게 한다.
+
+**조회는 `file_path` 문자열 비교가 아니라 `doc_id`로 한다.** `parser/utils/ids.py`의 `make_doc_id()`가 정규화된 경로의 uuid5라 결정적이고, `documents.doc_id`가 PK라 인덱스 조회도 더 명확하다.
+
+**이미지 썸네일 캐시 무효화는 "파일이 바뀌면 그 파일의 이미지 청크 썸네일을 전부 지운다"로 단순화한다.** `chunk_id`가 `doc_id+type+ordinal` 기반이라 내용이 바뀌어도 같은 ordinal이면 chunk_id가 그대로다 — 즉 이미지 내용이 바뀌어도 캐시 키가 안 바뀌어 옛 썸네일이 계속 나올 수 있다(지금까지 몰랐던 잠재 버그, T8.4가 다뤄야 할 실제 문제). `store_document()`가 실제로 불리는 경우는(T8.3 스킵 로직 적용 후) 파일이 진짜 바뀐 경우뿐이므로, 그 문서의 옛 이미지 chunk_id를 교체 직전에 모아 반환하고, 상위(`index_folder` → `IndexReport` → `MainWindow`)에서 캐시 파일을 지우면 다음 조회 시 최신 원본으로 자연 재생성된다. `indexer/`는 UI 의존성이 없는 계층이라(현재 구조 유지) `ui.thumbnail_cache`를 직접 import하지 않고, `IndexReport.stale_image_chunk_ids: list[str]`로 데이터만 넘긴다 — 실제 파일 삭제는 `ui/main_window.py`가 담당.
+
+## 변경 파일
+
+### 1. `indexer/incremental/__init__.py` (신규 모듈, TASK 산출물 명시)
+`needs_reindex(conn: sqlite3.Connection, path: Path) -> bool`:
+- `doc_id = make_doc_id(path)`로 `SELECT source_mtime, source_hash FROM documents WHERE doc_id=?` 조회
+- 행이 없으면 `True`(신규 파일)
+- `path.stat().st_mtime == stored_mtime`이면 `False`(변경 없음, 해시 계산 생략)
+- 다르면 `file_sha256(path)`를 계산해 `stored_hash`와 비교 — 같으면 `UPDATE documents SET source_mtime=? WHERE doc_id=?`로 mtime만 갱신하고 `False`, 다르면 `True`
+
+`parser/utils/hashing.py`의 `file_sha256`/`file_mtime`, `parser/utils/ids.py`의 `make_doc_id`를 그대로 재사용(신규 유틸 작성 안 함).
+
+### 2. `indexer/pipeline.py`
+- `IndexReport`에 `skipped: int = 0`(변경 없어 건너뛴 파일 수), `stale_image_chunk_ids: list[str] = field(default_factory=list)` 추가
+- `_prune_stale_documents()`: 지우기 전에 대상 `doc_id`들의 이미지 청크 id도 함께 조회해 반환하도록 `-> tuple[int, list[str]]`로 시그니처 변경(현재 private 함수이고 이 함수를 직접 호출하는 테스트 없음 — 확인 완료)
+- `index_folder()` 루프에서 `parse_file()` 호출 전에 `needs_reindex(conn, path)` 체크. `False`면 `report.skipped += 1`, `on_progress` 호출 후 `continue`(파싱·저장 생략). `True`일 때만 기존 로직대로 진행하고, `store_document()`가 반환하는 옛 이미지 chunk_id를 `report.stale_image_chunk_ids`에 누적
+
+### 3. `indexer/fts5/store.py`
+`store_document()`의 반환 타입을 `None → list[str]`로 변경: `DELETE FROM documents` 실행 전에 `SELECT chunk_id FROM chunks WHERE doc_id=? AND type='image'`로 옛 이미지 chunk_id를 모아뒀다가 함수 끝에 반환. 이 함수는 이제 "파일이 실제로 바뀐 경우"에만 불리므로(T8.3 스킵 로직 적용 후) 추가 조건 없이 항상 옛 이미지 id를 모아 반환해도 안전하다.
+
+### 4. `ui/thumbnail_cache.py`
+`evict_thumbnails(chunk_ids: Iterable[str]) -> None` 추가 — 각 id에 대해 `THUMBNAIL_DIR / f"{_safe_name(id)}.png"`를 `unlink(missing_ok=True)`. 모듈 docstring의 "mtime 기반 명시적 무효화는 Phase 8에서 다룬다" 문장을 실제 구현 설명으로 교체.
+
+### 5. `ui/main_window.py`
+`_on_indexing_done(report)`에서 기존 처리 끝에 `report.stale_image_chunk_ids`가 있으면 `thumbnail_cache.evict_thumbnails(...)` 호출 한 줄 추가.
+
+### 6. `indexer/cli.py`
+증분 결과를 눈으로 확인할 수 있도록 출력에 `건너뜀: {report.skipped}`도 추가(기존 `인덱싱: N`, `실패: N` 라인 옆에).
+
+## 테스트 (T8.6 포함)
+
+`tests/test_indexer_incremental.py` 신규:
+- `needs_reindex()` 단위 테스트 4건: 신규 파일→True / mtime 동일→False(해시 함수 호출 안 됐음을 monkeypatch로 확인) / mtime 다르지만 해시 동일→False + DB mtime 갱신 확인 / 내용 변경→True
+- `index_folder()` 통합 테스트: `tmp_path`에 파일 5개로 1차 인덱싱(`report.indexed==5, report.skipped==0`) → 파일 1개만 내용 변경 후 재실행(`report.indexed==1, report.skipped==4`) — **`parse_file`을 카운팅 래퍼로 monkeypatch해 실제로 4개 파일에서 호출되지 않았음을 확인**(시간 기반 assert는 flaky해서 피함, "유의미하게 단축"은 파싱 호출 자체가 안 일어난다는 결정론적 증거로 대체)
+- 이미지 청크 포함 픽셀 재인덱싱 시나리오: 이미지 청크가 있는 문서를 인덱싱 → 내용 변경 후 재인덱싱 → `report.stale_image_chunk_ids`에 해당 chunk_id가 담기는지 확인
+- `tests/test_ui_thumbnail_cache.py`(기존 파일 있으면 추가, 없으면 신설): `evict_thumbnails()` — 더미 png 생성 후 삭제 확인, 존재하지 않는 id를 넘겨도 예외 없음
+
+기존 `tests/test_indexer_pipeline.py`의 `_prune_stale_documents` 관련 테스트는 반환 타입 변경(`int` → `tuple[int, list[str]]`)에 맞춰 필요한 곳만 수정.
+
+전체 `pytest -q` 통과 확인(현재 기준 626 passed / 5 skipped 유지 또는 증가).
+
+## 검증 (실사용)
+
+`../exdoc` 폴더로 실제 CLI 인덱싱 2회 실행해 시간 차이를 눈으로 확인(1회차: 전체 인덱싱 시간 기록 → 파일 1~2개만 수정 → 2회차: `건너뜀 N` 카운트와 체감 속도 확인). 이미지가 포함된 문서 하나를 실제로 수정해 재인덱싱한 뒤, 앱에서 해당 이미지 카드를 열어 캐시가 최신 이미지로 갱신되는지 스크린샷으로 확인.
+
+## 완료 후 문서화
+
+- `TASK_오프라인RAG시스템.md`: T8.1(이미 충족, 확인만)·T8.2·T8.3·T8.4·T8.6 체크, T8.5는 미체크 상태로 "후속 작업으로 분리" 각주
+- `PLAN_오프라인RAG시스템.md`: Phase 8 실행 결과 절 추가(설계 결정·발견한 함정·테스트 수·실측 결과)
+- `CLAUDE.md`의 "진행 상황" 절에 Phase 8 요약 추가
+- plan 아카이브 스크립트 실행: `python -m scripts.archive_plan --all` 후 커밋
+
+---
+
 <!-- 출처: typed-percolating-fountain.md · DESKTOP-V42GJBP · 작성 2026-08-13 11:11 · 아카이브 2026-08-13 11:39 -->
 
 # UI 전면 재구성 — HTML 목업 컨셉 적용

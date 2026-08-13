@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from indexer.fts5.store import store_document
+from indexer.incremental import needs_reindex
 from indexer.scanner import scan_folder
 from indexer.vector.store import embed_missing
 from parser import ParseStatus, parse_file
@@ -32,6 +33,8 @@ class IndexReport:
     indexed: int = 0
     embedded: int = 0
     pruned: int = 0  # 대상 폴더 밖 문서를 지운 개수 (T10.5, "새 폴더로 교체")
+    skipped: int = 0  # mtime·해시가 그대로라 재파싱을 건너뛴 파일 수 (Phase 8)
+    stale_image_chunk_ids: list[str] = field(default_factory=list)  # 재파싱·정리로 사라진 이미지 청크 id (Phase 8, T8.4 썸네일 캐시 무효화용)
 
     @property
     def ok(self) -> bool:
@@ -41,8 +44,8 @@ class IndexReport:
 DoneCallback = Callable[[IndexReport], None]
 
 
-def _prune_stale_documents(conn: sqlite3.Connection, files: list[Path]) -> int:
-    """이번 스캔에서 발견되지 않은 문서를 지우고 지운 개수를 반환한다.
+def _prune_stale_documents(conn: sqlite3.Connection, files: list[Path]) -> tuple[int, list[str]]:
+    """이번 스캔에서 발견되지 않은 문서를 지우고 (지운 개수, 이미지 청크 id 목록)을 반환한다.
 
     "사용자당 대상 폴더 하나"가 제품 전제다(PRD 4장). 그런데 대상 폴더를
     바꿔 재인덱싱해도 이전 폴더의 문서가 지워지지 않아 계속 쌓였다 — 다른
@@ -72,12 +75,21 @@ def _prune_stale_documents(conn: sqlite3.Connection, files: list[Path]) -> int:
         if candidate not in scanned:
             stale_ids.append(doc_id)
 
+    stale_image_chunk_ids: list[str] = []
     if stale_ids:
+        placeholders = ",".join("?" * len(stale_ids))
+        stale_image_chunk_ids = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT chunk_id FROM chunks WHERE doc_id IN ({placeholders}) AND type = 'image'",
+                stale_ids,
+            )
+        ]
         conn.executemany(
             "DELETE FROM documents WHERE doc_id = ?", [(doc_id,) for doc_id in stale_ids]
         )
         conn.commit()  # ON DELETE CASCADE로 chunks·chunk_vectors도 함께 지워진다
-    return len(stale_ids)
+    return len(stale_ids), stale_image_chunk_ids
 
 
 def index_folder(
@@ -103,13 +115,18 @@ def index_folder(
     파싱 전에 지우므로 이번 실행이 중간에 취소돼도(`stop_event`) 이미 지운
     항목 + 아직 처리 못 한 항목이 둘 다 "없음"으로 보이는 정도지, 지우다 만
     상태로 반쯤 섞이지는 않는다.
+
+    파일마다 `indexer.incremental.needs_reindex()`로 mtime(필요하면 해시까지)을
+    확인해 변경이 없으면 파싱·저장을 건너뛴다(`report.skipped`, Phase 8) —
+    기존 인덱스를 그대로 재사용한다.
     """
     root_path = Path(root)
     files = list(scan_folder(root_path))
     total = len(files)
 
     report = IndexReport()
-    report.pruned = _prune_stale_documents(conn, files)
+    report.pruned, pruned_image_chunk_ids = _prune_stale_documents(conn, files)
+    report.stale_image_chunk_ids.extend(pruned_image_chunk_ids)
 
     embedder = None
     count_tokens = None
@@ -124,8 +141,13 @@ def index_folder(
         if stop_event is not None and stop_event.is_set():
             break
         try:
+            if not needs_reindex(conn, path):
+                # mtime(필요하면 해시까지)이 그대로다 — 재파싱을 건너뛴다 (Phase 8).
+                report.skipped += 1
+                continue
             document = parse_file(path)
-            store_document(conn, document, count_tokens=count_tokens)
+            stale_image_chunk_ids = store_document(conn, document, count_tokens=count_tokens)
+            report.stale_image_chunk_ids.extend(stale_image_chunk_ids)
             report.indexed += 1
             if document.status is ParseStatus.FAILED:
                 # LegacyOfficeParser처럼 예외를 던지지 않고 document.errors에만

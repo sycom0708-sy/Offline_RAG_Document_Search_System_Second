@@ -150,3 +150,40 @@ def test_image_json_round_trips_structure(db):
     restored = json.loads(row["image_json"])
     assert restored["image_path"] == "/tmp/img.png"
     assert restored["origin"] == "extracted"
+
+
+def _document_with_image(doc_id: str) -> ParsedDocument:
+    from parser.schema import ImageData
+
+    image = ImageData(image_path="/tmp/img.png", caption="도면", origin="extracted")
+    document = ParsedDocument(doc_id=doc_id, file_path="x", file_name="x.docx", title="t")
+    document.chunks.append(
+        Chunk(
+            chunk_id=f"{doc_id}_image_00000",
+            doc_id=doc_id,
+            file_path="x",
+            file_name="x.docx",
+            type=ChunkType.IMAGE,
+            page_or_slide=1,
+            content="도면",
+            image=image,
+        )
+    )
+    return document
+
+
+def test_store_document_returns_no_stale_ids_for_new_document(db):
+    """처음 저장하는 문서는 교체 대상이 없으니 빈 목록을 돌려줘야 한다."""
+    stale = store_document(db, _document_with_image("d1"))
+    assert stale == []
+
+
+def test_store_document_returns_previous_image_chunk_ids_on_replace(db):
+    """재파싱으로 문서가 교체될 때, 옛 이미지 청크 id를 돌려줘야 썸네일 캐시를
+    지울 수 있다 (Phase 8, T8.4) — chunk_id가 doc_id+type+ordinal 기반이라
+    이미지 내용이 바뀌어도 캐시 키(chunk_id)가 그대로일 수 있기 때문이다.
+    """
+    store_document(db, _document_with_image("d1"))
+    stale = store_document(db, _document_with_image("d1"))  # 같은 doc_id로 재저장(=재파싱 시뮬레이션)
+
+    assert stale == ["d1_image_00000"]
