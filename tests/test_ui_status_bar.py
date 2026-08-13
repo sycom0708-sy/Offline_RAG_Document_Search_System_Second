@@ -221,3 +221,93 @@ class TestIndexingProgressDialog:
 
         assert received == [1]
         assert dialog.cancel_button.isEnabled() is False
+
+
+class TestIndexingProgressDialogTiming:
+    """T10.7: 경과/예상 남은 시간 — 가짜 시계로 결정론적으로 검증한다.
+
+    실제 파일 처리 시간에 의존하면 느리고 flaky해진다(Phase 8이 시간 대신
+    호출 횟수로 검증했던 것과 같은 이유).
+    """
+
+    def _clock(self, *times: float):
+        it = iter(times)
+        return lambda: next(it)
+
+    def test_first_update_shows_only_elapsed(self, qtbot):
+        dialog = IndexingProgressDialog(time_source=self._clock(100.0))
+        qtbot.addWidget(dialog)
+
+        dialog.set_progress(1, 10)
+
+        assert dialog._time_label.text() == "경과 0초"
+
+    def test_remaining_estimate_after_two_samples(self, qtbot):
+        """1개 처리에 2초 걸렸다면(표본 구간 처리율 0.5개/초), 남은 8개(=10-2)는 16초로 추정돼야 한다."""
+        dialog = IndexingProgressDialog(time_source=self._clock(0.0, 2.0))
+        qtbot.addWidget(dialog)
+
+        dialog.set_progress(1, 10)
+        dialog.set_progress(2, 10)
+
+        assert dialog._time_label.text() == "경과 2초 · 약 16초 남음"
+
+    def test_no_estimate_when_total_unknown(self, qtbot):
+        """total<=0은 총량 미확정(marquee) 상태다 — 남은 시간을 추정할 근거가 없다."""
+        dialog = IndexingProgressDialog(time_source=self._clock(0.0, 2.0))
+        qtbot.addWidget(dialog)
+
+        dialog.set_progress(1, 0)
+        dialog.set_progress(2, 0)
+
+        assert "남음" not in dialog._time_label.text()
+
+    def test_no_estimate_once_done_reaches_total(self, qtbot):
+        dialog = IndexingProgressDialog(time_source=self._clock(0.0, 2.0))
+        qtbot.addWidget(dialog)
+
+        dialog.set_progress(1, 2)
+        dialog.set_progress(2, 2)
+
+        assert "남음" not in dialog._time_label.text()
+
+    def test_estimate_reacts_to_recent_window_not_full_history(self, qtbot):
+        """앞쪽에 느린 구간(구버전 포맷)이 있어도, 최근 구간이 빨라지면 그에
+        맞춰 추정치가 줄어들어야 한다 — 전체 평균이었다면 계속 느리게 잡힌다.
+
+        표본 창(`_RATE_WINDOW=5`)을 다 채우고 하나 더 넣어야 가장 느렸던
+        첫 표본이 창에서 밀려난다 — 그래야 "최근 구간만 본다"는 설계가
+        실제로 검증된다(창이 안 찼으면 그냥 전체 평균과 같아진다).
+        """
+        # 느린 구간: 파일 1개당 10초. 빠른 구간: 파일 1개당 1초.
+        clock = self._clock(0.0, 10.0, 20.0, 21.0, 22.0, 23.0)
+        dialog = IndexingProgressDialog(time_source=clock)
+        qtbot.addWidget(dialog)
+
+        dialog.set_progress(1, 10)  # t=0
+        dialog.set_progress(2, 10)  # t=10 (느린 구간)
+        dialog.set_progress(3, 10)  # t=20 (구간 전환, 표본 창이 꽉 참)
+        dialog.set_progress(4, 10)  # t=21 (빠른 구간 — 가장 느렸던 첫 표본이 창에서 밀려남)
+        dialog.set_progress(5, 10)  # t=22
+        dialog.set_progress(6, 10)  # t=23
+
+        # 표본 창엔 (10,2)~(23,6)만 남는다: 처리율 4개/13초 → 남은 4개는 13초.
+        # 전체 평균(5개/23초≈0.217개/초)이었다면 남은 4개는 약 18초로 더 크게 나온다.
+        assert dialog._time_label.text() == "경과 23초 · 약 13초 남음"
+
+
+class TestFormatDuration:
+    def test_seconds_only_under_a_minute(self):
+        from ui.widgets.indexing_progress_dialog import _format_duration
+
+        assert _format_duration(45) == "45초"
+
+    def test_minutes_and_seconds_at_or_over_a_minute(self):
+        from ui.widgets.indexing_progress_dialog import _format_duration
+
+        assert _format_duration(65) == "1분 5초"
+
+    def test_exact_minute_boundary(self):
+        from ui.widgets.indexing_progress_dialog import _format_duration
+
+        assert _format_duration(60) == "1분 0초"
