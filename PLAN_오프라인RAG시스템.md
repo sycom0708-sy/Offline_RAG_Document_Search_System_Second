@@ -23,7 +23,7 @@
 | **Phase 6** | sLM 후보군 실측 검증 | ✅ **완료** | 최소 사양: sLM 기본 OFF, 켠다면 EXAONE-4.0-1.2B(Phi-4-mini 전 사양 제외). **권장 사양(16GB): Qwen3.5-4B 채택 확정**[사용자 확정, 2026-08-10] — 준수율은 EXAONE-3.5-7.8B와 동일하나 메모리(4.8GB vs 8.3GB)가 절반이라 동시 작업(안드로이드 스튜디오 등) 안정성 우선. §6-B T6.8 참고. 그 사이 진행된 Phase 10 작업 포함 누적 테스트 **488 passed / 5 skipped**, 실패 0건 |
 | **Phase 7** | sLM 답변 생성 옵션 모드 | ✅ **완료** | 4단계 안전장치 전부 구현, 채택 모델(Qwen3.5-4B) 적용. 회귀 측정(26문항)에서 Phase 6 순수 추론과 **동일 수치**(기권정확도 81.8%/응답정확도 80.0%) 유지하며 놓쳤던 할루시네이션 2건을 4단계가 전부 포착. 테스트 558 passed / 5 skipped (누적) |
 | **Phase 7.5** | KURE-v1 임베딩 변환 파이프라인 | ✅ **완료** | 변환·검증·모델 매니저 UI·T4.11b 종단 검증 전부 완료. 풀링이 mean이 아니라 CLS임을 실측으로 확인(안 잡았으면 검색 품질이 조용히 나빠질 뻔함), `chunk_vectors` PK 버그(모델 전환 시 벡터 삭제) 발견·수정. **처리량 5.4배 느림, 품질은 이 코퍼스로 결론 미확정 → 기본값은 경량 유지**[사용자 확정]. 테스트 16건 추가(누적 574 passed / 5 skipped) |
-| **Phase 8** | 증분 인덱싱 / 폴더 감시 | ✅ **완료 (핵심 범위)** | mtime→해시 2단계 비교로 변경 없는 파일은 재파싱 생략(`indexer/incremental/needs_reindex()`), 재파싱 시 옛 이미지 썸네일 캐시도 무효화. 실측: 전체 재인덱싱 117초 → 무변경 재실행 0.87초, 1개 파일 변경 시 1.0초(18/19 스킵). **T8.5(watchdog 실시간 감시)는 후속 작업으로 분리**[사용자 확정]. 테스트 29건 추가(누적 655 passed / 5 skipped) |
+| **Phase 8** | 증분 인덱싱 / 폴더 감시 | ✅ **완료** | mtime→해시 2단계 비교로 변경 없는 파일은 재파싱 생략(`indexer/incremental/needs_reindex()`), 재파싱 시 옛 이미지 썸네일 캐시도 무효화. 실측: 전체 재인덱싱 117초 → 무변경 재실행 0.87초, 1개 파일 변경 시 1.0초(18/19 스킵). **T8.5(watchdog 실시간 감시)**도 이어서 완료 — 변경 감지 시 기존 재인덱싱을 무음 모드로 재사용(새 파이프라인 없음), 폴더 관리 다이얼로그에 토글(기본 OFF). 테스트 49건 추가(누적 675 passed / 5 skipped) |
 | Phase 9 | exe 패키징 및 배포 테스트 | 대기 | — |
 | Phase 10 | 배포 후 개선 백로그 (todo list) | 대기(상시 누적) | T10.2~T10.5 완료(변환 실패 안내·원문 열기 무반응·인덱싱 팝업·재인덱싱 누적 버그). **T10.1·T10.6·T10.7 미착수**로 열려 있음 |
 
@@ -1036,6 +1036,20 @@ T4.11b 종단 검증으로 실제 재인덱싱을 처음 돌려보고서야 발�
 **잡은 함정**: 실사용 검증 중 `cp "../exdoc/README.txt" ...`로 백업을 만들려다 실패했다 — 실제 `README.txt`는 폴더 최상위가 아니라 `exdoc/sub1/README.txt`에 있었는데, 그 뒤에 이어진 `echo "..." >> "../exdoc/README.txt"`가 **존재하지 않던 경로에 새 파일을 만들어버렸다**(리다이렉트는 대상이 없으면 만든다). 실제 사용자 문서 폴더에 스트레이 파일이 생긴 것을 바로 발견해 사용자 확인 후 삭제했다 — 이후 검증은 전부 `/tmp`의 사본에서 진행하도록 바꿨다. 코드 버그는 아니지만, 실제 사용자 폴더를 대상으로 한 검증에서는 셸 명령 하나하나가 그 폴더에 흔적을 남길 수 있다는 걸 다시 확인했다.
 
 **테스트**: `tests/test_indexer_incremental.py`(신설, `needs_reindex()` 단위 4건 + `index_folder()` 스킵 통합 2건 + 프루닝 시 이미지 청크 id 보고 1건) · `tests/test_ui_thumbnail_cache.py`(신설, `evict_thumbnails()` 2건) · `tests/test_indexer_store.py`(`store_document()`가 옛 이미지 청크 id를 반환하는지 2건 추가). 전체 655 passed / 5 skipped(기존 626에서 +29). 이 PC에서 재현되는 pre-existing 크래시(`test_ui_main_window.py::TestPerformanceComboStartupSync`, ONNX 워밍업 스레드 access violation)는 수정 전 `main`에서도 동일하게 재현됨을 확인해 이번 변경과 무관함을 확인했다.
+
+## 8-C. T8.5(watchdog 실시간 폴더 감시) — 완료 (DoD 충족) [2026-08-13]
+
+핵심(T8.1~T8.4) 완료 직후 Phase 9로 넘어갈지 묻는 과정에서, 사용자가 T8.5까지 마무리하기로 결정해 이어서 진행했다.
+
+**설계 핵심 — 새 경로를 만들지 않았다.** T8.1~T8.4가 재인덱싱 자체를 이미 값싸게 만들어뒀기 때문에(무변경 19개 문서 기준 0.87초), watchdog가 할 일은 "파일 하나만 골라 재파싱"하는 새 파이프라인이 아니라 그냥 변경 감지 시 기존 `_start_reindex()`를 다시 부르는 것으로 충분했다 — 변경 없는 파일은 이미 스킵된다. `_start_reindex()`에 `silent: bool` 매개변수만 추가해(진행률 팝업을 만들지 않음, `_on_indexing_progress()`가 이미 `dialog is not None` 체크로 None-safe해서 이 변경이 다른 경로에 영향 없음) watchdog가 트리거한 재인덱싱은 사용자가 다른 작업 중이어도 팝업 없이 상태바로만 조용히 진행되게 했다.
+
+**토글 위치 — 사이드바가 아니라 폴더 관리 다이얼로그.** DESIGN에 이 토글의 UI 위치가 명시돼 있지 않았고, 사이드바(`ui/widgets/sidebar.py`)는 바로 오늘(Phase 7.7) 사용자가 순서·간격을 확정한 직후라 새 행을 끼워 넣으면 `_update_recent_searches_max_height()`의 높이 계산까지 같이 손대야 했다. 대신 대상 폴더를 고르는 `FolderDialog`(원래도 "폴더 관리 화면 자체는 범위 밖" 전제로 최소 구현된 다이얼로그)에 `ToggleSwitch`를 추가했다 — 폴더를 고르는 자리에서 그 폴더를 감시할지도 같이 정하는 게 자연스럽다.
+
+**스레드 마셜링은 기존 `_IndexingBridge` 패턴을 그대로 복제.** watchdog 콜백은 자체 스레드(정확히는 디바운스용 `threading.Timer` 스레드)에서 불리므로, `_WatchBridge(QObject)` + `Signal`을 하나 더 만들어 Qt 큐드 커넥션으로 메인 스레드에 넘겼다. 디바운스(기본 3초, `threading.Timer` 기반)는 `indexer/incremental/watcher.py`(UI 비의존 계층)에 있다 — 저장 도구가 짧은 시간에 여러 이벤트를 낼 수 있어 하나로 묶는다.
+
+**🔴 테스트 작성 중 이 PC의 기존 크래시(ONNX 워밍업 스레드 access violation, §8-B에서 이미 확인한 pre-existing 문제)를 훨씬 자주 재현하는 조건을 발견했다.** `TestFolderWatch`처럼 `MainWindow`를 짧은 시간에 여러 개 연달아 만들면(다른 테스트는 인덱싱·검색 대기가 자연스러운 시간 간격을 만들어줌) 각 인스턴스가 띄우는 ONNX 워밍업 스레드들이 겹쳐 크래시 빈도가 확 뛰었다 — 테스트를 하나씩 따로 돌리면 10개 전부 통과하는데, 클래스 전체를 한 프로세스에서 돌리면 거의 매번 죽었다. 이 클래스의 테스트는 애초에 임베더가 전혀 필요 없어서(watcher 배선만 검증), `MainWindow._start_embedder_warmup`을 클래스 단위로 no-op 처리하는 autouse fixture로 근본 원인(워밍업 스레드 자체)을 없앴다 — 근본적인 ONNX 스레드 안전성 문제 자체는 이번 범위 밖(Phase 9 이후 재검토 대상으로 남겨둠).
+
+**검증**: `tests/test_folder_watcher.py`(신설, `FolderWatcher` 자체 — 생성/수정/서브폴더 감지, 디바운스로 연속 이벤트가 한 번만 호출되는지, 존재하지 않는 폴더 시작 시 예외, `stop()`이 Observer 스레드를 실제로 join하는지) · `tests/test_ui_status_bar.py::TestFolderDialogWatchToggle`(토글 초기 상태·활성화 조건·emit) · `tests/test_ui_main_window.py::TestFolderWatch`(가짜 `FolderWatcher`로 배선만 검증 — on/off, 앱 재시작 시 자동 재개, 새 폴더 선택 시 재시작, **같은 폴더로의 watchdog 트리거 재인덱싱은 Observer를 다시 켜지 않음**(매번 멈췄다 켜면 그 사이 이벤트를 놓칠 수 있어서), 무음 모드에서 팝업 없음, 시작 실패 시 크래시 대신 상태바 경고, `closeEvent`에서 정리). 진짜 watchdog로 `MainWindow`를 통째로 띄운 스크립트 검증(스크래치 폴더, 실제 exdoc 아님)으로 "감시 켬 → 파일 수정 → 몇 초 안에 무음 재인덱싱 → DB에 최신 내용 반영 → 감시 끄기 → 창 닫기"까지 종단 확인. 테스트 20건 추가(전체 681 collected, 675 passed / 5 skipped / 1 deselected — deselect는 이 PC의 기존 ONNX 크래시 재현 테스트 1건, §8-B와 동일).
 
 ---
 

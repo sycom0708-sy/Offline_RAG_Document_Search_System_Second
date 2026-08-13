@@ -4,6 +4,72 @@
 
 ---
 
+<!-- 출처: serene-strolling-garden.md · DESKTOP-V42GJBP · 작성 2026-08-13 15:52 · 아카이브 2026-08-13 16:40 -->
+
+# T8.5: watchdog 실시간 폴더 감시 (Phase 8 마무리)
+
+## Context
+
+Phase 8 핵심(T8.1~T8.4·T8.6, mtime/해시로 변경 없는 파일 스킵)은 이미 완료돼 커밋됐다. 남은 건 T8.5 — 사용자가 수동으로 "다시 인덱싱"을 누르지 않아도, 대상 폴더의 파일 변경을 감지해 자동으로 증분 재인덱싱하는 옵션이다. Phase 8 핵심 덕분에 재인덱싱 자체가 이미 값싸졌다(무변경 시 19개 문서 기준 0.87초) — 그래서 T8.5는 "파일 하나만 골라 재파싱"하는 새 경로를 만들 필요 없이, **변경 감지 → 기존 `_start_reindex()`를 그대로 재사용**하는 것으로 충분하다. TASK/TECH 문서 모두 "리소스 부담 고려, 기본 OFF"를 명시하고 있어 옵트인 토글로 구현한다.
+
+## 설계 결정
+
+**감시 시작은 폴더 관리 다이얼로그에서.** DESIGN에 이 토글의 UI 위치가 명시돼 있지 않고, 사이드바는 오늘(Phase 7.7) 사용자가 순서·간격을 확정한 직후라(`ui/widgets/sidebar.py` 상단 docstring, `_update_recent_searches_max_height()`의 하드코딩된 `gap_count`) 여기에 새 행을 끼워 넣으면 그 계산도 같이 손대야 한다. 대신 `ui/widgets/folder_dialog.py`(대상 폴더 선택 + 재인덱싱만 담당하는 "최소 구현" 다이얼로그, 폴더 관리 화면 자체는 이번 범위 밖이라고 이미 문서화돼 있음)에 `ToggleSwitch("실시간 감시")`를 추가한다 — 폴더를 고르는 자리에서 그 폴더를 감시할지도 같이 정하는 게 자연스럽고, 상시 노출되는 사이드바를 건드리지 않는다.
+
+**변경 감지 → 기존 `_start_reindex()` 재사용, 단 무음(silent) 모드로.** `_start_reindex(folder)`는 이미 `_indexing_thread.is_alive()` 가드로 중복 실행을 막고, `_on_indexing_progress()`도 `self._indexing_progress_dialog is not None`을 체크한 뒤에만 다이얼로그를 건드린다(None-safe). 즉 `IndexingProgressDialog`를 아예 만들지 않는 `silent: bool` 매개변수만 추가하면, 진행률은 상태바로만 조용히 반영되고 사용자가 다른 작업 중에 팝업이 튀어나오는 일이 없다.
+
+**watchdog 이벤트 → Qt 메인 스레드 마셜링은 기존 `_IndexingBridge` 패턴을 그대로 따른다.** watchdog는 자체 스레드에서 콜백을 부르므로, `_IndexingBridge`와 같은 방식으로 `QObject` + `Signal`을 하나 더 만들어 큐드 커넥션으로 메인 스레드에 넘긴다.
+
+**디바운스는 `indexer/incremental/watcher.py`(신규, UI 비의존 계층) 안에서 처리한다.** 저장 도구가 짧은 시간에 여러 이벤트를 내는 경우(임시파일 생성→삭제→rename 등)를 하나로 묶기 위해 `threading.Timer` 기반 디바운스(기본 3초, 테스트에서는 짧게 주입 가능)를 쓴다. `FolderWatcher.start()`가 실패하면(폴더가 없어졌다 등) 예외를 그대로 던지고, 호출부(`MainWindow`)가 잡아서 상태바 경고로 보여준다(T10.2 패턴 재사용).
+
+## 변경 파일
+
+### 1. `requirements.txt`
+`# Phase 8 T8.5: 실시간 폴더 감시 의존성 (옵션, 기본 OFF)` 헤더 아래 `watchdog>=4.0.0` 추가. `.venv`에 설치.
+
+### 2. `indexer/incremental/watcher.py` (신규)
+- `_DebouncedHandler(FileSystemEventHandler)`: `on_created`/`on_modified`/`on_deleted`/`on_moved` 전부 같은 `_schedule()`로 모아 `threading.Timer(debounce_seconds, on_change)`를 재시작(기존 타이머는 취소).
+- `FolderWatcher`: `__init__(folder, on_change: Callable[[], None], debounce_seconds: float = 3.0)`. `start()`가 `Observer().schedule(handler, folder, recursive=True)` 후 `observer.start()`. `stop()`이 `observer.stop()` + `observer.join(timeout=5)`(기존 `IndexingThread` 종료 패턴과 동일하게 시간 제한).
+
+### 3. `ui/widgets/folder_dialog.py`
+- `FolderDialog.__init__(current_folder, current_watch_enabled: bool, parent=None)`로 매개변수 추가.
+- `ToggleSwitch("실시간 감시")`를 버튼 줄 아래에 추가, `current_watch_enabled`로 초기화, 폴더가 없으면(`current_folder is None`) `setEnabled(False)` — 폴더를 새로 고르면(`_select_folder`) `setEnabled(True)`로 풀어준다.
+- 새 시그널 `watch_toggled = Signal(bool)`, 토글의 `toggled`를 그대로 relay.
+
+### 4. `ui/state.py`
+`AppState`에 `folder_watch_enabled: bool = False` 필드 추가(주석으로 "기본 OFF" 근거 명시, `ai_chat_enabled` 옆 패턴 그대로).
+
+### 5. `ui/main_window.py`
+- `_WatchBridge(QObject)`: `changed = Signal()` — `_IndexingBridge` 바로 아래 추가.
+- `self._folder_watcher: FolderWatcher | None = None` 인스턴스 변수 추가.
+- `_open_folder_dialog()`: `FolderDialog(current_folder=..., current_watch_enabled=self.state.folder_watch_enabled, parent=self)`로 생성, `dialog.watch_toggled.connect(self._on_folder_watch_toggled)` 추가.
+- `_on_folder_watch_toggled(enabled: bool)`: `state.folder_watch_enabled` 갱신·저장 후 `_sync_folder_watcher()` 호출.
+- `_start_reindex(folder, silent=False)`: `silent`일 때 `IndexingProgressDialog` 생성·`show()`·`self._indexing_progress_dialog =` 할당을 건너뛴다. 폴더 저장 직후 `_sync_folder_watcher()` 호출(폴더가 바뀌었을 수 있으니 감시 대상도 갱신).
+- `_sync_folder_watcher()`: 기존 watcher가 있으면 `stop()` 후 `None`. `state.folder_watch_enabled and state.target_folder`면 새 `FolderWatcher(state.target_folder, on_change=lambda: bridge.changed.emit())`를 만들어 `start()` — 실패하면 `status_bar_widget.set_warning(f"실시간 감시를 시작하지 못했습니다: {exc}")`로 조용히 폴백(크래시 금지, T10.2와 같은 결).
+- `_on_folder_changed()`(브리지의 `changed`에 연결): `self._start_reindex(self.state.target_folder, silent=True)`.
+- `__init__` 끝(`_start_embedder_warmup()` 다음)에서 `self._sync_folder_watcher()` 호출 — 이전 세션에서 켜뒀으면 앱 시작 시 자동 재개.
+- `closeEvent()`: 인덱싱 스레드 정리 코드 앞에 `if self._folder_watcher is not None: self._folder_watcher.stop()` 추가.
+
+## 테스트
+
+- `tests/test_folder_watcher.py`(신규): 실제 `watchdog` Observer로 `tmp_path`에 파일 생성/수정 → `on_change`가 짧은 debounce(예: 0.05초)로 호출되는지 `threading.Event` + `wait(timeout=...)`로 확인(기존 `IndexingThread` 테스트와 같은 패턴). 연속 이벤트가 디바운스로 한 번만 호출되는지도 확인.
+- `tests/test_ui_main_window.py`에 `TestFolderWatch` 클래스 추가: `ui.main_window.FolderWatcher`를 가짜(spy) 클래스로 monkeypatch해 실제 파일시스템 타이밍에 의존하지 않고 배선만 검증 — 토글 on/off 시 start/stop 호출, 앱 시작 시 저장된 설정으로 자동 시작, 새 폴더 선택 시 재시작(다른 folder 인자로 재호출), `closeEvent`에서 `stop()` 호출, watcher 시작 실패 시 상태바 경고로 폴백(크래시 없음). `qtbot.waitUntil` 패턴 재사용.
+- `tests/test_ui_folder_dialog.py`(있으면 확장, 없으면 신설): 토글 초기값 반영, 폴더 없을 때 비활성, 폴더 선택 후 활성화, `watch_toggled` emit 확인.
+- 전체 `pytest -q` 통과 확인(현재 655 passed / 5 skipped 유지 또는 증가).
+
+## 검증 (실사용)
+
+앱을 실행해 폴더 관리 다이얼로그에서 "실시간 감시" 토글을 켜고, 대상 폴더(스크래치 사본 사용 — 실제 `exdoc` 폴더에는 손대지 않는다) 안 파일을 수정한 뒤 몇 초 안에 상태바 인덱싱 진행 표시가 자동으로 뜨는지, 진행률 팝업 없이 조용히 끝나는지 확인. 앱을 재시작해 토글이 유지되고 감시가 자동 재개되는지도 확인.
+
+## 완료 후 문서화
+
+- `TASK_오프라인RAG시스템.md`: T8.5 체크, Phase 8 milestone 표를 "핵심 완료, T8.5 후속 분리" → "완료"로 갱신
+- `PLAN_오프라인RAG시스템.md`: 8-B 절에 T8.5 결과 추가 기록
+- `CLAUDE.md` 진행 상황에 Phase 8 완전 완료 반영
+- 커밋(로컬만, push 없음)
+
+---
+
 <!-- 출처: serene-strolling-garden.md · DESKTOP-V42GJBP · 작성 2026-08-13 14:55 · 아카이브 2026-08-13 15:41 -->
 
 # Phase 8: 증분 인덱싱 / 폴더 감시 (핵심 범위)

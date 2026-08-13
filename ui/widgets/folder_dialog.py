@@ -1,7 +1,8 @@
 """폴더 관리 진입점 — 최소 구현 (T4.17).
 
 전체 "폴더 관리 화면"은 이번 Phase 범위 밖이다(TASK 문서가 별도 작업으로
-분리 허용). 대상 폴더 선택 + 재인덱싱 트리거만 제공한다.
+분리 허용). 대상 폴더 선택 + 재인덱싱 트리거 + 실시간 감시 토글(T8.5)만
+제공한다.
 """
 
 from __future__ import annotations
@@ -9,13 +10,22 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from ui.widgets.toggle_switch import ToggleSwitch
+
 NO_FOLDER_TEXT = "대상 폴더가 지정되지 않았습니다."
+WATCH_TOGGLE_LABEL = "실시간 감시"
 
 
 class FolderDialog(QDialog):
     reindex_requested = Signal(str)  # 선택된 폴더 경로
+    watch_toggled = Signal(bool)  # 실시간 감시 켬/끔 (T8.5)
 
-    def __init__(self, current_folder: str | None, parent=None) -> None:
+    def __init__(
+        self,
+        current_folder: str | None,
+        current_watch_enabled: bool = False,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("폴더 관리")
         self.setMinimumWidth(420)
@@ -42,6 +52,13 @@ class FolderDialog(QDialog):
 
         layout.addLayout(buttons)
 
+        # 폴더가 지정돼야 감시할 대상이 있다 — 없으면 비활성.
+        self.watch_toggle = ToggleSwitch(WATCH_TOGGLE_LABEL)
+        self.watch_toggle.setChecked(current_watch_enabled)
+        self.watch_toggle.setEnabled(current_folder is not None)
+        self.watch_toggle.toggled.connect(self.watch_toggled)
+        layout.addWidget(self.watch_toggle)
+
     def _refresh_label(self) -> None:
         text = self._folder if self._folder else NO_FOLDER_TEXT
         self.folder_label.setText(f"대상 폴더: {text}")
@@ -52,6 +69,7 @@ class FolderDialog(QDialog):
             self._folder = folder
             self._refresh_label()
             self.reindex_button.setEnabled(True)
+            self.watch_toggle.setEnabled(True)
 
     def _start_reindex(self) -> None:
         if self._folder:

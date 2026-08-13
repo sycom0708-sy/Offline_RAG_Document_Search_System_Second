@@ -33,6 +33,9 @@ class AppState:
     # 기본값(False)으로 시작한다.
     ai_chat_enabled: bool = False
     slm_profile: str = DEFAULT_SLM_PROFILE
+    # 실시간 폴더 감시(T8.5)도 **기본 OFF**다 — TECH 문서가 "리소스 부담
+    # 고려, 최소 사양 기본 OFF 검토"로 명시한 옵트인 기능이다.
+    folder_watch_enabled: bool = False
     # 사이드바 "최근 검색" 목록(Phase 7.7). 최신이 맨 앞, 최대
     # RECENT_SEARCHES_LIMIT건 — 목록 갱신은 ui.state 밖(MainWindow)에서 한다.
     recent_searches: list[str] = dataclasses.field(default_factory=list)

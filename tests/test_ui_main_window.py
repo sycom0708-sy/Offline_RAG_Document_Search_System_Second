@@ -425,6 +425,236 @@ class TestReindexFlow:
         win.close()  # 예외가 나면 이 테스트 자체가 실패한다
 
 
+class _FakeFolderWatcher:
+    """T8.5 배선 테스트용 spy — 실제 watchdog Observer·디바운스 지연 없이
+    start()/stop() 호출과 생성자 인자만 기록한다. 실제 감시 로직(디바운스,
+    이벤트 처리) 자체는 tests/test_folder_watcher.py가 검증한다.
+    """
+
+    instances: list["_FakeFolderWatcher"] = []
+
+    def __init__(self, folder, on_change, debounce_seconds=3.0) -> None:
+        self.folder = folder
+        self.on_change = on_change
+        self.started = False
+        self.stopped = False
+        type(self).instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class TestFolderWatch:
+    """T8.5: 실시간 폴더 감시 — 실제 watchdog 대신 스파이로 배선만 검증한다."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_fake_instances(self):
+        _FakeFolderWatcher.instances = []
+        yield
+        _FakeFolderWatcher.instances = []
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        """이 클래스는 watcher 배선만 본다 — 임베더가 전혀 필요 없다.
+
+        `MainWindow.__init__`마다 백그라운드 ONNX 워밍업 스레드가 뜨는데,
+        이 클래스처럼 짧은 시간에 `MainWindow`를 여러 개 연달아 만들면
+        (다른 테스트처럼 인덱싱·검색 대기로 자연히 시간 간격이 안 생긴다)
+        ONNX 세션 생성이 겹쳐 이 PC에서 재현되는 기존 크래시(access
+        violation)를 훨씬 자주 유발한다 — 실제로 겪었다. 이 클래스의
+        어떤 테스트도 `_embedder`를 쓰지 않으므로 워밍업 자체를 꺼서 피한다.
+        """
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    def test_toggling_on_starts_a_watcher(self, qtbot, tmp_path, monkeypatch):
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+        win.state.target_folder = str(tmp_path)
+
+        win._on_folder_watch_toggled(True)
+
+        assert win.state.folder_watch_enabled is True
+        assert len(_FakeFolderWatcher.instances) == 1
+        watcher = _FakeFolderWatcher.instances[0]
+        assert watcher.folder == str(tmp_path)
+        assert watcher.started is True
+        assert win._folder_watcher is watcher
+
+    def test_toggling_off_stops_the_watcher(self, qtbot, tmp_path, monkeypatch):
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+        win.state.target_folder = str(tmp_path)
+        win._on_folder_watch_toggled(True)
+        watcher = _FakeFolderWatcher.instances[0]
+
+        win._on_folder_watch_toggled(False)
+
+        assert win.state.folder_watch_enabled is False
+        assert watcher.stopped is True
+        assert win._folder_watcher is None
+
+    def test_watcher_starts_automatically_if_previously_enabled(self, qtbot, tmp_path, monkeypatch):
+        """이전 세션에서 켜뒀으면 앱을 다시 켤 때 자동으로 감시가 재개돼야 한다."""
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        state_path = tmp_path / "state.json"
+        state = AppState.load(path=state_path)
+        state.target_folder = str(tmp_path)
+        state.folder_watch_enabled = True
+        state.save()
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=state_path))
+        qtbot.addWidget(win)
+
+        assert len(_FakeFolderWatcher.instances) == 1
+        assert _FakeFolderWatcher.instances[0].started is True
+
+    def test_watcher_does_not_start_when_disabled(self, qtbot, tmp_path, monkeypatch):
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+
+        assert _FakeFolderWatcher.instances == []
+        assert win._folder_watcher is None
+
+    def test_selecting_a_new_folder_restarts_watcher_at_new_location(
+        self, qtbot, tmp_path, monkeypatch, samples
+    ):
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+
+        folder_a = tmp_path / "a"
+        folder_a.mkdir()
+        win.state.target_folder = str(folder_a)
+        win._on_folder_watch_toggled(True)
+        first_watcher = _FakeFolderWatcher.instances[0]
+
+        folder_b = str(next(iter(samples.values())).parent)
+        win._start_reindex(folder_b)  # 대상 폴더가 바뀌었다
+
+        assert first_watcher.stopped is True
+        assert len(_FakeFolderWatcher.instances) == 2
+        second_watcher = _FakeFolderWatcher.instances[1]
+        assert second_watcher.folder == folder_b
+        assert second_watcher.started is True
+        qtbot.waitUntil(lambda: win._indexing_progress_dialog is None, timeout=60000)
+
+    def test_reindexing_the_same_folder_does_not_restart_watcher(
+        self, qtbot, tmp_path, monkeypatch, samples
+    ):
+        """watchdog가 트리거한 재인덱싱은 대상 폴더가 그대로라 Observer를
+        다시 켤 필요가 없다 — 매번 멈췄다 켜면 그 사이 이벤트를 놓칠 수 있다."""
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+
+        folder = str(next(iter(samples.values())).parent)
+        win.state.target_folder = folder
+        win._on_folder_watch_toggled(True)
+        watcher = _FakeFolderWatcher.instances[0]
+
+        win._start_reindex(folder, silent=True)  # 같은 폴더로 재인덱싱(watchdog 시뮬레이션)
+
+        assert watcher.stopped is False
+        assert len(_FakeFolderWatcher.instances) == 1
+        qtbot.waitUntil(lambda: win._indexing_thread is not None and not win._indexing_thread.is_alive(), timeout=60000)
+
+    def test_silent_reindex_does_not_show_progress_dialog(self, qtbot, tmp_path, samples):
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+
+        folder = str(next(iter(samples.values())).parent)
+        win._start_reindex(folder, silent=True)
+
+        assert win._indexing_progress_dialog is None
+        qtbot.waitUntil(
+            lambda: win._indexing_thread is not None and not win._indexing_thread.is_alive(),
+            timeout=60000,
+        )
+
+    def test_folder_changed_triggers_silent_reindex(self, qtbot, tmp_path, samples):
+        """watcher의 on_change 콜백이 실제로 조용한 재인덱싱을 트리거하는지 확인한다."""
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+        win.state.target_folder = str(next(iter(samples.values())).parent)
+
+        win._on_folder_changed()
+
+        assert win._indexing_thread is not None
+        assert win._indexing_progress_dialog is None
+        qtbot.waitUntil(
+            lambda: not win._indexing_thread.is_alive(), timeout=60000
+        )
+
+    def test_watcher_start_failure_shows_warning_instead_of_crashing(
+        self, qtbot, tmp_path, monkeypatch
+    ):
+        import ui.main_window as main_window_module
+
+        class _BrokenWatcher(_FakeFolderWatcher):
+            def start(self) -> None:
+                raise OSError("폴더가 없어졌습니다")
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _BrokenWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+        win.state.target_folder = str(tmp_path)
+
+        win._on_folder_watch_toggled(True)  # 예외가 나면 이 테스트 자체가 실패한다
+
+        assert win._folder_watcher is None
+        assert win.status_bar_widget._warning_label.isVisibleTo(win.status_bar_widget)
+
+    def test_close_event_stops_the_watcher(self, qtbot, tmp_path, monkeypatch):
+        import ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "FolderWatcher", _FakeFolderWatcher)
+
+        empty_db = tmp_path / "fresh.sqlite3"
+        win = MainWindow(db_path=empty_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+        win.state.target_folder = str(tmp_path)
+        win._on_folder_watch_toggled(True)
+        watcher = _FakeFolderWatcher.instances[0]
+
+        win.close()
+
+        assert watcher.stopped is True
+
+
 class TestLibreOfficeWarning:
     """T10.2: LibreOffice 미설치로 구버전 문서가 조용히 빠지면 사용자에게 안내한다."""
 

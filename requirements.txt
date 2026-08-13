@@ -22,6 +22,9 @@ numpy>=1.24.0
 # 외부 런타임(WebView2 등) 의존 없이 포터블 배포가 가능한 유일한 후보.
 PySide6-Essentials>=6.7.0
 
+# Phase 8 T8.5: 실시간 폴더 감시 의존성 (옵션, 기본 OFF)
+watchdog>=4.0.0
+
 # 테스트
 pytest>=7.4.0
 pytest-qt>=4.4.0

@@ -136,6 +136,45 @@ class TestFolderDialog:
         assert received == []
 
 
+class TestFolderDialogWatchToggle:
+    """T8.5: 실시간 감시 토글 — 폴더 관리 다이얼로그에서 켜고 끈다."""
+
+    def test_disabled_without_folder(self, qtbot):
+        dialog = FolderDialog(current_folder=None)
+        qtbot.addWidget(dialog)
+        assert dialog.watch_toggle.isEnabled() is False
+        assert dialog.watch_toggle.isChecked() is False
+
+    def test_reflects_saved_state_when_folder_set(self, qtbot):
+        dialog = FolderDialog(current_folder=r"D:\사내 문서", current_watch_enabled=True)
+        qtbot.addWidget(dialog)
+        assert dialog.watch_toggle.isEnabled() is True
+        assert dialog.watch_toggle.isChecked() is True
+
+    def test_selecting_a_folder_enables_the_toggle(self, qtbot, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: r"D:\새 폴더")
+
+        dialog = FolderDialog(current_folder=None)
+        qtbot.addWidget(dialog)
+        assert dialog.watch_toggle.isEnabled() is False
+
+        dialog._select_folder()
+
+        assert dialog.watch_toggle.isEnabled() is True
+
+    def test_toggling_emits_watch_toggled(self, qtbot):
+        dialog = FolderDialog(current_folder=r"D:\사내 문서")
+        qtbot.addWidget(dialog)
+
+        received = []
+        dialog.watch_toggled.connect(received.append)
+        dialog.watch_toggle.setChecked(True)
+
+        assert received == [True]
+
+
 class TestIndexingProgressDialog:
     """T10.4: 비모달 인덱싱 진행률 팝업 — TECH 4.6("메인 UI가 멈추지 않도록")을
     지키면서 취소 버튼을 추가한다."""

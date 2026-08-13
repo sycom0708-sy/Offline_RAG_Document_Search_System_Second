@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
 
 from config.settings import get_profile
 from indexer.fts5.schema import connect
+from indexer.incremental.watcher import FolderWatcher
 from indexer.pipeline import IndexingThread, IndexReport
 from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
 from slm.service import SlmService
@@ -56,6 +57,16 @@ class _IndexingBridge(QObject):
     done = Signal(object)  # IndexReport
 
 
+class _WatchBridge(QObject):
+    """`FolderWatcher`의 콜백(watchdog 자체 스레드)을 Qt 신호로 옮긴다.
+
+    `_IndexingBridge`와 같은 이유·같은 방식이다 — 큐드 커넥션이 발신 스레드와
+    무관하게 수신자(메인 스레드)의 이벤트 루프에서 슬롯을 실행해준다.
+    """
+
+    changed = Signal()
+
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -82,6 +93,7 @@ class MainWindow(QMainWindow):
         self._last_results: list = []
         self._indexing_thread: IndexingThread | None = None
         self._indexing_progress_dialog: IndexingProgressDialog | None = None
+        self._folder_watcher: FolderWatcher | None = None  # T8.5, 기본 OFF
 
         # AI 챗봇 (Phase 7.6, 옛 "AI 요약" 기능을 대체). 서버는 첫 요청 때
         # 올라오고 유휴 5분이면 스스로 내려간다 — 여기서 만드는 것은 관리
@@ -104,6 +116,7 @@ class MainWindow(QMainWindow):
         self._refresh_ai_chat_availability()
         self.sidebar.set_recent_searches(self.state.recent_searches)
         self._start_embedder_warmup()
+        self._sync_folder_watcher()  # T8.5: 이전 세션에서 켜뒀으면 자동 재개
 
     # --- UI 구성 --------------------------------------------------
 
@@ -405,6 +418,9 @@ class MainWindow(QMainWindow):
         `_active_workers`가 막아주는 것과 같은 종류의 크래시다. 인덱싱은 길 수
         있어 `stop_event`로 중단을 먼저 요청한다.
         """
+        if self._folder_watcher is not None:
+            self._folder_watcher.stop()  # T8.5: watchdog Observer도 자체 스레드다
+
         if self._indexing_thread is not None and self._indexing_thread.is_alive():
             # IndexingThread는 QThread가 아니라 threading.Thread다 —
             # isRunning()/wait(ms)는 QThread API라 여기선 존재하지 않는다
@@ -478,21 +494,36 @@ class MainWindow(QMainWindow):
     # --- 폴더 관리 / 인덱싱 --------------------------------------------------
 
     def _open_folder_dialog(self) -> None:
-        dialog = FolderDialog(current_folder=self.state.target_folder, parent=self)
+        dialog = FolderDialog(
+            current_folder=self.state.target_folder,
+            current_watch_enabled=self.state.folder_watch_enabled,
+            parent=self,
+        )
         dialog.reindex_requested.connect(self._start_reindex)
+        dialog.watch_toggled.connect(self._on_folder_watch_toggled)
         dialog.exec()
 
-    def _start_reindex(self, folder: str) -> None:
+    def _start_reindex(self, folder: str, silent: bool = False) -> None:
+        """`silent=True`면 진행률 팝업 없이 상태바로만 조용히 진행한다 (T8.5,
+        watchdog가 트리거한 백그라운드 재인덱싱용 — 사용자가 다른 작업 중에
+        팝업이 튀어나오면 안 된다)."""
         # 두 인덱싱 스레드가 같은 DB에 동시에 쓰면 위험하다 — 이미 도는 중이면
-        # 새로 시작하지 않고 기존 팝업만 앞으로 가져온다.
+        # 새로 시작하지 않고 기존 팝업만 앞으로 가져온다(무음 모드면 팝업이
+        # 없을 수 있으니 그때는 아무것도 안 한다).
         if self._indexing_thread is not None and self._indexing_thread.is_alive():
             if self._indexing_progress_dialog is not None:
                 self._indexing_progress_dialog.raise_()
                 self._indexing_progress_dialog.activateWindow()
             return
 
+        folder_changed = self.state.target_folder != folder
         self.state.target_folder = folder
         self.state.save()
+        if folder_changed:
+            # watchdog가 감지한 재인덱싱은 대상 폴더가 그대로이므로 매번
+            # Observer를 멈췄다 다시 켤 필요가 없다 — 폴더 선택 다이얼로그를
+            # 거쳐 실제로 대상이 바뀐 경우에만 감시를 다시 건다.
+            self._sync_folder_watcher()
 
         # 이전 "원문 열기" 실패 안내가 남아 있으면 새 인덱싱 진행률과 한 줄에
         # 겹쳐 보인다(실측 확인) — 새 인덱싱을 시작하는 시점에 지운다.
@@ -510,12 +541,48 @@ class MainWindow(QMainWindow):
             on_done=lambda report: bridge.done.emit(report),
         )
 
-        dialog = IndexingProgressDialog(parent=self)
-        dialog.cancel_requested.connect(self._cancel_indexing)
-        dialog.show()
-        self._indexing_progress_dialog = dialog
+        if not silent:
+            dialog = IndexingProgressDialog(parent=self)
+            dialog.cancel_requested.connect(self._cancel_indexing)
+            dialog.show()
+            self._indexing_progress_dialog = dialog
 
         self._indexing_thread.start()
+
+    # --- 실시간 폴더 감시 (T8.5, 기본 OFF) --------------------------------
+
+    def _on_folder_watch_toggled(self, enabled: bool) -> None:
+        self.state.folder_watch_enabled = enabled
+        self.state.save()
+        self._sync_folder_watcher()
+
+    def _sync_folder_watcher(self) -> None:
+        """설정·대상 폴더에 맞춰 감시를 다시 켠다. 폴더가 바뀌었을 수도,
+        토글이 바뀌었을 수도 있어 일단 멈추고 다시 판단한다."""
+        if self._folder_watcher is not None:
+            self._folder_watcher.stop()
+            self._folder_watcher = None
+
+        if not self.state.folder_watch_enabled or not self.state.target_folder:
+            return
+
+        bridge = _WatchBridge(self)
+        bridge.changed.connect(self._on_folder_changed)
+        self._watch_bridge = bridge  # GC 방지를 위해 보관
+
+        watcher = FolderWatcher(self.state.target_folder, on_change=bridge.changed.emit)
+        try:
+            watcher.start()
+        except Exception as exc:
+            # 폴더가 없어졌다 등 — 감시 실패가 앱을 죽이면 안 된다(T10.2와 같은 결).
+            self.status_bar_widget.set_warning(f"실시간 감시를 시작하지 못했습니다: {exc}")
+            return
+
+        self._folder_watcher = watcher
+
+    def _on_folder_changed(self) -> None:
+        if self.state.target_folder:
+            self._start_reindex(self.state.target_folder, silent=True)
 
     def _cancel_indexing(self) -> None:
         if self._indexing_thread is not None:
