@@ -234,6 +234,36 @@ class TestResultList:
         widget.show_results([_hybrid(), _hybrid()], "계약서")
         assert widget.card_count() == 2
 
+    def test_results_over_page_size_are_capped_with_more_button(self, qtbot):
+        """2026-08-14, 사용자 요청: 챗봇과 개수 기준을 맞춘다(상위 5개)."""
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid() for _ in range(7)], "계약서")
+
+        assert widget.card_count() == 5
+        more_button = widget.findChild(QPushButton, "ResultListMoreButton")
+        assert more_button is not None
+        assert "2개" in more_button.text()
+
+    def test_five_or_fewer_results_show_no_more_button(self, qtbot):
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid() for _ in range(5)], "계약서")
+
+        assert widget.card_count() == 5
+        assert widget.findChild(QPushButton, "ResultListMoreButton") is None
+
+    def test_more_button_reveals_remaining_results(self, qtbot):
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid() for _ in range(7)], "계약서")
+        more_button = widget.findChild(QPushButton, "ResultListMoreButton")
+
+        more_button.click()
+
+        assert widget.card_count() == 7
+        assert widget.findChild(QPushButton, "ResultListMoreButton") is None
+
     def test_show_results_clears_previous_message(self, qtbot):
         widget = ResultList()
         qtbot.addWidget(widget)

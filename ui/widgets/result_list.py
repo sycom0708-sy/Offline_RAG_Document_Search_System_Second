@@ -6,20 +6,21 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
-from parser.schema import ChunkType
 from search.hybrid_search import HybridResult
+from ui.widgets.card_dispatch import make_result_card
 from ui.widgets.chat_panel import ChatPanel
-from ui.widgets.image_card import ImageCard
-from ui.widgets.result_card import ResultCard
-from ui.widgets.table_card import TableCard
 
 INITIAL_MESSAGE = "검색어를 입력해 문서를 찾아보세요."
 SEARCHING_MESSAGE = "검색 중…"
 NO_INDEX_MESSAGE = "먼저 대상 폴더를 지정해 주세요."
 NO_RESULTS_MESSAGE = "검색 결과가 없습니다."
 ERROR_MESSAGE_PREFIX = "검색 중 오류가 발생했습니다: "
+
+# 챗봇 즉시 발췌와 개수 기준을 맞춘다(2026-08-14, 사용자 요청) — [제안],
+# DESIGN에 결과 개수 상한 명세가 없어 직접 정의했다.
+PAGE_SIZE = 5
 
 
 class ResultList(QScrollArea):
@@ -42,6 +43,12 @@ class ResultList(QScrollArea):
         self._layout.addStretch()
         self.setWidget(self._container)
 
+        self._all_results: list[HybridResult] = []
+        self._query = ""
+        self._case_sensitive = False
+        self._exact_word = False
+        self._more_button: QPushButton | None = None
+
         self.show_initial()
 
     def _clear(self) -> None:
@@ -58,6 +65,7 @@ class ResultList(QScrollArea):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
+        self._more_button = None
 
     def _show_message(self, text: str) -> None:
         self._clear()
@@ -92,10 +100,36 @@ class ResultList(QScrollArea):
         exact_word: bool = False,
     ) -> None:
         self._clear()
+        self._all_results = results
+        self._query = query
+        self._case_sensitive = case_sensitive
+        self._exact_word = exact_word
+
+        self._render_cards(results[:PAGE_SIZE])
+        remaining = len(results) - PAGE_SIZE
+        if remaining > 0:
+            self._add_more_button(remaining)
+
+    def _render_cards(self, results: list[HybridResult]) -> None:
         for result in results:
-            card = _make_card(result, query, case_sensitive, exact_word)
+            card = make_result_card(result, self._query, self._case_sensitive, self._exact_word)
             card.open_failed.connect(self.open_failed)
             self._layout.insertWidget(self._layout.count() - 1, card)
+
+    def _add_more_button(self, remaining: int) -> None:
+        button = QPushButton(f"더보기 ({remaining}개 더)")
+        button.setObjectName("ResultListMoreButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(self._show_remaining)
+        self._more_button = button
+        self._layout.insertWidget(self._layout.count() - 1, button)
+
+    def _show_remaining(self) -> None:
+        if self._more_button is not None:
+            self._more_button.setParent(None)
+            self._more_button.deleteLater()
+            self._more_button = None
+        self._render_cards(self._all_results[PAGE_SIZE:])
 
     # --- AI 챗봇 (Phase 7.6) ----------------------------------------------
 
@@ -119,25 +153,11 @@ class ResultList(QScrollArea):
         """텍스트/표/이미지 세 카드 타입 모두 `objectName("ResultCard")`를
         공유한다(DESIGN §5.1 공통 프레임) — 타입별 isinstance 대신 이걸로 센다.
 
-        챗봇 패널은 `objectName("ChatPanel")`이라 여기 잡히지 않는다."""
+        챗봇 패널은 `objectName("ChatPanel")`이라 여기 잡히지 않는다. 지금
+        보이는 카드 수를 센다 — "더보기" 클릭 전이면 최대 `PAGE_SIZE`다."""
         return sum(
             1
             for i in range(self._layout.count())
             if (widget := self._layout.itemAt(i).widget()) is not None
             and widget.objectName() == "ResultCard"
         )
-
-
-def _make_card(
-    result: HybridResult,
-    query: str,
-    case_sensitive: bool,
-    exact_word: bool,
-) -> QWidget:
-    """청크 타입에 따라 카드를 분기한다 (T5.1, DESIGN §5.7) — 검색 로직은
-    타입과 무관하게 동일하고, 렌더링 단계에서만 갈린다."""
-    if result.type is ChunkType.TABLE:
-        return TableCard(result)
-    if result.type is ChunkType.IMAGE:
-        return ImageCard(result)
-    return ResultCard(result, query, case_sensitive, exact_word)

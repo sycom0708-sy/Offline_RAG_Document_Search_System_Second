@@ -26,6 +26,7 @@ from slm.summarize import Summary, SummaryStatus
 from slm.verify import VerificationResult
 from ui.widgets.chat_panel import ChatPanel
 from ui.widgets.result_list import ResultList
+from ui.widgets.table_card import TableCard
 from ui.widgets.summary_card import (
     ABSTAINED_HINT,
     GENERATING_MESSAGE,
@@ -229,20 +230,23 @@ class TestChatPanel:
 
         assert received == [(1, "계약서 검토 기준")]
 
-    def test_show_excerpt_renders_top_result_and_enables_buttons(self, qtbot):
+    def test_show_excerpt_renders_top_result_as_a_search_card(self, qtbot):
+        """2026-08-14: 즉시 발췌는 이제 검색 카드(ResultCard)를 그대로 재사용한다."""
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("계약서")
         bubble = panel.bubble_for(1)
         assert bubble._summarize_button.isEnabled() is False  # 발췌 도착 전
-        assert bubble._open_button.isEnabled() is False
 
         panel.show_excerpt(1, [_hybrid("계약서 검토 시 기준 조항")])
 
-        assert "계약서 검토 시 기준 조항" in bubble.excerpt_text()
-        assert "사규.docx" in bubble._source_label.text()
+        body = bubble.findChild(QLabel, "ResultCardBody")
+        assert body is not None
+        assert "계약서 검토 시 기준 조항" in body.text()
+        name_label = bubble.findChild(QLabel, "ResultCardFileName")
+        assert name_label is not None
+        assert name_label.text() == "사규.docx"
         assert bubble._summarize_button.isEnabled() is True
-        assert bubble._open_button.isEnabled() is True
 
     def test_show_excerpt_with_no_results_shows_guidance_text(self, qtbot):
         panel = ChatPanel()
@@ -300,12 +304,12 @@ class TestChatPanel:
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("계약서")
-        bubble = panel.bubble_for(1)
         panel.show_excerpt(1, [_hybrid()])  # file_path="x" — 실제로 존재하지 않는다
 
         failures = []
         panel.open_failed.connect(failures.append)
-        bubble._open_button.click()
+        open_button = panel.bubble_for(1).findChild(QPushButton, "ResultCardOpenButton")
+        open_button.click()
 
         assert len(failures) == 1
         assert "찾을 수 없습니다" in failures[0]
@@ -329,16 +333,16 @@ class TestChatPanel:
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("계약서")
-        bubble = panel.bubble_for(1)
         panel.show_excerpt(1, [hybrid])
+        open_button = panel.bubble_for(1).findChild(QPushButton, "ResultCardOpenButton")
 
-        bubble._open_button.click()
+        open_button.click()
 
         assert len(FakeOpenFileWorker.instances) == 1
         worker = FakeOpenFileWorker.instances[0]
         assert worker.file_path == str(real_file)
         assert worker.started is True
-        assert bubble._open_button.isEnabled() is False
+        assert open_button.isEnabled() is False
 
     def test_multiple_turns_keep_independent_bubbles(self, qtbot):
         """메시지마다 독립 처리(stateless) — 이전 턴 결과가 다음 턴에 안 새어든다."""
@@ -351,14 +355,18 @@ class TestChatPanel:
         panel.show_excerpt(2, [_hybrid("리눅스 내용")])
 
         assert panel.turn_count() == 2
-        assert "계약서" in panel.bubble_for(1).excerpt_text()
-        assert "리눅스" in panel.bubble_for(2).excerpt_text()
+        body1 = panel.bubble_for(1).findChild(QLabel, "ResultCardBody")
+        body2 = panel.bubble_for(2).findChild(QLabel, "ResultCardBody")
+        assert "계약서" in body1.text()
+        assert "리눅스" in body2.text()
 
 
 class TestChatExcerptTableAndImage:
     """2026-08-14, 사용자 요청: 챗봇 즉시 발췌도 검색 화면(TableCard/ImageCard)과
     같은 수준으로 표·이미지를 렌더링해야 한다 — Phase 7.6 완료 시점엔 원시
-    텍스트로만 나왔었다."""
+    텍스트로만 나왔었다. 같은 날 후속 요청으로, 이제 검색 카드를 그대로
+    재사용해 렌더링한다(표는 자기 복사 버튼, 이미지는 자기 확대 버튼을
+    스스로 갖는다)."""
 
     def test_table_top1_renders_as_grid_with_copy_button(self, qtbot):
         table = TableData(rows=[["손해배상", "10%"]], header_row=["항목", "비율"], caption="Sheet1")
@@ -373,8 +381,11 @@ class TestChatExcerptTableAndImage:
         assert grid is not None
         assert grid.rowCount() == 1
         assert grid.item(0, 0).text() == "손해배상"
-        assert bubble._copy_button.isVisibleTo(bubble) is True
-        assert bubble._zoom_button.isVisibleTo(bubble) is False
+        # objectName("ResultCardCopyButton")은 말풍선의 "AI 요약 보기" 버튼과
+        # 공유하는 스타일이라, 카드 안으로 범위를 좁혀 찾는다.
+        card = bubble.findChild(TableCard)
+        assert card is not None
+        assert card.findChild(QPushButton, "ResultCardCopyButton") is not None
 
     def test_table_copy_button_copies_tsv_to_clipboard(self, qtbot):
         from PySide6.QtGui import QGuiApplication
@@ -386,11 +397,13 @@ class TestChatExcerptTableAndImage:
         panel.show_excerpt(1, [_table_hybrid(table)])
         bubble = panel.bubble_for(1)
 
-        bubble._copy_button.click()
+        card = bubble.findChild(TableCard)
+        copy_button = card.findChild(QPushButton, "ResultCardCopyButton")
+        copy_button.click()
 
         assert QGuiApplication.clipboard().text() == "h1\th2\na\tb"
 
-    def test_missing_table_data_falls_back_to_text(self, qtbot):
+    def test_missing_table_data_falls_back_to_placeholder(self, qtbot):
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("체크리스트")
@@ -399,7 +412,6 @@ class TestChatExcerptTableAndImage:
         panel.show_excerpt(1, [_table_hybrid(None)])
 
         assert bubble.findChild(QTableWidget, "TableCardGrid") is None
-        assert bubble._copy_button.isVisibleTo(bubble) is False
 
     def test_image_top1_renders_thumbnail_and_zoom_button(self, qtbot, tmp_path, monkeypatch):
         from PySide6.QtGui import QImage
@@ -420,23 +432,52 @@ class TestChatExcerptTableAndImage:
         thumb = bubble.findChild(QLabel, "ImageCardThumbnail")
         assert thumb is not None
         assert thumb.pixmap() is not None and not thumb.pixmap().isNull()
-        assert bubble._zoom_button.isVisibleTo(bubble) is True
-        assert bubble._zoom_button.isEnabled() is True
-        assert bubble._copy_button.isVisibleTo(bubble) is False
 
-    def test_image_without_source_disables_zoom_button(self, qtbot, tmp_path, monkeypatch):
-        from ui import thumbnail_cache
-
-        monkeypatch.setattr(thumbnail_cache, "THUMBNAIL_DIR", tmp_path / "thumbs")
-        image = ImageData(image_path=str(tmp_path / "없음.png"), origin="extracted")
+    def test_multiple_results_render_as_stacked_cards_with_more_notice(self, qtbot):
+        """2026-08-14 후속 요청: 상위 5개까지 카드로, 넘으면 "N개 더" 안내."""
         panel = ChatPanel()
         qtbot.addWidget(panel)
-        panel.send_message("흐름도")
+        panel.send_message("계약서")
         bubble = panel.bubble_for(1)
 
-        panel.show_excerpt(1, [_image_hybrid(image)])
+        results = [_hybrid(f"내용{i}") for i in range(7)]
+        panel.show_excerpt(1, results)
 
-        assert bubble._zoom_button.isEnabled() is False
+        bodies = bubble.findChildren(QLabel, "ResultCardBody")
+        assert len(bodies) == 5
+        notice = bubble.findChild(QLabel, "ChatMoreResultsNotice")
+        assert notice is not None
+        assert "2개" in notice.text()
+
+    def test_five_or_fewer_results_show_no_more_notice(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+        bubble = panel.bubble_for(1)
+
+        panel.show_excerpt(1, [_hybrid(f"내용{i}") for i in range(3)])
+
+        assert bubble.findChild(QLabel, "ChatMoreResultsNotice") is None
+
+    def test_each_card_has_its_own_open_button_relaying_open_failed(self, qtbot):
+        """2~5순위 결과도 각자 원문 열기 버튼을 갖는다(사용자 확정)."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+        bubble = panel.bubble_for(1)
+
+        results = [_hybrid(f"내용{i}") for i in range(3)]  # 전부 file_path="x" — 실제로 없음
+        panel.show_excerpt(1, results)
+
+        open_buttons = bubble.findChildren(QPushButton, "ResultCardOpenButton")
+        assert len(open_buttons) == 3
+
+        failures = []
+        panel.open_failed.connect(failures.append)
+        open_buttons[1].click()  # 두 번째 카드
+
+        assert len(failures) == 1
+        assert "찾을 수 없습니다" in failures[0]
 
     def test_switching_from_table_to_text_turn_removes_grid(self, qtbot):
         """턴마다 독립이라 이전 턴의 표 그리드가 다음 턴에 안 남아야 한다."""
@@ -451,7 +492,8 @@ class TestChatExcerptTableAndImage:
 
         assert panel.bubble_for(1).findChild(QTableWidget, "TableCardGrid") is not None
         assert panel.bubble_for(2).findChild(QTableWidget, "TableCardGrid") is None
-        assert "계약서 내용" in panel.bubble_for(2).excerpt_text()
+        body2 = panel.bubble_for(2).findChild(QLabel, "ResultCardBody")
+        assert "계약서 내용" in body2.text()
 
     def test_searching_state_always_shows_text_even_after_table_turn(self, qtbot):
         """검색 중 상태는 항상 텍스트 본문이어야 한다(표 그리드가 남아있으면 안 됨)."""

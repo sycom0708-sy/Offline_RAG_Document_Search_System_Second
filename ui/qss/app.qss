@@ -263,6 +263,25 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
+/* 검색 결과·챗봇 발췌 개수 상한(5개) + "더 있음" 안내 (2026-08-14, [제안] —
+   DESIGN에 명세 없음). #ResultCardCopyButton과 같은 톤으로 맞춘다. */
+#ResultListMoreButton {
+    border: none;
+    background: transparent;
+    color: #2563EB;
+    font-size: 13px;
+    padding: 6px;
+}
+
+#ResultListMoreButton:hover {
+    text-decoration: underline;
+}
+
+#ChatMoreResultsNotice {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+
 /* ---------- 공용 입력창 (Phase 7.7) ----------
    검색 결과 모드·챗봇 모드가 함께 쓴다. 옛 #ChatInput/#ChatSendButton(챗봇
    전용 시절)과 #SearchInput(검색 전용 시절)을 이 규칙으로 통합했다. */

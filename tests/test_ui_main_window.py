@@ -8,6 +8,7 @@ DoD: 검색 → 필터/옵션 조합 → 텍스트 결과 확인 → 원문 열�
 from __future__ import annotations
 
 import pytest
+from PySide6.QtWidgets import QPushButton
 
 from indexer.fts5.schema import connect
 from indexer.fts5.store import store_document
@@ -840,10 +841,7 @@ class TestAiChatWiring:
         panel = self._turn_on_chat(window)
 
         assert panel.turn_count() == 1
-        qtbot.waitUntil(
-            lambda: panel.bubble_for(1).excerpt_text() not in ("", "검색하는 중…"),
-            timeout=SEARCH_TIMEOUT_MS,
-        )
+        qtbot.waitUntil(lambda: bool(panel.bubble_for(1).results), timeout=SEARCH_TIMEOUT_MS)
 
     def test_message_shows_excerpt_without_calling_the_llm(self, window, qtbot):
         """1단계는 검색만 한다 — sLM은 아직 호출되면 안 된다."""
@@ -852,9 +850,7 @@ class TestAiChatWiring:
 
         panel.send_message("계약서 검토 기준")
         bubble = panel.bubble_for(1)
-        qtbot.waitUntil(
-            lambda: bubble.excerpt_text() not in ("", "검색하는 중…"), timeout=SEARCH_TIMEOUT_MS
-        )
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
 
         assert stub.calls == 0
 
@@ -946,7 +942,8 @@ class TestAiChatWiring:
         bubble = panel.bubble_for(1)
         qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
 
-        bubble._open_button.click()  # 예외가 나지 않아야 한다
+        open_button = bubble.findChild(QPushButton, "ResultCardOpenButton")
+        open_button.click()  # 예외가 나지 않아야 한다
 
     def test_close_shuts_down_the_slm_server(self, window):
         """🔴 안 내리면 4.8GB짜리 프로세스가 고아로 남는다."""

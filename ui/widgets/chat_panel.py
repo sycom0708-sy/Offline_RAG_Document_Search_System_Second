@@ -5,7 +5,7 @@ Phase 7의 "AI 요약 보기"(검색마다 자동 1회 요약)를 대체한다. 
 79초 vs 은행 앱 수준 요구)이 부딪혀 응답을 2단으로 나눴다
 [사용자 확정, 2026-08-11]:
 
-    1단계(즉시, LLM 미사용)  hybrid_search()의 top-1 발췌를 원문 그대로 보여준다
+    1단계(즉시, LLM 미사용)  hybrid_search()의 상위 결과를 원문 그대로 보여준다
                              (검색 지연 7~14ms — 이미 측정된 값)
     2단계(선택, LLM 사용)    "AI 요약 보기"를 눌렀을 때만 SummaryWorker가 돈다.
                              그 턴이 1단계에서 이미 받아둔 결과를 그대로 넘기므로
@@ -22,45 +22,40 @@ MainWindow가 하고, 이 패널은 신호로 요청하고 결과를 받아 그�
 Phase 7.7부터 이 패널은 자체 입력창을 갖지 않는다 — 목업(`rag_ui_concept_
 chatbot.html`)이 검색 결과 모드와 챗봇 모드에서 입력 지점을 하나로 통일해,
 `MainWindow`가 소유한 공용 입력창(`InputBar`)이 `send_message()`를 호출한다.
+
+**2026-08-14**: 즉시 발췌를 top-1 하나에서 상위 5개로 늘렸다(검색 결과
+카드 목록과 개수 기준을 맞추는 사용자 요청) — 각 항목은 검색 카드
+(`ResultCard`/`TableCard`/`ImageCard`)를 그대로 재사용해 자기 몫의 원문
+열기·표 복사·확대를 스스로 처리한다(`card_dispatch.make_result_card`).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QFontMetrics, QGuiApplication
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
-    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from parser.schema import ChunkType, ImageData, TableData
-from search.chunk_view import format_location, parse_image_data, parse_table_data
 from search.hybrid_search import HybridResult
-from search.office_link import plan_open
 from slm.summarize import Summary
-from ui.widgets.card_common import (
-    build_table_grid,
-    fix_table_grid_height,
-    load_image_thumbnail,
-    show_image_zoom_dialog,
-    start_open_source_file,
-    table_to_tsv,
-)
-from ui.widgets.image_card import IMAGE_TEXT_NOT_RECOGNIZED_NOTICE, NO_PREVIEW_TEXT, THUMBNAIL_DISPLAY_SIZE
+from ui.widgets.card_dispatch import make_result_card
 from ui.widgets.summary_card import SummaryCard
 
 SUMMARIZE_BUTTON_LABEL = "AI 요약 보기"
-OPEN_BUTTON_LABEL = "파일 열기 ↗"
 SEARCHING_TEXT = "검색하는 중…"
 NO_RESULTS_TEXT = "관련 문서를 찾을 수 없습니다."
+
+# 검색 결과 카드 목록과 개수 기준을 맞춘다(ResultList.PAGE_SIZE와 동일,
+# 2026-08-14 사용자 요청) — [제안], DESIGN에 결과 개수 상한 명세가 없어
+# 직접 정의했다.
+EXCERPT_LIMIT = 5
 
 # 말풍선 최대 폭(70%) — 목업 기준값(65%)에서 사용자 확인 후 넓혔다
 # [2026-08-13]. Qt QSS는 max-width를 지원하지 않아 위젯의
@@ -76,73 +71,41 @@ class _AnswerBubble(QFrame):
     """AI 말풍선 1턴 — 즉시 발췌(1단계) + AI 요약 자리(2단계, 선택).
 
     `results`는 1단계 검색 결과를 그대로 들고 있다가 "AI 요약 보기"를 누르는
-    순간 그대로 재사용된다 — 이게 이번 설계가 검색을 두 번 안 하는 이유다.
+    순간 그대로 재사용된다(top-1 컨텍스트 기준) — 이게 이번 설계가 검색을
+    두 번 안 하는 이유다.
     """
 
     summarize_requested = Signal()
-    open_requested = Signal()
-    open_failed = Signal(str)  # 이미지 확대 실패 등 — ChatPanel.open_failed로 릴레이된다
+    open_failed = Signal(str)  # 카드들의 open_failed를 한 자리로 모아 ChatPanel.open_failed로 릴레이
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ChatAnswerBubble")
         self.results: list[HybridResult] = []
 
-        # 표/이미지 top-1일 때 렌더링 상태를 들고 있는다(복사 버튼·showEvent
-        # 재계산·확대 다이얼로그가 여길 참조) — 2026-08-14, "검색 화면처럼
-        # 표가 제대로 보였으면" 요청.
-        self._current_table_data: TableData | None = None
-        self._current_table_grid: QTableWidget | None = None
-        self._current_image_data: ImageData | None = None
-        self._excerpt_label: QLabel | None = None
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
 
         # --- 1단계: 즉시 발췌 — 본문 영역은 상태에 따라 갈아 끼운다 ---
-        # (텍스트 QLabel / 표 QTableWidget / 이미지 썸네일+안내). 한 말풍선은
-        # 검색중→발췌로 한 번만 전이하므로 "지우고 다시 그리기"면 충분하다
+        # (검색중/결과없음/오류 안내 텍스트 하나, 또는 검색 카드 최대
+        # EXCERPT_LIMIT개 + "N개 더" 안내). 한 말풍선은 검색중→발췌로 한
+        # 번만 전이하므로 "지우고 다시 그리기"면 충분하다
         # (ResultList.show_results()와 같은 패턴).
         self._body_layout = QVBoxLayout()
         self._body_layout.setSpacing(6)
         layout.addLayout(self._body_layout)
 
-        self._source_label = QLabel()
-        self._source_label.setObjectName("ChatExcerptSource")
-        layout.addWidget(self._source_label)
-
         button_row = QHBoxLayout()
         button_row.addStretch()
-        # 기존 카드 버튼과 같은 스타일(#ResultCardCopyButton/#ResultCardOpenButton)을
-        # 그대로 재사용한다 — 새 QSS 없이 시각적 일관성을 맞춘다.
-        self._copy_button = QPushButton("⧉ 표 복사")
-        self._copy_button.setObjectName("ResultCardCopyButton")
-        self._copy_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._copy_button.setVisible(False)
-        self._copy_button.clicked.connect(self._copy_table)
-        button_row.addWidget(self._copy_button)
-
-        self._zoom_button = QPushButton("확대")
-        self._zoom_button.setObjectName("ResultCardCopyButton")
-        self._zoom_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._zoom_button.setVisible(False)
-        self._zoom_button.clicked.connect(self._zoom_image)
-        button_row.addWidget(self._zoom_button)
-
+        # 기존 카드 버튼과 같은 스타일(#ResultCardCopyButton)을 재사용한다 —
+        # 새 QSS 없이 시각적 일관성을 맞춘다.
         self._summarize_button = QPushButton(SUMMARIZE_BUTTON_LABEL)
         self._summarize_button.setObjectName("ResultCardCopyButton")
         self._summarize_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._summarize_button.setEnabled(False)
         self._summarize_button.clicked.connect(self.summarize_requested.emit)
         button_row.addWidget(self._summarize_button)
-
-        self._open_button = QPushButton(OPEN_BUTTON_LABEL)
-        self._open_button.setObjectName("ResultCardOpenButton")
-        self._open_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._open_button.setEnabled(False)
-        self._open_button.clicked.connect(self.open_requested.emit)
-        button_row.addWidget(self._open_button)
         layout.addLayout(button_row)
 
         self._render_text_body(SEARCHING_TEXT)
@@ -157,13 +120,6 @@ class _AnswerBubble(QFrame):
 
     # --- 1단계: 즉시 발췌 --------------------------------------------
 
-    def showEvent(self, event) -> None:  # noqa: N802 - Qt 이벤트 핸들러 네이밍
-        super().showEvent(event)
-        # TableCard와 같은 이유(Phase 5) — 화면에 실제로 붙기 전엔 헤더
-        # 높이가 확정되지 않는다.
-        if self._current_table_grid is not None and self._current_table_data is not None:
-            fix_table_grid_height(self._current_table_grid, bool(self._current_table_data.header_row))
-
     def _clear_body(self) -> None:
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
@@ -171,14 +127,10 @@ class _AnswerBubble(QFrame):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        self._current_table_data = None
-        self._current_table_grid = None
-        self._current_image_data = None
-        self._excerpt_label = None
-        self._copy_button.setVisible(False)
-        self._zoom_button.setVisible(False)
+        self._excerpt_label: QLabel | None = None
 
     def _render_text_body(self, text: str) -> None:
+        """검색중/결과없음/오류 안내 전용 — 실제 결과는 `_render_result_cards()`가 그린다."""
         self._clear_body()
         label = QLabel(text)
         label.setObjectName("ChatExcerptBody")
@@ -190,89 +142,43 @@ class _AnswerBubble(QFrame):
         self._body_layout.addWidget(label)
         self._excerpt_label = label
 
-    def _render_table_body(self, table: TableData) -> None:
+    def _render_result_cards(self, results: list[HybridResult]) -> None:
+        """검색 카드(`ResultCard`/`TableCard`/`ImageCard`)를 그대로 재사용한다.
+
+        표는 그리드+복사 버튼, 이미지는 썸네일+확대 버튼을 카드가 알아서
+        그린다 — T10.12가 챗봇 전용으로 손으로 짰던 렌더링(표/이미지 갈아
+        끼우기, 높이 재계산 등)을 전부 대체한다. 하이라이트용 질의어는
+        넘기지 않는다(빈 문자열) — 이번 변경의 핵심은 "카드 재사용으로
+        개수·버튼을 검색과 맞추는 것"이지 하이라이트가 아니다.
+        """
         self._clear_body()
-        grid = build_table_grid(table)
-        self._body_layout.addWidget(grid)
-        self._current_table_data = table
-        self._current_table_grid = grid
-        self._copy_button.setVisible(True)
+        shown = results[:EXCERPT_LIMIT]
+        for result in shown:
+            card = make_result_card(result, "", False, False)
+            card.open_failed.connect(self.open_failed)
+            self._body_layout.addWidget(card)
 
-    def _render_image_body(self, hybrid_result: HybridResult) -> None:
-        self._clear_body()
-        image = parse_image_data(hybrid_result.result)
-
-        thumbnail_label = QLabel()
-        thumbnail_label.setObjectName("ImageCardThumbnail")
-        thumbnail_label.setFixedSize(THUMBNAIL_DISPLAY_SIZE, THUMBNAIL_DISPLAY_SIZE)
-        thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        pixmap = load_image_thumbnail(hybrid_result.chunk_id, image, THUMBNAIL_DISPLAY_SIZE)
-        if pixmap is not None:
-            thumbnail_label.setPixmap(pixmap)
-        else:
-            thumbnail_label.setText(NO_PREVIEW_TEXT)
-            thumbnail_label.setWordWrap(True)
-
-        notice = QLabel(IMAGE_TEXT_NOT_RECOGNIZED_NOTICE)
-        notice.setObjectName("ImageCardNotice")
-        notice.setWordWrap(True)
-
-        body_row = QHBoxLayout()
-        body_row.setSpacing(12)
-        body_row.addWidget(thumbnail_label)
-        body_row.addWidget(notice, 1)
-        self._body_layout.addLayout(body_row)
-
-        self._current_image_data = image
-        self._zoom_button.setVisible(True)
-        self._zoom_button.setEnabled(pixmap is not None)
-
-    def _copy_table(self) -> None:
-        if self._current_table_data is None:
-            return
-        QGuiApplication.clipboard().setText(table_to_tsv(self._current_table_data))
-
-    def _zoom_image(self) -> None:
-        if self._current_image_data is None or not self.results:
-            return
-        error = show_image_zoom_dialog(
-            self, self._current_image_data.image_path, self.results[0].file_name
-        )
-        if error:
-            self.open_failed.emit(error)
+        remaining = len(results) - len(shown)
+        if remaining > 0:
+            notice = QLabel(f"{remaining}개 결과가 더 있습니다")
+            notice.setObjectName("ChatMoreResultsNotice")
+            self._body_layout.addWidget(notice)
 
     def show_searching(self) -> None:
         self._render_text_body(SEARCHING_TEXT)
-        self._source_label.setText("")
 
     def show_excerpt(self, results: list[HybridResult]) -> None:
         self.results = results
         if not results:
             self._render_text_body(NO_RESULTS_TEXT)
-            self._source_label.setText("")
             return
 
-        top = results[0]
-        if top.type is ChunkType.TABLE:
-            table = parse_table_data(top.result)
-            if table is not None:
-                self._render_table_body(table)
-            else:
-                self._render_text_body(top.content)
-        elif top.type is ChunkType.IMAGE:
-            self._render_image_body(top)
-        else:
-            self._render_text_body(top.content)
-
-        self._source_label.setText(f"{top.file_name} · {format_location(top.result)}")
+        self._render_result_cards(results)
         self._summarize_button.setEnabled(True)
-        self._open_button.setEnabled(True)
 
     def show_search_error(self, message: str) -> None:
         self.results = []
         self._render_text_body(f"검색 중 오류가 발생했습니다: {message}")
-        self._source_label.setText("")
 
     # --- 2단계: AI 요약(선택) — SummaryCard에 그대로 위임 ------------------
 
@@ -299,7 +205,9 @@ class _AnswerBubble(QFrame):
     # --- 테스트·검증용 --------------------------------------------------
 
     def excerpt_text(self) -> str:
-        return self._excerpt_label.text()
+        """검색중/결과없음/오류 안내 문구용. 결과가 카드로 렌더링된 턴에는
+        의미가 없다 — 그럴 땐 `findChild`로 카드 위젯을 직접 조회한다."""
+        return self._excerpt_label.text() if self._excerpt_label is not None else ""
 
     def summary_text(self) -> str:
         return self._summary_card.body_text()
@@ -419,7 +327,6 @@ class ChatPanel(QWidget):
         bubble.summarize_requested.connect(
             lambda rid=request_id, b=bubble: self.summarize_requested.emit(rid, b.results)
         )
-        bubble.open_requested.connect(lambda b=bubble: self._open_top_result(b))
         bubble.open_failed.connect(self.open_failed)
         self._bubbles[request_id] = bubble
         self._add_row(bubble, align_right=False)
@@ -489,19 +396,6 @@ class ChatPanel(QWidget):
         super().resizeEvent(event)
         for widget in self._bubble_widgets:
             self._apply_max_width(widget)
-
-    def _open_top_result(self, bubble: _AnswerBubble) -> None:
-        if not bubble.results:
-            return
-        top = bubble.results[0]
-        path = Path(top.result.file_path)
-        if not path.is_file():
-            self.open_failed.emit(f"파일을 찾을 수 없습니다: {path}")
-            return
-        plan = plan_open(top)
-        bubble._open_worker = start_open_source_file(
-            str(path), plan, bubble._open_button, self.open_failed.emit
-        )
 
     def _scroll_to_bottom(self) -> None:
         bar = self._scroll.verticalScrollBar()
