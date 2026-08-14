@@ -263,8 +263,10 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
-/* 검색 결과·챗봇 발췌 개수 상한(5개) + "더 있음" 안내 (2026-08-14, [제안] —
-   DESIGN에 명세 없음). #ResultCardCopyButton과 같은 톤으로 맞춘다. */
+/* 검색 결과·챗봇 발췌 개수 상한(5개) + "더보기" 버튼 (2026-08-14, [제안] —
+   DESIGN에 명세 없음). #ResultCardCopyButton과 같은 톤으로 맞춘다.
+   챗봇도 검색과 같은 버튼을 쓴다(처음엔 텍스트 안내만이었다가, 사용자
+   요청으로 검색과 동일한 "더보기" 버튼으로 통일했다). */
 #ResultListMoreButton {
     border: none;
     background: transparent;
@@ -275,11 +277,6 @@ QMainWindow, #CentralWidget {
 
 #ResultListMoreButton:hover {
     text-decoration: underline;
-}
-
-#ChatMoreResultsNotice {
-    color: #9CA3AF;
-    font-size: 12px;
 }
 
 /* ---------- 공용 입력창 (Phase 7.7) ----------

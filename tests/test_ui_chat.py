@@ -433,8 +433,8 @@ class TestChatExcerptTableAndImage:
         assert thumb is not None
         assert thumb.pixmap() is not None and not thumb.pixmap().isNull()
 
-    def test_multiple_results_render_as_stacked_cards_with_more_notice(self, qtbot):
-        """2026-08-14 후속 요청: 상위 5개까지 카드로, 넘으면 "N개 더" 안내."""
+    def test_multiple_results_render_as_stacked_cards_with_more_button(self, qtbot):
+        """2026-08-14 후속 요청: 상위 5개까지 카드로, 넘으면 검색과 같은 "더보기" 버튼."""
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("계약서")
@@ -445,11 +445,24 @@ class TestChatExcerptTableAndImage:
 
         bodies = bubble.findChildren(QLabel, "ResultCardBody")
         assert len(bodies) == 5
-        notice = bubble.findChild(QLabel, "ChatMoreResultsNotice")
-        assert notice is not None
-        assert "2개" in notice.text()
+        more_button = bubble.findChild(QPushButton, "ResultListMoreButton")
+        assert more_button is not None
+        assert "2개" in more_button.text()
 
-    def test_five_or_fewer_results_show_no_more_notice(self, qtbot):
+    def test_more_button_reveals_remaining_results(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+        bubble = panel.bubble_for(1)
+        panel.show_excerpt(1, [_hybrid(f"내용{i}") for i in range(7)])
+        more_button = bubble.findChild(QPushButton, "ResultListMoreButton")
+
+        more_button.click()
+
+        assert len(bubble.findChildren(QLabel, "ResultCardBody")) == 7
+        assert bubble.findChild(QPushButton, "ResultListMoreButton") is None
+
+    def test_five_or_fewer_results_show_no_more_button(self, qtbot):
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.send_message("계약서")
@@ -457,7 +470,7 @@ class TestChatExcerptTableAndImage:
 
         panel.show_excerpt(1, [_hybrid(f"내용{i}") for i in range(3)])
 
-        assert bubble.findChild(QLabel, "ChatMoreResultsNotice") is None
+        assert bubble.findChild(QPushButton, "ResultListMoreButton") is None
 
     def test_each_card_has_its_own_open_button_relaying_open_failed(self, qtbot):
         """2~5순위 결과도 각자 원문 열기 버튼을 갖는다(사용자 확정)."""

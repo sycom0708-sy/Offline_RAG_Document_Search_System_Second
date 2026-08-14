@@ -89,9 +89,9 @@ class _AnswerBubble(QFrame):
 
         # --- 1단계: 즉시 발췌 — 본문 영역은 상태에 따라 갈아 끼운다 ---
         # (검색중/결과없음/오류 안내 텍스트 하나, 또는 검색 카드 최대
-        # EXCERPT_LIMIT개 + "N개 더" 안내). 한 말풍선은 검색중→발췌로 한
-        # 번만 전이하므로 "지우고 다시 그리기"면 충분하다
-        # (ResultList.show_results()와 같은 패턴).
+        # EXCERPT_LIMIT개 + "더보기" 버튼 — ResultList와 같은 컴포넌트/동작).
+        # 한 말풍선은 검색중→발췌로 한 번만 전이하므로 "지우고 다시 그리기"면
+        # 충분하다(ResultList.show_results()와 같은 패턴).
         self._body_layout = QVBoxLayout()
         self._body_layout.setSpacing(6)
         layout.addLayout(self._body_layout)
@@ -128,6 +128,8 @@ class _AnswerBubble(QFrame):
                 widget.setParent(None)
                 widget.deleteLater()
         self._excerpt_label: QLabel | None = None
+        self._more_button: QPushButton | None = None
+        self._remaining_results: list[HybridResult] = []
 
     def _render_text_body(self, text: str) -> None:
         """검색중/결과없음/오류 안내 전용 — 실제 결과는 `_render_result_cards()`가 그린다."""
@@ -154,15 +156,33 @@ class _AnswerBubble(QFrame):
         self._clear_body()
         shown = results[:EXCERPT_LIMIT]
         for result in shown:
-            card = make_result_card(result, "", False, False)
-            card.open_failed.connect(self.open_failed)
-            self._body_layout.addWidget(card)
+            self._add_result_card(result)
 
-        remaining = len(results) - len(shown)
-        if remaining > 0:
-            notice = QLabel(f"{remaining}개 결과가 더 있습니다")
-            notice.setObjectName("ChatMoreResultsNotice")
-            self._body_layout.addWidget(notice)
+        self._remaining_results = results[len(shown):]
+        if self._remaining_results:
+            self._add_more_button(len(self._remaining_results))
+
+    def _add_result_card(self, result: HybridResult) -> None:
+        card = make_result_card(result, "", False, False)
+        card.open_failed.connect(self.open_failed)
+        self._body_layout.addWidget(card)
+
+    def _add_more_button(self, remaining: int) -> None:
+        button = QPushButton(f"더보기 ({remaining}개 더)")
+        button.setObjectName("ResultListMoreButton")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(self._show_remaining_results)
+        self._more_button = button
+        self._body_layout.addWidget(button)
+
+    def _show_remaining_results(self) -> None:
+        if self._more_button is not None:
+            self._more_button.setParent(None)
+            self._more_button.deleteLater()
+            self._more_button = None
+        for result in self._remaining_results:
+            self._add_result_card(result)
+        self._remaining_results = []
 
     def show_searching(self) -> None:
         self._render_text_body(SEARCHING_TEXT)
