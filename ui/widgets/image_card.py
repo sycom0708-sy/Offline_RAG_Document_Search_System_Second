@@ -22,12 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from search.hybrid_search import HybridResult
+from search.office_link import plan_open
 from ui.thumbnail_cache import get_thumbnail_path
 from ui.widgets.card_common import (
     apply_low_relevance_style,
     build_card_header,
-    open_source_file,
     parse_image_data,
+    start_open_source_file,
 )
 
 IMAGE_TEXT_NOT_RECOGNIZED_NOTICE = "이미지 내 텍스트는 인식되지 않았습니다."
@@ -51,6 +52,7 @@ class ImageCard(QFrame):
         self._zoom_button = zoom_button
 
         header, open_button = build_card_header(hybrid_result, extra_buttons=[zoom_button])
+        self._open_button = open_button
         open_button.clicked.connect(self._open_source)
 
         thumbnail_label = QLabel()
@@ -133,6 +135,11 @@ class ImageCard(QFrame):
         dialog.exec()
 
     def _open_source(self) -> None:
-        error = open_source_file(self._result.result.file_path)
-        if error:
-            self.open_failed.emit(error)
+        path = Path(self._result.result.file_path)
+        if not path.is_file():
+            self.open_failed.emit(f"파일을 찾을 수 없습니다: {path}")
+            return
+        plan = plan_open(self._result)
+        self._open_worker = start_open_source_file(
+            str(path), plan, self._open_button, self.open_failed.emit
+        )

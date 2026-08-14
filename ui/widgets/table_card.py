@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
@@ -23,11 +25,12 @@ from PySide6.QtWidgets import (
 
 from parser.schema import TableData
 from search.hybrid_search import HybridResult
+from search.office_link import plan_open
 from ui.widgets.card_common import (
     apply_low_relevance_style,
     build_card_header,
-    open_source_file,
     parse_table_data,
+    start_open_source_file,
 )
 
 
@@ -46,6 +49,7 @@ class TableCard(QFrame):
         copy_button.clicked.connect(self._copy_tsv)
 
         header, open_button = build_card_header(hybrid_result, extra_buttons=[copy_button])
+        self._open_button = open_button
         open_button.clicked.connect(self._open_source)
 
         layout = QVBoxLayout(self)
@@ -80,9 +84,14 @@ class TableCard(QFrame):
         QGuiApplication.clipboard().setText(_to_tsv(self._table_data))
 
     def _open_source(self) -> None:
-        error = open_source_file(self._result.result.file_path)
-        if error:
-            self.open_failed.emit(error)
+        path = Path(self._result.result.file_path)
+        if not path.is_file():
+            self.open_failed.emit(f"파일을 찾을 수 없습니다: {path}")
+            return
+        plan = plan_open(self._result)
+        self._open_worker = start_open_source_file(
+            str(path), plan, self._open_button, self.open_failed.emit
+        )
 
 
 def _to_tsv(table: TableData) -> str:

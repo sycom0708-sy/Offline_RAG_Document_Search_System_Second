@@ -1098,6 +1098,18 @@ T4.11b 종단 검증으로 실제 재인덱싱을 처음 돌려보고서야 발�
 
 > **[2026-08-08 추가]** T9.1과 같은 결에서 나온 결정: 구버전 포맷 **변환**(파싱 단계)은 Office COM 대신 LibreOffice 포터블 동봉으로 확정했다(TECH 9.1절). 다만 이 항목(T10.1, "원문 열기" **딥링크**)은 성격이 달라 COM 조사 결과를 그대로 살려둔다 — 파일을 정확한 위치로 **여는** 기능은 LibreOffice 헤드리스 변환으로는 대체할 수 없고 Office COM이 유일한 실현 경로이기 때문이다.
 
+### T10.1 구현 결과 — ✅ 완료 (docx/pptx/xlsx만, 2026-08-13)
+
+**착수 전 결정**: docx/pptx/xlsx만(hwp/hwpx는 이 PC에 한글이 없어 실측 검증 불가, 별도 후속 과제로 분리) · Word/Excel은 읽기 전용으로 열기[둘 다 사용자 확정].
+
+**설계**: 판단 로직 전부를 `search/office_link.py`의 순수 함수 `plan_open(hybrid_result) -> OpenPlan`으로 모았다(Qt·서브프로세스·COM 전혀 없이 단위 테스트 가능) — 청크 타입·확장자별로 "무엇을 검색어로 쓸지"가 다 다르기 때문이다(pptx는 `slide_index`만으로 충분, docx는 needle ladder, xlsx는 시트명+셀 검색). **사용자가 입력한 검색어가 아니라 그 청크 자신의 내용을 검색어로 쓴다** — 질의어는 문서 안 여러 곳에 걸릴 수 있지만 청크 내용은 정확히 그 위치를 가리킨다. `open_source_file()`은 COM이 없거나 실패하면 예외를 삼키고 조용히 `QDesktopServices.openUrl()`로 폴백한다 — "파일이 열리기는 한다"는 기존 보장을 절대 안 깬다. PowerShell 스크립트는 저장소에 별도 `.ps1` 파일로 두지 않고 Python 문자열 상수로 갖고 있다가 실행 시점에 임시 파일로 써서 `-File`로 돌린다(`libreoffice.py`의 `tempfile.TemporaryDirectory()`와 같은 결 — Phase 9 패키징에서 신경 쓸 리소스 파일이 늘지 않는다).
+
+**스레딩**: COM 자동화가 1~3초(프로세스 기동 포함) 걸려 `SearchWorker`와 같은 `QThread`(`OpenFileWorker`)로 돌리되, **"파일 존재 여부" 판정만 클릭 즉시 동기로 하고 통과해야 스레드를 띄운다** — 이 덕분에 "파일 없음" 실패 케이스를 검증하는 기존 테스트(`card._open_source()` 호출 직후 동기적으로 `open_failed` 확인)를 **한 줄도 안 건드리고** 그대로 통과시켰다. 워커 진행 중엔 "원문 열기" 버튼을 비활성화해 두 번 눌러 워커 참조가 덮어써지는 것을 막는다(Phase 4의 `_active_workers` 도입 계기가 된 GC 크래시와 같은 함정을 원천 차단).
+
+**🔴 실제 Office COM 종단 검증에서 진짜 버그를 하나 잡았다.** pptx(`GotoSlide`)와 xlsx(시트 활성화+`Cells.Find`)는 실제 생성 샘플로 첫 실측부터 바로 성공했지만, **docx는 처음에 실패했다** — 원인은 청커가 여러 Word 문단을 `"\n"`으로 이어붙여 청크 `content`를 만드는데, needle ladder가 그 이어붙인 문자열을 **글자 수로만** 잘라 후보를 만들다 보니 문단 경계를 넘는 needle(예: 20자짜리도)이 나왔고, Word의 문단 구분자(`\r`)와 안 맞아 전부 실패했다(2026-08-07 조사가 이미 경고했던 바로 그 문제인데, 처음 구현에서 "글자 수로 점점 줄이기"만 하고 문단 경계 자체를 안 지킨 것). `_build_needle_ladder()`를 **문단 단위로 먼저 쪼갠 뒤 문단 안에서만** 사다리를 만들도록 고쳐 해결 — 재검증에서 성공(needle이 첫 문단 17자로 줄어들자 바로 `Find`가 성공했다). 자동화 테스트는 전부 통과한 상태였는데(순수 함수라 mock 없이 빠르게 돌지만, 애초에 여러 문단으로 나뉜 실제 텍스트로 검증한 적이 없었다), **실제 Office로 열어보고 나서야** 드러났다 — Phase 4·5·7·7.7에서 반복된 "실사용 검증에서만 드러나는 함정" 패턴과 같은 종류.
+
+**검증**: `tests/test_office_link.py`(신설, `plan_open()`/`_build_needle_ladder()`/`_longest_cell()`/`is_office_available()` 순수 함수 24건 + 문단 경계 회귀 2건) · 카드 3종·챗봇 각각에 파일 존재 시 워커가 뜨고 버튼이 비활성화되는지(가짜 `OpenFileWorker` 스파이로 배선만 검증, T8.5의 `FakeFolderWatcher`와 같은 패턴) 4건. `open_and_locate()`의 실제 서브프로세스 호출은 자동화 스위트에 넣지 않았다 — pytest를 돌릴 때마다 진짜 Word/PowerPoint/Excel 창이 뜨고 안 닫힌 채 남는 건 테스트 위생에 맞지 않아서다(대신 부작용 없는 `is_office_available()`의 실제 레지스트리 조회만 `requires_office` 마커로 실제로 돌린다). 실사용 검증은 실제 생성 샘플(docx/pptx/xlsx)로 진짜 Office COM을 세 번 다 돌려 확인했다 — pptx는 `View.Slide.SlideIndex`, xlsx는 `ActiveSheet.Name`, docx는 `Selection.Text`를 COM으로 재조회해 실제로 정확한 위치로 이동했는지 코드로 검증(육안이 아니라 값 비교로), 검증에 쓴 프로세스는 COM `Quit()`/`Stop-Process`로 전부 정리했다. 테스트 31건 추가, 전체 **722 passed / 5 skipped**, 회귀 없음.
+
 ## T10.2 구버전 포맷 변환 실패를 사용자에게 안내 — ✅ 완료 (2026-08-09)
 
 **있었던 문제**: `LegacyOfficeParser`는 `LibreOfficeError`를 잡아도 예외를 다시 던지지 않고 `document.status = ParseStatus.FAILED`만 남긴 채 조용히 반환한다. `indexer/pipeline.py`의 `index_folder()`는 `ParserError` 예외만 `report.failures`에 담았으므로, **이 경로는 애초에 `report.failures`에 한 번도 잡힌 적이 없었다** — `.doc`/`.xls`/`.ppt`가 오류 없이 0청크로 인덱싱에서 빠지는 근본 원인이 여기 있었다(Phase 3 재측정 중 실제로 겪고 뒤늦게 발견, 2026-08-08).

@@ -8,12 +8,15 @@ DESIGN §5.1(공통 프레임) / §5.3(텍스트 카드) / §5.6(관련성 낮�
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 from search.hybrid_search import HybridResult
+from search.office_link import plan_open
 from ui.highlight import highlighted_excerpt
-from ui.widgets.card_common import apply_low_relevance_style, build_card_header, open_source_file
+from ui.widgets.card_common import apply_low_relevance_style, build_card_header, start_open_source_file
 
 
 class ResultCard(QFrame):
@@ -32,6 +35,7 @@ class ResultCard(QFrame):
         self._result = hybrid_result
 
         header, open_button = build_card_header(hybrid_result)
+        self._open_button = open_button
         open_button.clicked.connect(self._open_source)
 
         body_label = QLabel()
@@ -51,6 +55,11 @@ class ResultCard(QFrame):
         apply_low_relevance_style(self, hybrid_result)
 
     def _open_source(self) -> None:
-        error = open_source_file(self._result.result.file_path)
-        if error:
-            self.open_failed.emit(error)
+        path = Path(self._result.result.file_path)
+        if not path.is_file():
+            self.open_failed.emit(f"파일을 찾을 수 없습니다: {path}")
+            return
+        plan = plan_open(self._result)
+        self._open_worker = start_open_source_file(
+            str(path), plan, self._open_button, self.open_failed.emit
+        )

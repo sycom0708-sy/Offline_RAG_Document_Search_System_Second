@@ -149,6 +149,28 @@ class TestTableCard:
         card._open_source()
         assert "파일을 찾을 수 없습니다" in failures[0]
 
+    def test_opening_existing_file_spawns_worker_with_sheet_plan(self, qtbot, tmp_path, monkeypatch):
+        """T10.1: xlsx 표 카드는 시트명·가장 긴 셀 값을 딥링크 계획으로 넘겨야 한다."""
+        import ui.widgets.card_common as card_common
+        from tests.conftest import FakeOpenFileWorker
+
+        FakeOpenFileWorker.instances = []
+        monkeypatch.setattr(card_common, "OpenFileWorker", FakeOpenFileWorker)
+
+        real_file = tmp_path / "실제표.xlsx"
+        real_file.write_text("dummy", encoding="utf-8")
+        table = TableData(rows=[["짧음", "가장 긴 셀 값"]], header_row=["h1", "h2"], caption="Sheet3")
+        card = TableCard(_hybrid(_table_result(table, file_path=str(real_file))))
+        qtbot.addWidget(card)
+
+        card._open_source()
+
+        worker = FakeOpenFileWorker.instances[0]
+        assert worker.started is True
+        assert worker.plan.sheet_name == "Sheet3"
+        assert worker.plan.needles == ["가장 긴 셀 값"]
+        assert card.findChild(QPushButton, "ResultCardOpenButton").isEnabled() is False
+
     def test_low_relevance_shows_label_and_dims_card(self, qtbot):
         """🔴 원래 라벨만 붙고 흐림은 안 됐다 — `apply_low_relevance_style()` 공유 전.
 
@@ -229,6 +251,27 @@ class TestImageCard:
         card.open_failed.connect(failures.append)
         card._open_source()
         assert "파일을 찾을 수 없습니다" in failures[0]
+
+    def test_opening_existing_file_spawns_worker_with_slide_plan(self, qtbot, tmp_path, monkeypatch):
+        """T10.1: pptx는 이미지 청크도 정확한 slide_index로 딥링크 계획을 만든다."""
+        import ui.widgets.card_common as card_common
+        from tests.conftest import FakeOpenFileWorker
+
+        FakeOpenFileWorker.instances = []
+        monkeypatch.setattr(card_common, "OpenFileWorker", FakeOpenFileWorker)
+
+        real_file = tmp_path / "실제흐름도.pptx"
+        real_file.write_text("dummy", encoding="utf-8")
+        image = ImageData(image_path="아무경로.png")
+        card = ImageCard(_hybrid(_image_result(image, file_path=str(real_file))))
+        qtbot.addWidget(card)
+
+        card._open_source()
+
+        worker = FakeOpenFileWorker.instances[0]
+        assert worker.started is True
+        assert worker.plan.page_or_slide == 5
+        assert card.findChild(QPushButton, "ResultCardOpenButton").isEnabled() is False
 
     def test_zoom_on_missing_file_emits_open_failed_without_opening_dialog(self, qtbot):
         image = ImageData(image_path=r"D:\없는\이미지.png")

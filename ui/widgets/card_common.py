@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -18,12 +18,15 @@ from PySide6.QtWidgets import QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabe
 # PySide6에 묶이지 않는 `search/chunk_view.py`로 옮겼다. 카드 쪽 호출부가
 # 그대로 쓰도록 여기서 재노출한다.
 from search.chunk_view import format_location, parse_image_data, parse_table_data
+from search.office_link import OfficeComError, OpenPlan, is_office_available, open_and_locate
+from ui.open_file_worker import OpenFileWorker
 
 __all__ = [
     "format_location",
     "parse_image_data",
     "parse_table_data",
     "open_source_file",
+    "start_open_source_file",
     "build_card_header",
     "apply_low_relevance_style",
 ]
@@ -32,13 +35,48 @@ __all__ = [
 LOW_RELEVANCE_OPACITY = 0.5
 
 
-def open_source_file(file_path: str) -> str | None:
-    """원문을 OS 기본 프로그램으로 연다. 성공 시 None, 실패 시 사유 문자열."""
+def open_source_file(file_path: str, plan: OpenPlan | None = None) -> str | None:
+    """원문을 연다. 성공 시 None, 실패 시(파일 자체가 없을 때만) 사유 문자열.
+
+    `plan`이 있고(이동할 위치 정보가 하나라도 있고) 확장자가 지원되고 Office가
+    설치돼 있으면 COM으로 열어 정확한 위치로 이동을 시도한다(T10.1). COM이
+    없거나 실패해도 예외를 삼키고 조용히 OS 기본 프로그램으로 폴백한다 —
+    "파일이 열리기는 한다"는 기존 보장을 절대 깨지 않는 순수 점진적 개선이다.
+    """
     path = Path(file_path)
     if not path.is_file():
         return f"파일을 찾을 수 없습니다: {path}"
+
+    ext = path.suffix.lower()
+    if plan is not None and not plan.is_empty() and is_office_available(ext):
+        try:
+            open_and_locate(str(path), plan)
+            return None
+        except OfficeComError:
+            pass  # 조용히 폴백 — 아래의 일반 열기로
+
     QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
     return None
+
+
+def start_open_source_file(
+    file_path: str,
+    plan: OpenPlan | None,
+    button: QPushButton,
+    on_failed: Callable[[str], None],
+) -> OpenFileWorker:
+    """비동기로 원문을 연다(T10.1) — COM 자동화는 1~3초 걸려 메인 스레드를 막으면 안 된다.
+
+    진행 중엔 버튼을 비활성화해 두 번 눌러 워커 참조가 덮어써지는 걸 막는다
+    (Phase 4의 `_active_workers` 도입 계기가 된 GC 크래시와 같은 함정).
+    """
+    button.setEnabled(False)
+
+    worker = OpenFileWorker(file_path, plan)
+    worker.failed.connect(on_failed)
+    worker.finished.connect(lambda: button.setEnabled(True))
+    worker.start()
+    return worker
 
 
 def build_card_header(

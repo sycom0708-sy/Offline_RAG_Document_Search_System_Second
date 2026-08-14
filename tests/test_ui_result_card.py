@@ -165,6 +165,52 @@ class TestResultCard:
         assert len(failures) == 1
         assert "파일을 찾을 수 없습니다" in failures[0]
 
+    def test_opening_existing_file_spawns_worker_and_disables_button(self, qtbot, tmp_path, monkeypatch):
+        """T10.1: 파일이 있으면 비동기 워커가 뜨고, 끝날 때까지 버튼이 비활성화돼야 한다."""
+        import ui.widgets.card_common as card_common
+        from tests.conftest import FakeOpenFileWorker
+
+        FakeOpenFileWorker.instances = []
+        monkeypatch.setattr(card_common, "OpenFileWorker", FakeOpenFileWorker)
+
+        real_file = tmp_path / "실제문서.docx"
+        real_file.write_text("dummy", encoding="utf-8")
+        result = _search_result(file_path=str(real_file), content="계약서 검토 기준")
+        card = ResultCard(_hybrid(result), "계약서")
+        qtbot.addWidget(card)
+
+        card._open_source()
+
+        assert len(FakeOpenFileWorker.instances) == 1
+        worker = FakeOpenFileWorker.instances[0]
+        assert worker.file_path == str(real_file)
+        assert worker.started is True
+
+        open_button = card.findChild(QPushButton, "ResultCardOpenButton")
+        assert open_button.isEnabled() is False
+
+        worker.finished.emit()
+        assert open_button.isEnabled() is True
+
+    def test_worker_failure_reaches_open_failed(self, qtbot, tmp_path, monkeypatch):
+        import ui.widgets.card_common as card_common
+        from tests.conftest import FakeOpenFileWorker
+
+        FakeOpenFileWorker.instances = []
+        monkeypatch.setattr(card_common, "OpenFileWorker", FakeOpenFileWorker)
+
+        real_file = tmp_path / "실제문서.docx"
+        real_file.write_text("dummy", encoding="utf-8")
+        card = ResultCard(_hybrid(_search_result(file_path=str(real_file))), "계약서")
+        qtbot.addWidget(card)
+
+        failures = []
+        card.open_failed.connect(failures.append)
+        card._open_source()
+        FakeOpenFileWorker.instances[0].failed.emit("COM 자동화 실패")
+
+        assert failures == ["COM 자동화 실패"]
+
     def test_case_sensitive_and_exact_word_passed_through_to_highlighting(self, qtbot):
         """DESIGN §5.3: 사이드바 옵션이 하이라이트에도 동일하게 적용돼야 한다."""
         result = _search_result(content="API 문서를 확인하세요")

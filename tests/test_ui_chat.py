@@ -289,6 +289,36 @@ class TestChatPanel:
         assert len(failures) == 1
         assert "찾을 수 없습니다" in failures[0]
 
+    def test_open_button_click_with_existing_file_spawns_worker(self, qtbot, tmp_path, monkeypatch):
+        """T10.1: 파일이 있으면 비동기 워커로 열어야 한다(카드와 같은 패턴)."""
+        import ui.widgets.card_common as card_common
+        from tests.conftest import FakeOpenFileWorker
+
+        FakeOpenFileWorker.instances = []
+        monkeypatch.setattr(card_common, "OpenFileWorker", FakeOpenFileWorker)
+
+        real_file = tmp_path / "실제사규.docx"
+        real_file.write_text("dummy", encoding="utf-8")
+        result = SearchResult(
+            chunk_id="c1", doc_id="d1", file_path=str(real_file), file_name="실제사규.docx",
+            type=ChunkType.TEXT, page_or_slide=3, content="계약서 검토 기준", caption="", score=-1.0,
+        )
+        hybrid = HybridResult(result, 0.8, False, matched_terms=1, total_terms=1)
+
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+        bubble = panel.bubble_for(1)
+        panel.show_excerpt(1, [hybrid])
+
+        bubble._open_button.click()
+
+        assert len(FakeOpenFileWorker.instances) == 1
+        worker = FakeOpenFileWorker.instances[0]
+        assert worker.file_path == str(real_file)
+        assert worker.started is True
+        assert bubble._open_button.isEnabled() is False
+
     def test_multiple_turns_keep_independent_bubbles(self, qtbot):
         """메시지마다 독립 처리(stateless) — 이전 턴 결과가 다음 턴에 안 새어든다."""
         panel = ChatPanel()

@@ -26,6 +26,8 @@ chatbot.html`)이 검색 결과 모드와 챗봇 모드에서 입력 지점을 �
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
@@ -40,8 +42,9 @@ from PySide6.QtWidgets import (
 
 from search.chunk_view import format_location
 from search.hybrid_search import HybridResult
+from search.office_link import plan_open
 from slm.summarize import Summary
-from ui.widgets.card_common import open_source_file
+from ui.widgets.card_common import start_open_source_file
 from ui.widgets.summary_card import SummaryCard
 
 SUMMARIZE_BUTTON_LABEL = "AI 요약 보기"
@@ -361,9 +364,15 @@ class ChatPanel(QWidget):
     def _open_top_result(self, bubble: _AnswerBubble) -> None:
         if not bubble.results:
             return
-        error = open_source_file(bubble.results[0].result.file_path)
-        if error:
-            self.open_failed.emit(error)
+        top = bubble.results[0]
+        path = Path(top.result.file_path)
+        if not path.is_file():
+            self.open_failed.emit(f"파일을 찾을 수 없습니다: {path}")
+            return
+        plan = plan_open(top)
+        bubble._open_worker = start_open_source_file(
+            str(path), plan, bubble._open_button, self.open_failed.emit
+        )
 
     def _scroll_to_bottom(self) -> None:
         bar = self._scroll.verticalScrollBar()

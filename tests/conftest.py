@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QObject, Signal
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -109,3 +110,27 @@ def sample_pptx(samples) -> Path:
 @pytest.fixture(scope="session")
 def sample_hwpx(samples) -> Path:
     return samples["sample.hwpx"]
+
+
+class FakeOpenFileWorker(QObject):
+    """T10.1: `ui.open_file_worker.OpenFileWorker`를 대신하는 스파이.
+
+    실제 스레드/COM을 돌리지 않는다 — `start()`는 시작 여부만 기록하고,
+    테스트가 `failed`/`finished`를 직접 쏴서 배선(버튼 비활성화·재활성화,
+    `open_failed` 릴레이)만 검증한다. `ui.widgets.card_common.OpenFileWorker`를
+    이 클래스로 monkeypatch해서 쓴다.
+    """
+
+    failed = Signal(str)
+    finished = Signal()
+    instances: list["FakeOpenFileWorker"] = []
+
+    def __init__(self, file_path, plan, parent=None) -> None:
+        super().__init__(parent)
+        self.file_path = file_path
+        self.plan = plan
+        self.started = False
+        type(self).instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
