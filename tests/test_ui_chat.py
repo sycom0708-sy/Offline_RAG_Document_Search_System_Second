@@ -13,11 +13,14 @@ Phase 7.6에서 챗봇 패널이 자동 요약 카드를 완전히 대체하며 
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTableWidget
 
 from indexer.fts5.search import SearchResult
-from parser.schema import ChunkType
+from parser.schema import ChunkType, ImageData, TableData
 from search.hybrid_search import HybridResult
 from slm.summarize import Summary, SummaryStatus
 from slm.verify import VerificationResult
@@ -35,6 +38,24 @@ def _hybrid(content: str = "내용") -> HybridResult:
     result = SearchResult(
         chunk_id="c1", doc_id="d1", file_path="x", file_name="사규.docx",
         type=ChunkType.TEXT, page_or_slide=3, content=content, caption="", score=-1.0,
+    )
+    return HybridResult(result, 0.8, False, matched_terms=1, total_terms=1)
+
+
+def _table_hybrid(table: TableData | None) -> HybridResult:
+    result = SearchResult(
+        chunk_id="t1", doc_id="d1", file_path="x", file_name="체크리스트.xlsx",
+        type=ChunkType.TABLE, page_or_slide=None, content="", caption="", score=-1.0,
+        table_json=json.dumps(asdict(table)) if table else None,
+    )
+    return HybridResult(result, 0.8, False, matched_terms=1, total_terms=1)
+
+
+def _image_hybrid(image: ImageData | None) -> HybridResult:
+    result = SearchResult(
+        chunk_id="i1", doc_id="d1", file_path="x", file_name="흐름도.pptx",
+        type=ChunkType.IMAGE, page_or_slide=5, content="", caption="", score=-1.0,
+        image_json=json.dumps(asdict(image)) if image else None,
     )
     return HybridResult(result, 0.8, False, matched_terms=1, total_terms=1)
 
@@ -332,6 +353,120 @@ class TestChatPanel:
         assert panel.turn_count() == 2
         assert "계약서" in panel.bubble_for(1).excerpt_text()
         assert "리눅스" in panel.bubble_for(2).excerpt_text()
+
+
+class TestChatExcerptTableAndImage:
+    """2026-08-14, 사용자 요청: 챗봇 즉시 발췌도 검색 화면(TableCard/ImageCard)과
+    같은 수준으로 표·이미지를 렌더링해야 한다 — Phase 7.6 완료 시점엔 원시
+    텍스트로만 나왔었다."""
+
+    def test_table_top1_renders_as_grid_with_copy_button(self, qtbot):
+        table = TableData(rows=[["손해배상", "10%"]], header_row=["항목", "비율"], caption="Sheet1")
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("체크리스트")
+        bubble = panel.bubble_for(1)
+
+        panel.show_excerpt(1, [_table_hybrid(table)])
+
+        grid = bubble.findChild(QTableWidget, "TableCardGrid")
+        assert grid is not None
+        assert grid.rowCount() == 1
+        assert grid.item(0, 0).text() == "손해배상"
+        assert bubble._copy_button.isVisibleTo(bubble) is True
+        assert bubble._zoom_button.isVisibleTo(bubble) is False
+
+    def test_table_copy_button_copies_tsv_to_clipboard(self, qtbot):
+        from PySide6.QtGui import QGuiApplication
+
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("체크리스트")
+        panel.show_excerpt(1, [_table_hybrid(table)])
+        bubble = panel.bubble_for(1)
+
+        bubble._copy_button.click()
+
+        assert QGuiApplication.clipboard().text() == "h1\th2\na\tb"
+
+    def test_missing_table_data_falls_back_to_text(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("체크리스트")
+        bubble = panel.bubble_for(1)
+
+        panel.show_excerpt(1, [_table_hybrid(None)])
+
+        assert bubble.findChild(QTableWidget, "TableCardGrid") is None
+        assert bubble._copy_button.isVisibleTo(bubble) is False
+
+    def test_image_top1_renders_thumbnail_and_zoom_button(self, qtbot, tmp_path, monkeypatch):
+        from PySide6.QtGui import QImage
+        from ui import thumbnail_cache
+
+        monkeypatch.setattr(thumbnail_cache, "THUMBNAIL_DIR", tmp_path / "thumbs")
+        source = tmp_path / "source.png"
+        QImage(40, 40, QImage.Format.Format_RGB32).save(str(source))
+
+        image = ImageData(image_path=str(source), origin="extracted")
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("흐름도")
+        bubble = panel.bubble_for(1)
+
+        panel.show_excerpt(1, [_image_hybrid(image)])
+
+        thumb = bubble.findChild(QLabel, "ImageCardThumbnail")
+        assert thumb is not None
+        assert thumb.pixmap() is not None and not thumb.pixmap().isNull()
+        assert bubble._zoom_button.isVisibleTo(bubble) is True
+        assert bubble._zoom_button.isEnabled() is True
+        assert bubble._copy_button.isVisibleTo(bubble) is False
+
+    def test_image_without_source_disables_zoom_button(self, qtbot, tmp_path, monkeypatch):
+        from ui import thumbnail_cache
+
+        monkeypatch.setattr(thumbnail_cache, "THUMBNAIL_DIR", tmp_path / "thumbs")
+        image = ImageData(image_path=str(tmp_path / "없음.png"), origin="extracted")
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("흐름도")
+        bubble = panel.bubble_for(1)
+
+        panel.show_excerpt(1, [_image_hybrid(image)])
+
+        assert bubble._zoom_button.isEnabled() is False
+
+    def test_switching_from_table_to_text_turn_removes_grid(self, qtbot):
+        """턴마다 독립이라 이전 턴의 표 그리드가 다음 턴에 안 남아야 한다."""
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("체크리스트")
+        panel.send_message("계약서")
+
+        panel.show_excerpt(1, [_table_hybrid(table)])
+        panel.show_excerpt(2, [_hybrid("계약서 내용")])
+
+        assert panel.bubble_for(1).findChild(QTableWidget, "TableCardGrid") is not None
+        assert panel.bubble_for(2).findChild(QTableWidget, "TableCardGrid") is None
+        assert "계약서 내용" in panel.bubble_for(2).excerpt_text()
+
+    def test_searching_state_always_shows_text_even_after_table_turn(self, qtbot):
+        """검색 중 상태는 항상 텍스트 본문이어야 한다(표 그리드가 남아있으면 안 됨)."""
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("체크리스트")
+        bubble = panel.bubble_for(1)
+        panel.show_excerpt(1, [_table_hybrid(table)])
+        assert bubble.findChild(QTableWidget, "TableCardGrid") is not None
+
+        bubble.show_searching()
+
+        assert bubble.findChild(QTableWidget, "TableCardGrid") is None
+        assert bubble.excerpt_text() == "검색하는 중…"
 
 
 class TestBubbleAlignment:

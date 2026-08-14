@@ -4,30 +4,28 @@
 원본을 화면의 80% 이내로 스케일해 `QDialog`로 보여준다 — 목업·TECH 어디에도
 확대 동작의 세부 스펙이 없어 가장 자연스러운 해석을 택했다(별도 팬/줌
 인터랙션 없이 크게 보여주기만).
+
+썸네일 로딩·확대 다이얼로그는 `card_common.py`의 공유 함수다 — 챗봇 즉시
+발췌(`chat_panel.py`)도 이미지 청크가 top-1일 때 같은 함수로 렌더링한다
+(2026-08-14).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QGuiApplication, QPixmap
-from PySide6.QtWidgets import (
-    QDialog,
-    QFrame,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from search.hybrid_search import HybridResult
 from search.office_link import plan_open
-from ui.thumbnail_cache import get_thumbnail_path
 from ui.widgets.card_common import (
     apply_low_relevance_style,
     build_card_header,
+    load_image_thumbnail,
     parse_image_data,
+    show_image_zoom_dialog,
     start_open_source_file,
 )
 
@@ -60,7 +58,7 @@ class ImageCard(QFrame):
         thumbnail_label.setFixedSize(THUMBNAIL_DISPLAY_SIZE, THUMBNAIL_DISPLAY_SIZE)
         thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        pixmap = self._load_thumbnail()
+        pixmap = load_image_thumbnail(self._result.chunk_id, self._image_data, THUMBNAIL_DISPLAY_SIZE)
         if pixmap is not None:
             thumbnail_label.setPixmap(pixmap)
         else:
@@ -85,54 +83,12 @@ class ImageCard(QFrame):
 
         apply_low_relevance_style(self, hybrid_result)
 
-    def _load_thumbnail(self) -> QPixmap | None:
-        if self._image_data is None:
-            return None
-        source = Path(self._image_data.image_path)
-        cache_path = get_thumbnail_path(self._result.chunk_id, source)
-        if cache_path is None:
-            return None
-        pixmap = QPixmap(str(cache_path))
-        if pixmap.isNull():
-            return None
-        return pixmap.scaled(
-            THUMBNAIL_DISPLAY_SIZE,
-            THUMBNAIL_DISPLAY_SIZE,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-
     def _zoom(self) -> None:
         if self._image_data is None:
             return
-        path = Path(self._image_data.image_path)
-        if not path.is_file():
-            self.open_failed.emit(f"이미지를 찾을 수 없습니다: {path}")
-            return
-
-        pixmap = QPixmap(str(path))
-        if pixmap.isNull():
-            self.open_failed.emit(f"이미지를 열 수 없습니다: {path}")
-            return
-
-        screen = QGuiApplication.primaryScreen()
-        if screen is not None:
-            available = screen.availableSize()
-            max_size = QSize(int(available.width() * 0.8), int(available.height() * 0.8))
-            if pixmap.width() > max_size.width() or pixmap.height() > max_size.height():
-                pixmap = pixmap.scaled(
-                    max_size,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle(self._result.file_name)
-        label = QLabel()
-        label.setPixmap(pixmap)
-        dialog_layout = QVBoxLayout(dialog)
-        dialog_layout.addWidget(label)
-        dialog.exec()
+        error = show_image_zoom_dialog(self, self._image_data.image_path, self._result.file_name)
+        if error:
+            self.open_failed.emit(error)
 
     def _open_source(self) -> None:
         path = Path(self._result.result.file_path)
