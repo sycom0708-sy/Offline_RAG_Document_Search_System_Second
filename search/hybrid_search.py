@@ -135,7 +135,7 @@ def hybrid_search(
             _to_result(r, None, False, term_variants, case_sensitive)
             for r in candidates
         ]
-        ranked.sort(key=lambda h: -h.matched_terms)  # 안정 정렬 — 동점은 BM25 순서 유지
+        ranked.sort(key=lambda h: (-h.matched_terms, -len(h.content)))  # 안정 정렬 — 동점은 BM25 순서 유지
         return ranked[:limit]
 
     vectors = fetch_vectors(conn, [r.chunk_id for r in candidates], profile.key)
@@ -213,11 +213,15 @@ def _rerank(
 ) -> list[HybridResult]:
     """벡터가 있는 후보는 재순위하고, 없는 후보는 뒤에 붙인다.
 
-    정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 유사도 ↓)** 순이다 [2026-08-11].
+    정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 본문 길이 ↓, 유사도 ↓)**
+    순이다 [2026-08-11, 본문 길이는 2026-08-14 추가].
 
     - **일치 개수가 유사도보다 우선한다**: 사용자가 입력한 단어를 다 담은 청크가
       먼저 보여야 한다. 실측으로 `rpm 패키지 삭제 옵션` 질의에서 4개를 전부
       담은 청크가 1개만 담은 청크(유사도가 더 높다)에 밀려 2위였다.
+    - **일치 개수가 같으면 본문이 더 자세한(긴) 결과를 먼저 보여준다**: 같은
+      개수의 검색어를 담고 있어도 본문이 짧으면 정보량이 적을 가능성이 높다
+      — 유사도보다 앞세운다[사용자 확정].
     - **다만 "관련성 낮음"은 그보다 앞선다**: 흐림 처리된 카드가 1위에 오면
       고장처럼 보인다(DESIGN §5.6의 흐림은 "이건 약한 결과"라는 신호다).
       정상 결과를 먼저 보여주고, 흐림 그룹 안에서 다시 같은 규칙을 적용한다.
@@ -246,10 +250,10 @@ def _rerank(
         )
 
     with_vector.sort(
-        key=lambda h: (h.is_low_relevance, -h.matched_terms, -h.similarity)
+        key=lambda h: (h.is_low_relevance, -h.matched_terms, -len(h.content), -h.similarity)
     )
-    # 벡터 없는 쪽은 유사도가 없으니 일치 개수만으로 정렬한다(동점은 BM25 순서).
-    without_vector.sort(key=lambda h: -h.matched_terms)
+    # 벡터 없는 쪽은 유사도가 없으니 일치 개수·본문 길이로 정렬한다(동점은 BM25 순서).
+    without_vector.sort(key=lambda h: (-h.matched_terms, -len(h.content)))
     return [*with_vector, *without_vector]
 
 

@@ -209,18 +209,56 @@ def test_hybrid_beats_keyword_only_on_natural_language(embedded_db, embedder):
     assert hybrid[0].chunk_id == "c3"  # "계약 체결 전 반드시 법무 검토"
 
 
-def test_results_sorted_by_similarity_within_same_match_count(embedded_db, embedder):
-    """유사도 내림차순은 **같은 일치 개수 안에서만** 성립한다 (2026-08-11 규칙 변경)."""
+def test_results_sorted_by_similarity_within_same_match_count_and_length(embedded_db, embedder):
+    """유사도 내림차순은 **같은 일치 개수·같은 본문 길이 안에서만** 성립한다
+    (2026-08-11 규칙, 2026-08-14 본문 길이 추가)."""
     results = hybrid_search(embedded_db, "계약 검토", embedder=embedder)
 
-    by_bucket: dict[tuple[bool, int], list[float]] = {}
+    by_bucket: dict[tuple[bool, int, int], list[float]] = {}
     for r in results:
         if r.similarity is None:
             continue
-        by_bucket.setdefault((r.is_low_relevance, r.matched_terms), []).append(r.similarity)
+        by_bucket.setdefault(
+            (r.is_low_relevance, r.matched_terms, len(r.content)), []
+        ).append(r.similarity)
 
     for scored in by_bucket.values():
         assert scored == sorted(scored, reverse=True)
+
+
+def test_longer_content_ranks_first_within_same_match_count():
+    """같은 일치 개수라면 본문이 더 긴(자세한) 결과가 유사도보다 앞서야 한다
+    (2026-08-14, 사용자 요청)."""
+    from search.hybrid_search import HybridResult, _rerank
+
+    short_result = SearchResult(
+        chunk_id="short", doc_id="d1", file_path="x", file_name="x.txt",
+        type=ChunkType.TEXT, page_or_slide=None, content="계약 검토", caption="", score=-1.0,
+    )
+    long_result = SearchResult(
+        chunk_id="long", doc_id="d1", file_path="x", file_name="x.txt",
+        type=ChunkType.TEXT, page_or_slide=None,
+        content="계약 검토는 매우 자세한 절차를 거쳐 진행되며 여러 담당자의 확인을 필요로 한다",
+        caption="", score=-1.0,
+    )
+    term_variants = query_term_variants("계약 검토")
+
+    # 둘 다 일치 개수는 동일(2/2)하지만, 짧은 쪽이 유사도가 더 높게 설계한다 —
+    # 유사도만으로 정렬했다면 짧은 쪽이 1위여야 한다.
+    query_vector = np.array([1.0, 0.0], dtype=np.float32)
+    short_vector = np.array([1.0, 0.0], dtype=np.float32)  # 유사도 1.0
+    long_vector = np.array([0.9, 0.436], dtype=np.float32)  # 유사도 0.9
+
+    results = _rerank(
+        [short_result, long_result],
+        {"short": short_vector, "long": long_vector},
+        query_vector,
+        threshold=0.0,
+        term_variants=term_variants,
+        case_sensitive=False,
+    )
+
+    assert [r.chunk_id for r in results] == ["long", "short"]
 
 
 def test_full_keyword_match_ranks_first(embedded_db, embedder):
