@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QTableWidget, QVBoxLa
 from search.hybrid_search import HybridResult
 from search.office_link import plan_open
 from ui.widgets.card_common import (
+    SummarySection,
     apply_low_relevance_style,
     build_card_header,
     build_table_grid,
@@ -32,8 +33,9 @@ from ui.widgets.card_common import (
 
 class TableCard(QFrame):
     open_failed = Signal(str)
+    summarize_requested = Signal(object, object)  # T10.14, ResultCard와 동일
 
-    def __init__(self, hybrid_result: HybridResult, parent=None) -> None:
+    def __init__(self, hybrid_result: HybridResult, show_summary: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ResultCard")
         self._result = hybrid_result
@@ -63,7 +65,16 @@ class TableCard(QFrame):
             layout.addWidget(fallback)
             copy_button.setEnabled(False)
 
+        self.summary_section: SummarySection | None = None
+        if show_summary:
+            self.summary_section = SummarySection()
+            self.summary_section.requested.connect(self._request_summary)
+            layout.addWidget(self.summary_section)
+
         apply_low_relevance_style(self, hybrid_result)
+
+    def _request_summary(self) -> None:
+        self.summarize_requested.emit(self.summary_section, self._result)
 
     def showEvent(self, event) -> None:  # noqa: N802 - Qt 이벤트 핸들러 네이밍
         super().showEvent(event)

@@ -108,6 +108,9 @@ class MainWindow(QMainWindow):
         # summarize_requested 신호가 (request_id, results)만 실어 보내 질문
         # 원문이 없다 — message_sent 때 미리 적어 두고 SummaryWorker에 넘길 때 쓴다.
         self._chat_questions: dict[int, str] = {}
+        # 검색 결과 카드 단위 AI 요약(T10.14) 버튼을 붙일지 여부 —
+        # _refresh_ai_chat_availability()가 모델 유무를 확인할 때마다 갱신한다.
+        self._ai_summary_available = False
 
         self._build_ui()
         self._wire_signals()
@@ -171,6 +174,7 @@ class MainWindow(QMainWindow):
         self.sidebar.recent_search_selected.connect(self.input_bar.submit_text)
 
         self.result_list.open_failed.connect(self._on_open_failed)
+        self.result_list.summarize_requested.connect(self._on_card_summarize_requested)
 
     # --- 입력 라우팅 (Phase 7.7) --------------------------------------------
 
@@ -273,7 +277,9 @@ class MainWindow(QMainWindow):
 
         case_sensitive = self.sidebar.search_options.is_case_sensitive()
         exact_word = self.sidebar.search_options.is_exact_word()
-        self.result_list.show_results(results, self._last_query, case_sensitive, exact_word)
+        self.result_list.show_results(
+            results, self._last_query, case_sensitive, exact_word, self._ai_summary_available
+        )
 
     def _on_search_failed(self, request_id: int, message: str) -> None:
         if request_id != self._request_seq:
@@ -288,8 +294,12 @@ class MainWindow(QMainWindow):
     # 검색을 다시 하지 않는다. 카드 목록 경로(_run_search 등)는 무수정이다.
 
     def _refresh_ai_chat_availability(self) -> None:
-        """모델·실행 바이너리가 모두 있어야 토글을 연다."""
+        """모델·실행 바이너리가 모두 있어야 토글을 연다.
+
+        검색 결과 카드의 "AI 요약 보기" 버튼(T10.14)도 같은 조건으로 켠다 —
+        모델이 없는데 버튼만 보이면 눌러도 실패 메시지만 나온다."""
         available = self._slm_service.is_available()
+        self._ai_summary_available = available
         self.sidebar.search_options.set_ai_summary_available(available)
         if available:
             self.sidebar.search_options.set_ai_summary(self.state.ai_chat_enabled)
@@ -333,7 +343,9 @@ class MainWindow(QMainWindow):
             return
         case_sensitive = self.sidebar.search_options.is_case_sensitive()
         exact_word = self.sidebar.search_options.is_exact_word()
-        self.result_list.show_results(self._last_results, self._last_query, case_sensitive, exact_word)
+        self.result_list.show_results(
+            self._last_results, self._last_query, case_sensitive, exact_word, self._ai_summary_available
+        )
 
     def _on_chat_message_sent(self, request_id: int, question: str) -> None:
         """① 즉시 발췌 — 기존 `SearchWorker`를 무수정으로 그대로 쓴다.
@@ -396,6 +408,27 @@ class MainWindow(QMainWindow):
     def _on_chat_summary_succeeded(self, request_id: int, summary) -> None:
         if self._chat_panel is not None:
             self._chat_panel.show_summary(request_id, summary)
+
+    # --- 검색 결과 카드 단위 AI 요약 (T10.14) --------------------------------
+    #
+    # 챗봇의 "AI 요약 보기"는 턴 전체를 대상으로 하나뿐이지만, 일반 검색
+    # 결과에서는 카드마다 자신의 발췌 하나만 근거로 요약한다(사용자 요청,
+    # 2026-08-15). SummaryWorker(무수정)의 신호를 카드가 들고 온
+    # SummarySection에 바로 연결한다 — request_id로 최신성을 따질 이유가
+    # 없다(카드마다 독립적인 요청이라 챗봇처럼 "더 최신 턴이 왔으니 버린다"
+    # 판단이 필요 없다).
+
+    def _on_card_summarize_requested(self, section, result) -> None:
+        section.show_generating()
+
+        worker = SummaryWorker(self._last_query, [result], self._slm_service, 0)
+        worker.started_loading.connect(section.show_starting)
+        worker.succeeded.connect(section.receive_summary)
+        worker.failed.connect(section.receive_error)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda w=worker: self._active_summary_workers.discard(w))
+        self._active_summary_workers.add(worker)
+        worker.start()
 
     def _on_chat_summary_failed(self, request_id: int, message: str) -> None:
         if self._chat_panel is not None:

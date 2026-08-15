@@ -966,6 +966,144 @@ class TestAiChatWiring:
         assert tracker.shutdown_called is True
 
 
+class TestCardSummaryWiring:
+    """일반 검색 결과 카드 단위 AI 요약(T10.14) — "AI 요약은 검색 결과 각
+    항목마다 있어야 하지 않나"라는 사용자 지적으로 추가됐다.
+
+    챗봇의 턴 단위 요약과 달리, 카드마다 자신의 발췌 하나만 근거로 독립적인
+    요약을 만든다. `TestAiChatWiring`과 같은 방식으로 sLM 서비스를 스텁으로
+    바꿔 배선이 실제로 화면(그 카드의 SummarySection)까지 도달하는지 본다.
+    """
+
+    @staticmethod
+    def _stub_service(window, text="계약서 기준 조항입니다. [1]"):
+        from slm.client import Completion
+
+        class _Stub:
+            def __init__(self):
+                self.calls = 0
+
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, messages, **_kwargs):
+                self.calls += 1
+                return Completion(text=text, elapsed_sec=0.1, completion_tokens=5)
+
+            def shutdown(self):
+                pass
+
+        stub = _Stub()
+        window._slm_service = stub
+        window._ai_summary_available = True  # _refresh_ai_chat_availability()가 재검사할 대상
+        return stub
+
+    def test_summary_available_false_by_default_hides_buttons(self, window, qtbot):
+        """모델이 없다고 판정되면 카드에 버튼이 없어야 한다.
+
+        이 개발 PC는 Phase 6~7 검증용으로 실제 sLM이 설치돼 있을 수 있어
+        `_ai_summary_available`을 명시적으로 꺼서 판정 자체를 고정한다 —
+        `TestAiChatWiring.test_toggle_is_off_by_default`가 저장된 토글값만
+        보는 것과 달리, 여기서는 가용성 판정의 결과를 직접 검증한다."""
+        window._ai_summary_available = False
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        card = window.result_list.findChild(ResultCard)
+        assert card.summary_section is None
+
+    def test_summary_available_true_adds_buttons_to_every_card(self, window, qtbot):
+        self._stub_service(window)
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        cards = window.result_list.findChildren(ResultCard)
+        assert len(cards) > 0
+        assert all(card.summary_section is not None for card in cards)
+
+    @staticmethod
+    def _force_high_similarity(card) -> None:
+        """실제 임베딩 유사도는 int8 양자화의 배치 단위 활성값 스케일 때문에
+        실행마다 흔들린다(Phase 3·7이 이미 겪은 것과 같은 원인) — 이 작은
+        테스트 픽스처는 그 흔들림 탓에 실제로 0.5 임계값을 못 넘길 때가 있다.
+        1단계 안전장치(유사도 임계값) 통과 여부와 무관하게 "배선이 sLM까지
+        도달하는가"만 검증하려면 유사도를 직접 지정해야 한다(Phase 7의
+        해법과 동일)."""
+        card._result.similarity = 0.9
+        card._result.is_low_relevance = False
+
+    def test_clicking_a_cards_summary_button_only_updates_that_card(self, window, qtbot):
+        """카드마다 독립적이어야 한다 — 한 카드를 요약해도 다른 카드는
+        영향받지 않아야 한다."""
+        stub = self._stub_service(window)
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 1, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        cards = window.result_list.findChildren(ResultCard)
+        first, second = cards[0], cards[1]
+        self._force_high_similarity(first)
+
+        first.summary_section._button.click()
+
+        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
+        qtbot.waitUntil(lambda: "계약서" in first.summary_section.summary_text(), timeout=SEARCH_TIMEOUT_MS)
+        assert second.summary_section.is_summary_visible() is False
+
+    def test_summary_failure_reaches_the_card(self, window, qtbot):
+        class _Failing:
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, *_a, **_k):
+                raise RuntimeError("서버 기동 실패")
+
+            def shutdown(self):
+                pass
+
+        window._slm_service = _Failing()
+        window._ai_summary_available = True
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        card = window.result_list.findChild(ResultCard)
+        self._force_high_similarity(card)
+        card.summary_section._button.click()
+
+        qtbot.waitUntil(
+            lambda: "서버 기동 실패" in card.summary_section.summary_text(), timeout=SEARCH_TIMEOUT_MS
+        )
+
+    def test_new_search_does_not_crash_pending_summary_workers(self, window, qtbot):
+        """새 검색이 이전 카드를 지워도, 아직 돌고 있던 요약 워커가 죽은
+        위젯을 건드리며 크래시하면 안 된다(SummarySection이 QObject라서
+        Qt가 연결을 자동으로 끊어주는지 확인)."""
+        stub = self._stub_service(window)
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        from ui.widgets.result_card import ResultCard
+
+        card = window.result_list.findChild(ResultCard)
+        card.summary_section._button.click()
+
+        window.input_bar.submit_text("리눅스")  # 카드가 새 검색으로 교체된다
+        qtbot.waitUntil(lambda: not window._active_summary_workers, timeout=SEARCH_TIMEOUT_MS)
+
+
 class TestChatSearchProfileRegression:
     """🔴 T10.9 재발 방지 — 챗봇 경로도 `SearchWorker`를 그대로 쓰므로 같은
     버그(embedder=만 넘기고 profile= 누락 → 벡터 차원 불일치 → similarity가

@@ -22,11 +22,17 @@ def make_result_card(
     query: str,
     case_sensitive: bool = False,
     exact_word: bool = False,
+    show_summary: bool = False,
 ) -> QWidget:
     """청크 타입에 따라 카드를 분기한다 (T5.1, DESIGN §5.7) — 검색 로직은
-    타입과 무관하게 동일하고, 렌더링 단계에서만 갈린다."""
+    타입과 무관하게 동일하고, 렌더링 단계에서만 갈린다.
+
+    `show_summary`(T10.14, 기본 False)는 카드 단위 "AI 요약 보기" 버튼을
+    붙일지 여부다 — 일반 검색 결과 목록만 켜서 쓴다. 챗봇 말풍선은 이미
+    턴 단위 요약 버튼을 자체로 갖고 있어(`_AnswerBubble`) 여기서 끄지
+    않으면 카드마다 버튼이 하나 더 생겨 중복된다."""
     if result.type is ChunkType.TABLE:
-        return TableCard(result)
+        return TableCard(result, show_summary=show_summary)
     if result.type is ChunkType.IMAGE:
-        return ImageCard(result)
-    return ResultCard(result, query, case_sensitive, exact_word)
+        return ImageCard(result, show_summary=show_summary)
+    return ResultCard(result, query, case_sensitive, exact_word, show_summary=show_summary)

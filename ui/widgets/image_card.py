@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 from search.hybrid_search import HybridResult
 from search.office_link import plan_open
 from ui.widgets.card_common import (
+    SummarySection,
     apply_low_relevance_style,
     build_card_header,
     load_image_thumbnail,
@@ -36,8 +37,9 @@ THUMBNAIL_DISPLAY_SIZE = 120
 
 class ImageCard(QFrame):
     open_failed = Signal(str)
+    summarize_requested = Signal(object, object)  # T10.14, ResultCard와 동일
 
-    def __init__(self, hybrid_result: HybridResult, parent=None) -> None:
+    def __init__(self, hybrid_result: HybridResult, show_summary: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.setObjectName("ResultCard")
         self._result = hybrid_result
@@ -81,7 +83,16 @@ class ImageCard(QFrame):
         layout.addLayout(header)
         layout.addLayout(body)
 
+        self.summary_section: SummarySection | None = None
+        if show_summary:
+            self.summary_section = SummarySection()
+            self.summary_section.requested.connect(self._request_summary)
+            layout.addWidget(self.summary_section)
+
         apply_low_relevance_style(self, hybrid_result)
+
+    def _request_summary(self) -> None:
+        self.summarize_requested.emit(self.summary_section, self._result)
 
     def _zoom(self) -> None:
         if self._image_data is None:

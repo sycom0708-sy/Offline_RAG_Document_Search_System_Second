@@ -16,11 +16,19 @@ from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 from search.hybrid_search import HybridResult
 from search.office_link import plan_open
 from ui.highlight import highlighted_excerpt
-from ui.widgets.card_common import apply_low_relevance_style, build_card_header, start_open_source_file
+from ui.widgets.card_common import (
+    SummarySection,
+    apply_low_relevance_style,
+    build_card_header,
+    start_open_source_file,
+)
 
 
 class ResultCard(QFrame):
     open_failed = Signal(str)  # 원문 열기 실패 시 사유
+    # 카드 단위 AI 요약 요청(T10.14) — (SummarySection, 이 카드의 결과).
+    # MainWindow가 SummaryWorker를 만들어 SummarySection에 직결한다.
+    summarize_requested = Signal(object, object)
 
     def __init__(
         self,
@@ -28,6 +36,7 @@ class ResultCard(QFrame):
         query: str,
         case_sensitive: bool = False,
         exact_word: bool = False,
+        show_summary: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -52,7 +61,16 @@ class ResultCard(QFrame):
         layout.addLayout(header)
         layout.addWidget(body_label)
 
+        self.summary_section: SummarySection | None = None
+        if show_summary:
+            self.summary_section = SummarySection()
+            self.summary_section.requested.connect(self._request_summary)
+            layout.addWidget(self.summary_section)
+
         apply_low_relevance_style(self, hybrid_result)
+
+    def _request_summary(self) -> None:
+        self.summarize_requested.emit(self.summary_section, self._result)
 
     def _open_source(self) -> None:
         path = Path(self._result.result.file_path)

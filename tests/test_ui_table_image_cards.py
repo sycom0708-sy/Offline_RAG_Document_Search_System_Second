@@ -206,6 +206,18 @@ class TestTableCard:
         label = card.findChild(QLabel, "ResultCardFileNameMatchLabel")
         assert label is not None and label.text() == "파일명 매치"
 
+    def test_show_summary_true_adds_summary_section(self, qtbot):
+        """T10.14: 표 카드도 텍스트 카드와 같은 요약 섹션을 가질 수 있어야 한다."""
+        table = TableData(rows=[["a", "b"]], header_row=["h1", "h2"])
+        card = TableCard(_hybrid(_table_result(table)), show_summary=True)
+        qtbot.addWidget(card)
+        assert card.summary_section is not None
+
+        requests = []
+        card.summarize_requested.connect(lambda section, result: requests.append((section, result)))
+        card.summary_section.requested.emit()
+        assert len(requests) == 1
+
 
 class TestImageCard:
     def test_valid_image_shows_thumbnail_and_notice(self, qtbot, tmp_path, monkeypatch):
@@ -310,6 +322,18 @@ class TestImageCard:
 
         label = card.findChild(QLabel, "ResultCardFileNameMatchLabel")
         assert label is not None and label.text() == "파일명 매치"
+
+    def test_show_summary_true_adds_summary_section(self, qtbot):
+        """T10.14: 이미지 카드도 텍스트 카드와 같은 요약 섹션을 가질 수 있어야 한다."""
+        image = ImageData(image_path="아무경로.png")
+        card = ImageCard(_hybrid(_image_result(image)), show_summary=True)
+        qtbot.addWidget(card)
+        assert card.summary_section is not None
+
+        requests = []
+        card.summarize_requested.connect(lambda section, result: requests.append((section, result)))
+        card.summary_section.requested.emit()
+        assert len(requests) == 1
 
 
 class TestTypeBasedRouting:

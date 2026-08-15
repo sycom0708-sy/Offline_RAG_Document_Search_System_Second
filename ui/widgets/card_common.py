@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Sequence
 
-from PySide6.QtCore import QSize, Qt, QUrl
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QGuiApplication, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -36,6 +36,7 @@ from search.chunk_view import format_location, parse_image_data, parse_table_dat
 from search.office_link import OfficeComError, OpenPlan, is_office_available, open_and_locate
 from ui.open_file_worker import OpenFileWorker
 from ui.thumbnail_cache import get_thumbnail_path
+from ui.widgets.summary_card import SummaryCard
 
 __all__ = [
     "format_location",
@@ -45,6 +46,7 @@ __all__ = [
     "start_open_source_file",
     "build_card_header",
     "apply_low_relevance_style",
+    "SummarySection",
     "build_table_grid",
     "fix_table_grid_height",
     "table_to_tsv",
@@ -166,6 +168,74 @@ def apply_low_relevance_style(card: QFrame, hybrid_result) -> None:
         card.setProperty("relevance", "low")
     else:
         card.setProperty("relevance", "normal")
+
+
+class SummarySection(QWidget):
+    """카드 한 장 단위의 AI 요약(T10.14) — "AI 요약 보기" 버튼 + `SummaryCard`.
+
+    챗봇의 `_AnswerBubble`은 그 턴 전체(top-1 발췌 근거)를 대상으로 이
+    조합을 딱 하나만 갖지만, 검색 결과 카드는 카드마다 하나씩 갖는다 — 그
+    카드 하나의 발췌만 근거로 요약한다("검색 결과 각 항목마다 AI 요약이
+    있어야 한다"는 사용자 요청, 2026-08-15).
+
+    `SummaryWorker`의 신호(`started_loading`/`succeeded`/`failed`)를 이
+    위젯의 메서드에 직접 연결해서 쓴다(중간에 람다를 두지 않는다) — Qt는
+    연결된 슬롯이 속한 QObject가 파괴되면 연결을 자동으로 끊어준다. 새
+    검색으로 이 카드가 사라진 뒤 뒤늦게 응답이 와도, 이미 없는 위젯을
+    건드리는 크래시로 이어지지 않는다.
+    """
+
+    requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        self._button = QPushButton("AI 요약 보기")
+        self._button.setObjectName("ResultCardCopyButton")
+        self._button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._button.clicked.connect(self.requested.emit)
+        button_row.addWidget(self._button)
+        layout.addLayout(button_row)
+
+        self._card = SummaryCard()
+        self._card.setVisible(False)
+        layout.addWidget(self._card)
+
+    def show_generating(self) -> None:
+        self._card.setVisible(True)
+        self._button.setEnabled(False)
+        self._card.show_generating()
+
+    def show_starting(self, _request_id: int = 0) -> None:
+        """`SummaryWorker.started_loading`(서버 콜드스타트) 직결용."""
+        self._card.setVisible(True)
+        self._button.setEnabled(False)
+        self._card.show_starting()
+
+    def receive_summary(self, _request_id: int, summary) -> None:
+        """`SummaryWorker.succeeded` 직결용."""
+        self._card.setVisible(True)
+        self._button.setEnabled(True)
+        self._card.show_summary(summary)
+
+    def receive_error(self, _request_id: int, message: str) -> None:
+        """`SummaryWorker.failed` 직결용."""
+        self._card.setVisible(True)
+        self._button.setEnabled(True)
+        self._card.show_error(message)
+
+    # --- 테스트·검증용 --------------------------------------------------
+
+    def summary_text(self) -> str:
+        return self._card.body_text()
+
+    def is_summary_visible(self) -> bool:
+        return self._card.isVisibleTo(self)
 
 
 # --- 표 그리드 (T5.2, 챗봇 즉시 발췌도 재사용 — 2026-08-14) --------------------

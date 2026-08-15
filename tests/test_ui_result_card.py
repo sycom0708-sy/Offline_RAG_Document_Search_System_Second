@@ -219,6 +219,48 @@ class TestResultCard:
         body = card_case_sensitive.findChild(QLabel, "ResultCardBody")
         assert "background-color" not in body.text()  # "api" != "API" 대소문자 구분 시
 
+    # --- 카드 단위 AI 요약 (T10.14) --------------------------------------
+
+    def test_summary_button_hidden_by_default(self, qtbot):
+        card = ResultCard(_hybrid(), "계약서")
+        qtbot.addWidget(card)
+        assert card.summary_section is None
+
+    def test_show_summary_true_adds_button(self, qtbot):
+        card = ResultCard(_hybrid(), "계약서", show_summary=True)
+        qtbot.addWidget(card)
+        assert card.summary_section is not None
+        # 요약 카드 자체는 클릭 전까지 숨겨져 있어야 한다.
+        assert card.summary_section.is_summary_visible() is False
+
+    def test_clicking_summary_button_emits_summarize_requested(self, qtbot):
+        card = ResultCard(_hybrid(), "계약서", show_summary=True)
+        qtbot.addWidget(card)
+
+        requests = []
+        card.summarize_requested.connect(lambda section, result: requests.append((section, result)))
+        card.summary_section.requested.emit()
+
+        assert len(requests) == 1
+        section, result = requests[0]
+        assert section is card.summary_section
+        assert result is card._result
+
+    def test_summary_section_reflects_worker_lifecycle(self, qtbot):
+        """MainWindow가 SummaryWorker 신호를 SummarySection에 직결하는 경로를
+        워커 없이도 검증한다 — section의 공개 메서드를 직접 호출."""
+        from slm.summarize import Summary, SummaryStatus
+
+        card = ResultCard(_hybrid(), "계약서", show_summary=True)
+        qtbot.addWidget(card)
+        section = card.summary_section
+
+        section.show_generating()
+        assert section.is_summary_visible() is True
+
+        section.receive_summary(0, Summary(status=SummaryStatus.OK, text="요약 결과입니다."))
+        assert section.summary_text() == "요약 결과입니다."
+
 
 class TestResultList:
     def test_initial_state_shows_hint_message(self, qtbot):
@@ -290,6 +332,37 @@ class TestResultList:
 
         assert len(failures) == 1
         assert "파일을 찾을 수 없습니다" in failures[0]
+
+    def test_show_results_ai_summary_available_false_hides_summary_buttons(self, qtbot):
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid()], "계약서")  # ai_summary_available 기본값 False
+        card = widget.findChild(ResultCard)
+        assert card.summary_section is None
+
+    def test_show_results_ai_summary_available_true_adds_summary_buttons(self, qtbot):
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid()], "계약서", ai_summary_available=True)
+        card = widget.findChild(ResultCard)
+        assert card.summary_section is not None
+
+    def test_relays_summarize_requested_from_child_card(self, qtbot):
+        """T10.14: 카드 단위 AI 요약 요청도 open_failed와 같은 방식으로
+        ResultList가 한 자리로 모아 바깥에 전달해야 한다."""
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        widget.show_results([_hybrid()], "계약서", ai_summary_available=True)
+
+        requests = []
+        widget.summarize_requested.connect(lambda section, result: requests.append((section, result)))
+
+        card = widget.findChild(ResultCard)
+        card.summary_section.requested.emit()
+
+        assert len(requests) == 1
+        section, result = requests[0]
+        assert section is card.summary_section
 
     def test_show_empty_includes_hint_when_given(self, qtbot):
         widget = ResultList()

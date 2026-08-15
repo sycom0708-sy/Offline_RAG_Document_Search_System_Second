@@ -29,6 +29,9 @@ class ResultList(QScrollArea):
     # 없다. 지금까지 이 연결 자체가 없어 "원문 열기"가 실패해도 사용자에게
     # 아무 알림도 가지 않았다(신호는 emit되지만 받는 곳이 없었다).
     open_failed = Signal(str)
+    # 카드 단위 AI 요약 요청(T10.14) — (SummarySection, 그 카드의 결과)을
+    # open_failed와 같은 방식으로 한 자리로 모아 MainWindow에 넘긴다.
+    summarize_requested = Signal(object, object)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -47,6 +50,7 @@ class ResultList(QScrollArea):
         self._query = ""
         self._case_sensitive = False
         self._exact_word = False
+        self._ai_summary_available = False
         self._more_button: QPushButton | None = None
 
         self.show_initial()
@@ -98,12 +102,14 @@ class ResultList(QScrollArea):
         query: str,
         case_sensitive: bool = False,
         exact_word: bool = False,
+        ai_summary_available: bool = False,
     ) -> None:
         self._clear()
         self._all_results = results
         self._query = query
         self._case_sensitive = case_sensitive
         self._exact_word = exact_word
+        self._ai_summary_available = ai_summary_available
 
         self._render_cards(results[:PAGE_SIZE])
         remaining = len(results) - PAGE_SIZE
@@ -112,8 +118,15 @@ class ResultList(QScrollArea):
 
     def _render_cards(self, results: list[HybridResult]) -> None:
         for result in results:
-            card = make_result_card(result, self._query, self._case_sensitive, self._exact_word)
+            card = make_result_card(
+                result,
+                self._query,
+                self._case_sensitive,
+                self._exact_word,
+                show_summary=self._ai_summary_available,
+            )
             card.open_failed.connect(self.open_failed)
+            card.summarize_requested.connect(self.summarize_requested)
             self._layout.insertWidget(self._layout.count() - 1, card)
 
     def _add_more_button(self, remaining: int) -> None:
