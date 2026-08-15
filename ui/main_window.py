@@ -105,6 +105,11 @@ class MainWindow(QMainWindow):
         # 챗봇 모드가 켜져 있을 때만 값이 있다 — 결과 영역을 누가 갖고 있는지
         # (카드 목록 vs 이 패널) 판단하는 기준이다.
         self._chat_panel: ChatPanel | None = None
+        # 위와 별개로, 만들어진 ChatPanel 인스턴스 자체는 꺼져 있는 동안에도
+        # 계속 들고 있는다(T10.16, 사용자 요청) — 껐다 켜도 이전 대화가
+        # 남아 있어야 한다. `_chat_panel`은 "지금 화면에 붙어 있는가"만
+        # 나타내는 플래그로 계속 쓴다.
+        self._chat_panel_cache: ChatPanel | None = None
         # summarize_requested 신호가 (request_id, results)만 실어 보내 질문
         # 원문이 없다 — message_sent 때 미리 적어 두고 SummaryWorker에 넘길 때 쓴다.
         self._chat_questions: dict[int, str] = {}
@@ -326,12 +331,14 @@ class MainWindow(QMainWindow):
         정확히 이번에 문제가 된 증상이었다: 챗봇 미사용으로 검색한 뒤
         챗봇을 켜면 그 검색 결과가 그대로 튀어나왔다.
         """
-        panel = ChatPanel()
-        panel.message_sent.connect(self._on_chat_message_sent)
-        panel.summarize_requested.connect(self._on_chat_summarize_requested)
-        panel.open_failed.connect(self._on_open_failed)
-        self._chat_panel = panel
-        self.result_list.show_chat_mode(panel)
+        if self._chat_panel_cache is None:
+            panel = ChatPanel()
+            panel.message_sent.connect(self._on_chat_message_sent)
+            panel.summarize_requested.connect(self._on_chat_summarize_requested)
+            panel.open_failed.connect(self._on_open_failed)
+            self._chat_panel_cache = panel
+        self._chat_panel = self._chat_panel_cache
+        self.result_list.show_chat_mode(self._chat_panel)
         self._sync_result_header()  # 챗봇 모드는 헤더가 없다(DESIGN §5.8)
 
     def _deactivate_chat_mode(self) -> None:

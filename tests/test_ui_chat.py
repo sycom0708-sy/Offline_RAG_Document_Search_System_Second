@@ -193,6 +193,20 @@ class TestResultListChatMode:
         assert widget.card_count() == 1
         assert widget._layout.indexOf(panel) == -1
 
+    def test_show_results_after_chat_mode_does_not_destroy_the_panel(self, qtbot):
+        """T10.16: `MainWindow`가 패널 인스턴스를 재사용하려면 `_clear()`가
+        떼어내기만 하고 파괴하면 안 된다 — 파괴됐다면 `deleteLater()` 예약
+        이후 이 패널을 다시 붙이려는 시도가 죽은 위젯을 건드리게 된다."""
+        widget = ResultList()
+        qtbot.addWidget(widget)
+        panel = ChatPanel()
+        widget.show_chat_mode(panel)
+
+        widget.show_results([_hybrid()], "질의")
+
+        widget.show_chat_mode(panel)  # 파괴됐다면 여기서 RuntimeError가 난다
+        assert widget._layout.indexOf(panel) == 0
+
     def test_panel_gets_stretch_to_fill_the_area_down_to_the_input_bar(self, qtbot):
         """stretch=1 없이 넣으면 패널이 sizeHint 높이만 차지하고, `__init__`의
         트레일링 `addStretch()`가 나머지 여백을 먹어 대화 영역이 화면 중간에서

@@ -893,6 +893,26 @@ class TestAiChatWiring:
         reloaded = AppState.load(path=window.state._path)
         assert reloaded.ai_chat_enabled is True
 
+    def test_turning_chat_off_and_on_keeps_previous_conversation(self, window, qtbot):
+        """T10.16(2026-08-15, 사용자 요청): 껐다 켜도 이전 대화가 남아 있어야
+        한다 — 매번 새 ChatPanel을 만들던 것을 인스턴스를 계속 들고 있다가
+        재사용하도록 바꿨다."""
+        self._stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+        assert panel.turn_count() == 1
+
+        window.sidebar.search_options.ai_summary.setChecked(False)  # 끄기
+        window.sidebar.search_options.ai_summary.setChecked(True)  # 다시 켜기
+
+        reopened_panel = window._chat_panel
+        assert reopened_panel is panel  # 같은 인스턴스를 재사용해야 한다
+        assert reopened_panel.turn_count() == 1
+        assert reopened_panel.bubble_for(1) is bubble
+
     def test_summary_failure_reaches_the_bubble(self, window, qtbot):
         """실패가 화면에 도달하는지 — 신호만 나가고 끝나면 사용자는 멈춘 줄 안다."""
         class _Failing:

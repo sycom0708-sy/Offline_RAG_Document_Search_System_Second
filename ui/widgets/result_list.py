@@ -62,13 +62,21 @@ class ResultList(QScrollArea):
         그 사이엔 같은 objectName의 이전 위젯이 `findChild` 등으로 여전히
         붙잡힌다(실측 확인). `setParent(None)`으로 자식 트리에서 즉시
         떼어낸 뒤 파괴를 예약한다.
+
+        🔴 **챗봇 패널(`objectName == "ChatPanel"`)은 예외다** — 파괴하지
+        않고 부모에서만 떼어낸다(T10.16, 사용자 요청). `MainWindow`가
+        `_chat_panel_cache`로 인스턴스를 계속 들고 있다가 챗봇을 다시 켜면
+        같은 패널을 재사용해 이전 대화가 남아 있게 하는데, 여기서
+        `deleteLater()`를 부르면 그 인스턴스가 곧 죽어버려 재사용이
+        불가능해진다.
         """
         while self._layout.count() > 1:  # 마지막 stretch는 남긴다
             item = self._layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
-                widget.deleteLater()
+                if widget.objectName() != "ChatPanel":
+                    widget.deleteLater()
         self._more_button = None
 
     def _show_message(self, text: str) -> None:
