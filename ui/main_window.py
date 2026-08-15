@@ -314,6 +314,18 @@ class MainWindow(QMainWindow):
             self._deactivate_chat_mode()
 
     def _activate_chat_mode(self) -> None:
+        """검색 모드와 챗봇 모드는 질문·결과를 완전히 분리해서 관리한다
+        (T10.15, 사용자 요청, 2026-08-15) — 챗봇을 켜도 직전 검색어를 첫
+        메시지로 자동 전송하지 않고 빈 챗창으로 시작한다. `_last_query`/
+        `_last_results`는 검색 모드 전용 상태로만 남겨, 챗봇으로 갔다가
+        검색으로 돌아와도(`_deactivate_chat_mode`) 챗봇에서 한 것과
+        무관하게 직전 검색 결과가 그대로 보인다.
+
+        🔴 예전엔 반대로 "패널이 빈 채로 뜨면 토글이 안 먹는 것처럼
+        보인다"는 이유로 자동 전송했었다(Phase 7.7) — 그런데 그 결과가
+        정확히 이번에 문제가 된 증상이었다: 챗봇 미사용으로 검색한 뒤
+        챗봇을 켜면 그 검색 결과가 그대로 튀어나왔다.
+        """
         panel = ChatPanel()
         panel.message_sent.connect(self._on_chat_message_sent)
         panel.summarize_requested.connect(self._on_chat_summarize_requested)
@@ -321,12 +333,6 @@ class MainWindow(QMainWindow):
         self._chat_panel = panel
         self.result_list.show_chat_mode(panel)
         self._sync_result_header()  # 챗봇 모드는 헤더가 없다(DESIGN §5.8)
-
-        # 검색어가 이미 있으면(직전에 검색 결과 모드에서 입력해 둔 상태)
-        # 그대로 첫 메시지로 자동 전송한다 — 패널이 빈 채로 뜨면 토글이
-        # 안 먹는 것처럼 보인다.
-        if self._last_query:
-            panel.send_message(self._last_query)
 
     def _deactivate_chat_mode(self) -> None:
         self._chat_panel = None

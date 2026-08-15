@@ -833,15 +833,19 @@ class TestAiChatWiring:
         assert window._chat_panel is not None
         assert window.result_list.card_count() == 0
 
-    def test_toggle_on_auto_sends_last_query_as_first_message(self, window, qtbot):
+    def test_toggle_on_starts_with_an_empty_chat(self, window, qtbot):
+        """T10.15(2026-08-15, 사용자 보고): 검색 모드와 챗봇 모드는 질문·
+        결과를 완전히 분리해서 관리해야 한다. 예전엔 반대로 직전 검색어를
+        챗봇 첫 메시지로 자동 전송했는데, 그게 정확히 사용자가 보고한
+        증상이었다 — "챗봇 미사용으로 검색 후 챗봇 켜면 그 검색 결과가
+        그대로 나온다"."""
         self._stub_service(window)
         window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         panel = self._turn_on_chat(window)
 
-        assert panel.turn_count() == 1
-        qtbot.waitUntil(lambda: bool(panel.bubble_for(1).results), timeout=SEARCH_TIMEOUT_MS)
+        assert panel.turn_count() == 0
 
     def test_message_shows_excerpt_without_calling_the_llm(self, window, qtbot):
         """1단계는 검색만 한다 — sLM은 아직 호출되면 안 된다."""
