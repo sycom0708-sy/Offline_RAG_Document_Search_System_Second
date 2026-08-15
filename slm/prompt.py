@@ -56,18 +56,19 @@ RAM | 8GB | 16GB
 [질문] 대한민국의 수도는 어디인가요?
 [답변] {ABSTAIN_TEXT}"""
 
-USER_TEMPLATE = """[발췌]
-{excerpts}
-
-[질문]
-{question}"""
-
 NO_EXCERPT_TEXT = "(검색된 발췌 없음)"
 
 # 발췌 1건이 지나치게 길면 뒤쪽 발췌가 컨텍스트에서 밀려난다. 청크 자체가
 # 토큰 기준(Phase 3에서 문자 수 → 토큰 수로 바꿨다)으로 잘려 있어 보통은
 # 걸리지 않지만, 표 청크는 셀이 많으면 길어질 수 있다.
 DEFAULT_MAX_CHARS_PER_EXCERPT = 1200
+
+# 대화 이력(T10.17)은 발췌보다 훨씬 짧게 잡는다 — n_ctx가 4096(slm/service.py)
+# 뿐이라 발췌 5건(최대 6000자)에 이력까지 욱여넣으면 정작 이번 턴의 근거가
+# 밀려날 수 있다. 최근 몇 턴만, 답변도 짧게 잘라 "무슨 얘기를 하던 중인지"
+# 정도의 맥락만 준다.
+DEFAULT_MAX_HISTORY_TURNS = 3
+DEFAULT_MAX_CHARS_PER_HISTORY_ANSWER = 300
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -87,6 +88,18 @@ class Excerpt:
             location=format_location(result),
             text=result.content,
         )
+
+
+@dataclass(frozen=True)
+class HistoryTurn:
+    """대화 이력 1턴 — 이전에 실제로 생성된 AI 답변만 담는다(T10.17).
+
+    기권·근거없음·실패 턴은 넣지 않는다. 담을 만한 내용이 없고("문서에서
+    찾을 수 없습니다"), 다음 답변에 참고할 정보가 아니라 노이즈만 된다.
+    """
+
+    question: str
+    answer: str
 
 
 def to_excerpts(results) -> list[Excerpt]:
@@ -124,11 +137,39 @@ def format_excerpts(
     return "\n\n".join(blocks)
 
 
+def format_history(
+    history: list[HistoryTurn],
+    *,
+    max_turns: int = DEFAULT_MAX_HISTORY_TURNS,
+    max_chars_per_answer: int = DEFAULT_MAX_CHARS_PER_HISTORY_ANSWER,
+) -> str:
+    """대화 이력 블록을 만든다. 이력이 없으면 빈 문자열(블록 자체를 생략).
+
+    **근거가 아니라 맥락이라는 것을 문장으로 명시한다** — 안 그러면 모델이
+    이전 답변을 이번 답의 근거로 착각해 `[발췌]`에 없는 내용을 마치 근거가
+    있는 것처럼 이어 말할 수 있다(TECH 5.3의 "근거 강제" 취지와 충돌).
+    """
+    if not history:
+        return ""
+    recent = history[-max_turns:]
+    blocks = [
+        f"Q: {turn.question.strip()}\nA: {_truncate(turn.answer, max_chars_per_answer)}"
+        for turn in recent
+    ]
+    return (
+        "[이전 대화 — 맥락 참고용입니다. 이번 답변의 근거로 사용하지 마십시오]\n"
+        + "\n\n".join(blocks)
+    )
+
+
 def build_messages(
     question: str,
     excerpts: list[Excerpt],
     *,
+    history: list[HistoryTurn] = (),
     max_chars_per_excerpt: int = DEFAULT_MAX_CHARS_PER_EXCERPT,
+    max_history_turns: int = DEFAULT_MAX_HISTORY_TURNS,
+    max_chars_per_history_answer: int = DEFAULT_MAX_CHARS_PER_HISTORY_ANSWER,
     use_system_role: bool = False,
 ) -> list[dict]:
     """`LlamaClient.chat()`에 그대로 넘길 messages를 만든다.
@@ -142,11 +183,20 @@ def build_messages(
 
     후보마다 템플릿이 다르므로 **전달을 보장하는 쪽**으로 통일한다. 비교용으로
     system 역할을 쓰고 싶으면 `use_system_role=True`.
+
+    `history`(T10.17, 기본 빈 리스트)가 없으면 이전과 **완전히 동일한 문자열**을
+    만든다 — Phase 6/7이 실측한 기권정확도·응답정확도 수치가 이 경로(이력 없음)
+    기준이라, 히스토리 기능 자체를 안 쓰는 호출(회귀 측정 하네스 포함)의 결과가
+    조용히 달라지면 안 된다.
     """
-    body = USER_TEMPLATE.format(
-        excerpts=format_excerpts(excerpts, max_chars_per_excerpt=max_chars_per_excerpt),
-        question=question.strip(),
+    history_block = format_history(
+        list(history), max_turns=max_history_turns, max_chars_per_answer=max_chars_per_history_answer
     )
+    parts = [f"[발췌]\n{format_excerpts(excerpts, max_chars_per_excerpt=max_chars_per_excerpt)}"]
+    if history_block:
+        parts.append(history_block)
+    parts.append(f"[질문]\n{question.strip()}")
+    body = "\n\n".join(parts)
     if use_system_role:
         return [
             {"role": "system", "content": SYSTEM_PROMPT},

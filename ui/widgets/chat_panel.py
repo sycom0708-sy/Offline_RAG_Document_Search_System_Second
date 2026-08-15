@@ -16,8 +16,17 @@ MainWindow가 하고, 이 패널은 신호로 요청하고 결과를 받아 그�
 (sqlite·sLM 서비스에 직접 접근하지 않는다 — SearchWorker/SummaryWorker가
 이미 그 경계를 지키는 것과 같은 이유).
 
-메시지마다 독립 처리(stateless)다 — 매번 검색어 전체 범위로 새로 검색한다.
-"두 번째는요?" 같은 대명사 참조는 지원하지 않는다.
+**검색(1단계)은 메시지마다 독립 처리(stateless)다** — 매번 검색어 전체
+범위로 새로 검색한다. "두 번째는요?" 같은 대명사 참조로 검색어 자체가
+빈약해지는 경우까지는 보정하지 않는다.
+
+**생성(2단계, AI 요약)은 T10.17부터 이전 대화를 참고한다** — `history_before()`
+가 이전 턴 중 실제로 답이 나온(`SummaryStatus.OK`) 것만 모아 프롬프트에
+맥락으로 얹는다(근거로는 안 쓴다, `slm/prompt.py`). 검색을 다시 하지 않는
+2단 응답 구조 자체는 그대로다 — LLM 호출 지점(사용자가 "AI 요약 보기"를
+누른 순간)에서만 문맥을 추가했다. 이렇게 해야 latency가 생명인 1단계
+(7~14ms)를 건드리지 않는다(Phase 7.6이 이미 두 번 반려한 "검색에 LLM을
+끼워 넣는" 설계를 반복하지 않기 위해서다).
 
 Phase 7.7부터 이 패널은 자체 입력창을 갖지 않는다 — 목업(`rag_ui_concept_
 chatbot.html`)이 검색 결과 모드와 챗봇 모드에서 입력 지점을 하나로 통일해,
@@ -44,7 +53,8 @@ from PySide6.QtWidgets import (
 )
 
 from search.hybrid_search import HybridResult
-from slm.summarize import Summary
+from slm.prompt import HistoryTurn
+from slm.summarize import Summary, SummaryStatus
 from ui.widgets.card_dispatch import make_result_card
 from ui.widgets.summary_card import SummaryCard
 
@@ -82,6 +92,10 @@ class _AnswerBubble(QFrame):
         super().__init__(parent)
         self.setObjectName("ChatAnswerBubble")
         self.results: list[HybridResult] = []
+        # T10.17: 이 턴의 질문·완성된 답변 — ChatPanel.history_before()가
+        # 다음 턴 프롬프트의 대화 이력을 만들 때 읽어간다.
+        self.question: str = ""
+        self.summary: Summary | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
@@ -213,6 +227,7 @@ class _AnswerBubble(QFrame):
         self._summary_card.show_generating()
 
     def show_summary(self, summary: Summary) -> None:
+        self.summary = summary
         self._summary_card.setVisible(True)
         self._summarize_button.setEnabled(True)
         self._summary_card.show_summary(summary)
@@ -331,6 +346,20 @@ class ChatPanel(QWidget):
         """테스트·검증용."""
         return self._bubbles.get(request_id)
 
+    def history_before(self, request_id: int) -> list[HistoryTurn]:
+        """`request_id`보다 앞선 턴들의 (질문, 답변)을 대화 이력으로 반환한다
+        (T10.17). 성공적으로 답이 나온(`SummaryStatus.OK`) 턴만 담는다 —
+        기권·근거없음·실패 턴은 다음 답변에 참고할 내용이 없다. `_bubbles`는
+        `request_id`가 메시지 순서 그대로 증가하므로 정렬만 하면 된다."""
+        turns = []
+        for rid in sorted(self._bubbles):
+            if rid >= request_id:
+                break
+            bubble = self._bubbles[rid]
+            if bubble.summary is not None and bubble.summary.status is SummaryStatus.OK:
+                turns.append(HistoryTurn(question=bubble.question, answer=bubble.summary.text))
+        return turns
+
     # --- 내부 -----------------------------------------------------------
 
     def _send(self, text: str) -> None:
@@ -343,6 +372,7 @@ class ChatPanel(QWidget):
         self._add_row(user_label, align_right=True)
 
         bubble = _AnswerBubble()
+        bubble.question = text
         bubble.show_searching()
         bubble.summarize_requested.connect(
             lambda rid=request_id, b=bubble: self.summarize_requested.emit(rid, b.results)

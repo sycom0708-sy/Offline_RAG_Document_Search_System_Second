@@ -400,12 +400,17 @@ class MainWindow(QMainWindow):
 
     def _on_chat_summarize_requested(self, request_id: int, results: list) -> None:
         """② AI 요약 — 그 턴이 ①에서 이미 받은 `results`를 그대로 넘긴다
-        (검색을 다시 하지 않는다). `SummaryWorker`도 무수정."""
+        (검색을 다시 하지 않는다).
+
+        T10.17: 이전 턴들의 (질문, 답변)을 `ChatPanel.history_before()`에서
+        가져와 함께 넘긴다 — 검색(①)은 여전히 이번 메시지만 보는 stateless
+        상태고, 대화가 이어지는 건 이 생성 단계(②)에서만이다."""
         if self._chat_panel is not None:
             self._chat_panel.show_summary_generating(request_id)
 
         question = self._chat_questions.get(request_id, "")
-        worker = SummaryWorker(question, results, self._slm_service, request_id)
+        history = self._chat_panel.history_before(request_id) if self._chat_panel is not None else []
+        worker = SummaryWorker(question, results, self._slm_service, request_id, history=history)
         worker.started_loading.connect(self._on_chat_summary_loading)
         worker.succeeded.connect(self._on_chat_summary_succeeded)
         worker.failed.connect(self._on_chat_summary_failed)

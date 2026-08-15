@@ -893,6 +893,51 @@ class TestAiChatWiring:
         reloaded = AppState.load(path=window.state._path)
         assert reloaded.ai_chat_enabled is True
 
+    def test_second_turn_summary_prompt_includes_first_turns_answer(self, window, qtbot):
+        """T10.17(2026-08-15, 사용자 요청): 검색(①)은 여전히 매 턴 독립이지만,
+        AI 요약 생성(②)은 이전 턴의 질문·답변을 프롬프트에 맥락으로 실어야
+        한다 — MainWindow가 ChatPanel.history_before()를 SummaryWorker에
+        실제로 연결하는지 검증."""
+        from slm.client import Completion
+
+        class _RecordingStub:
+            def __init__(self):
+                self.calls: list[list[dict]] = []
+
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, messages, **_kwargs):
+                self.calls.append(messages)
+                return Completion(text="계약서 기준 조항입니다. [1]", elapsed_sec=0.1, completion_tokens=5)
+
+            def shutdown(self):
+                pass
+
+        stub = _RecordingStub()
+        window._slm_service = stub
+        window._ai_summary_available = True
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble1 = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble1.results), timeout=SEARCH_TIMEOUT_MS)
+        bubble1._summarize_button.click()
+        qtbot.waitUntil(lambda: bubble1.summary is not None, timeout=SEARCH_TIMEOUT_MS)
+
+        panel.send_message("계약 갱신")  # indexed_db 픽스처의 발표자료.pptx에 매칭되는 실제 검색어
+        bubble2 = panel.bubble_for(2)
+        qtbot.waitUntil(lambda: bool(bubble2.results), timeout=SEARCH_TIMEOUT_MS)
+        bubble2._summarize_button.click()
+
+        qtbot.waitUntil(lambda: len(stub.calls) >= 2, timeout=SEARCH_TIMEOUT_MS)
+        second_call_body = "\n".join(m["content"] for m in stub.calls[1])
+        assert "계약서 검토 기준" in second_call_body  # 이전 턴의 질문
+        assert "계약서 기준 조항입니다" in second_call_body  # 이전 턴의 답변(스텁 기본 텍스트)
+
     def test_turning_chat_off_and_on_keeps_previous_conversation(self, window, qtbot):
         """T10.16(2026-08-15, 사용자 요청): 껐다 켜도 이전 대화가 남아 있어야
         한다 — 매번 새 ChatPanel을 만들던 것을 인스턴스를 계속 들고 있다가

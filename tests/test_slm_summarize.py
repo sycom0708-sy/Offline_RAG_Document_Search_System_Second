@@ -133,6 +133,35 @@ class TestGate2Prompt:
         assert "서버 죽음" in summary.error
 
 
+# --- 대화 이력 (T10.17) -----------------------------------------------------
+
+
+class TestConversationHistory:
+    def test_history_is_forwarded_into_the_prompt(self):
+        from slm.prompt import HistoryTurn
+
+        service = _FakeService(text="새 답변입니다. [1]")
+        history = [HistoryTurn(question="이전 질문", answer="이전 답변 [1]")]
+
+        summarize("이번 질문", [_hybrid(0.8)], service, history=history)
+
+        (messages,) = service.calls
+        body = "\n".join(m["content"] for m in messages)
+        assert "이전 질문" in body
+        assert "이전 답변 [1]" in body
+
+    def test_default_history_does_not_change_the_prompt(self):
+        """기존(이력 미사용) 호출부와 완전히 같은 프롬프트가 나가야 한다 —
+        Phase 6/7 실측치가 이 경로 기준이다."""
+        with_history_default = _FakeService(text="답 [1]")
+        without_history_arg = _FakeService(text="답 [1]")
+
+        summarize("질문", [_hybrid(0.8)], with_history_default)
+        summarize("질문", [_hybrid(0.8)], without_history_arg, history=[])
+
+        assert with_history_default.calls == without_history_arg.calls
+
+
 # --- 3단계: 출처 표기 -----------------------------------------------------
 
 

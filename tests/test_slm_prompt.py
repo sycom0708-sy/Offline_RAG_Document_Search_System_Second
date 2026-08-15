@@ -13,10 +13,12 @@ from slm.prompt import (
     ABSTAIN_TEXT,
     NO_EXCERPT_TEXT,
     Excerpt,
+    HistoryTurn,
     build_messages,
     clean_answer,
     contains_keywords,
     format_excerpts,
+    format_history,
     is_abstention,
     to_excerpts,
 )
@@ -107,6 +109,57 @@ def test_build_messages_can_still_use_system_role():
 def test_build_messages_without_excerpts_still_forbids_guessing():
     messages = build_messages("있지도 않은 질문", [])
     assert NO_EXCERPT_TEXT in messages[0]["content"]
+
+
+# --- 대화 이력 (T10.17) -----------------------------------------------------
+
+def test_build_messages_without_history_is_byte_identical():
+    """기본값(history=())은 Phase 6/7이 실측한 경로와 완전히 같은 문자열을
+    만들어야 한다 — 그 실측치가 이 경로 기준이라 조용히 달라지면 안 된다."""
+    excerpts = to_excerpts([make_result()])
+    with_default = build_messages("연차는 어떻게 산정하나요?", excerpts)
+    with_empty_history = build_messages("연차는 어떻게 산정하나요?", excerpts, history=[])
+    assert with_default == with_empty_history
+
+
+def test_format_history_empty_returns_empty_string():
+    assert format_history([]) == ""
+
+
+def test_format_history_includes_question_and_answer():
+    history = [HistoryTurn(question="연차는 며칠인가요?", answer="15일입니다. [1]")]
+    text = format_history(history)
+    assert "연차는 며칠인가요?" in text
+    assert "15일입니다. [1]" in text
+    assert "근거로 사용하지 마십시오" in text  # 근거 아님을 명시해야 한다
+
+
+def test_format_history_keeps_only_recent_n_turns():
+    history = [HistoryTurn(question=f"질문{i}", answer=f"답변{i}") for i in range(5)]
+    text = format_history(history, max_turns=2)
+    assert "질문0" not in text
+    assert "질문3" in text
+    assert "질문4" in text
+
+
+def test_format_history_truncates_long_answers():
+    history = [HistoryTurn(question="질문", answer="가" * 500)]
+    text = format_history(history, max_chars_per_answer=50)
+    assert "가" * 500 not in text
+    assert "…(생략)" in text
+
+
+def test_build_messages_with_history_includes_previous_turn_and_current_question():
+    excerpts = to_excerpts([make_result()])
+    history = [HistoryTurn(question="이전 질문", answer="이전 답변 [1]")]
+    messages = build_messages("이번 질문", excerpts, history=history)
+    content = messages[0]["content"]
+
+    assert "이전 질문" in content
+    assert "이전 답변 [1]" in content
+    assert "이번 질문" in content
+    # 이번 질문이 이력보다 뒤(가장 마지막)에 와야 모델이 "지금 답할 질문"으로 인식한다.
+    assert content.index("이전 질문") < content.index("이번 질문")
 
 
 @pytest.mark.parametrize("raw,expected", [

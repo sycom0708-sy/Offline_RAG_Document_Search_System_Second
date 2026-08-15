@@ -21,6 +21,7 @@ from enum import Enum
 from config.settings import SIMILARITY_THRESHOLD
 from slm.prompt import (
     Excerpt,
+    HistoryTurn,
     build_messages,
     clean_answer,
     expand_citations,
@@ -99,21 +100,29 @@ def summarize(
     *,
     threshold: float = SIMILARITY_THRESHOLD,
     max_excerpts: int = DEFAULT_MAX_EXCERPTS,
+    history: list[HistoryTurn] = (),
 ) -> Summary:
-    """검색 결과를 근거로 질문에 답한다. 4단계 안전장치를 모두 통과시킨다."""
+    """검색 결과를 근거로 질문에 답한다. 4단계 안전장치를 모두 통과시킨다.
+
+    `history`(T10.17, 기본 빈 리스트)는 같은 챗봇 대화의 이전 턴이다 — 근거로
+    쓰이지 않고(1단계는 그대로 이번 턴의 `results`만 본다) `build_messages()`가
+    맥락으로만 프롬프트에 얹는다.
+    """
     excerpts = select_excerpts(results, threshold=threshold, max_excerpts=max_excerpts)
 
     # --- 1단계: 근거가 없으면 모델을 부르지 않는다 ---
     if not excerpts:
         return Summary(status=SummaryStatus.NO_EVIDENCE, text=NO_EVIDENCE_TEXT)
 
-    return summarize_excerpts(question, excerpts, service)
+    return summarize_excerpts(question, excerpts, service, history=history)
 
 
 def summarize_excerpts(
     question: str,
     excerpts: list[Excerpt],
     service: SlmService,
+    *,
+    history: list[HistoryTurn] = (),
 ) -> Summary:
     """이미 확정된 발췌로 2~4단계만 돈다.
 
@@ -123,7 +132,7 @@ def summarize_excerpts(
     코드**를 지나야 측정이 의미가 있다.
     """
     # --- 2단계: 근거 강제 프롬프트 + temperature 0 (service.chat이 고정) ---
-    messages = build_messages(question, excerpts)
+    messages = build_messages(question, excerpts, history=history)
     try:
         completion = service.chat(messages)
     except SlmNotInstalledError as exc:

@@ -301,6 +301,56 @@ class TestChatPanel:
         panel.show_summary(1, Summary(status=SummaryStatus.OK, text="답변입니다."))
         assert "답변입니다" in bubble.summary_text()
 
+    # --- 대화 이력 (T10.17) ---------------------------------------------
+
+    def test_history_before_is_empty_for_the_first_turn(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+
+        assert panel.history_before(1) == []
+
+    def test_history_before_includes_earlier_completed_turns(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("첫 질문")
+        panel.show_excerpt(1, [_hybrid()])
+        panel.show_summary(1, Summary(status=SummaryStatus.OK, text="첫 답변 [1]"))
+
+        panel.send_message("둘째 질문")
+
+        history = panel.history_before(2)
+        assert len(history) == 1
+        assert history[0].question == "첫 질문"
+        assert history[0].answer == "첫 답변 [1]"
+
+    def test_history_before_excludes_turns_without_a_completed_answer(self, qtbot):
+        """AI 요약을 아직 안 눌렀거나(대기 중), 기권/근거없음/실패로 끝난
+        턴은 다음 프롬프트에 실을 만한 내용이 없다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+
+        panel.send_message("발췌만 있는 질문")
+        panel.show_excerpt(1, [_hybrid()])  # 요약 버튼을 안 눌렀다
+
+        panel.send_message("기권한 질문")
+        panel.show_excerpt(2, [_hybrid()])
+        panel.show_summary(2, Summary(status=SummaryStatus.ABSTAINED, text="문서에서 찾을 수 없습니다."))
+
+        panel.send_message("셋째 질문")
+
+        assert panel.history_before(3) == []
+
+    def test_history_before_excludes_turns_at_or_after_the_given_id(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("첫 질문")
+        panel.show_excerpt(1, [_hybrid()])
+        panel.show_summary(1, Summary(status=SummaryStatus.OK, text="첫 답변"))
+
+        # 자기 자신(1번 턴)을 기준으로 물으면 자기 자신은 포함되면 안 된다.
+        assert panel.history_before(1) == []
+
     def test_show_summary_error_reaches_the_bubble(self, qtbot):
         panel = ChatPanel()
         qtbot.addWidget(panel)

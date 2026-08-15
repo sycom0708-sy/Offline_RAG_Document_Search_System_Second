@@ -32,19 +32,25 @@ class SummaryWorker(QThread):
         service,
         request_id: int,
         parent=None,
+        history: list | None = None,
     ) -> None:
         super().__init__(parent)
         self._question = question
         self._results = results
         self._service = service
         self._request_id = request_id
+        # T10.17: 같은 챗봇 대화의 이전 턴(HistoryTurn 목록) — 검색 카드 단위
+        # 요약(T10.14)은 대화가 아니라서 항상 빈 리스트로 넘어온다.
+        self._history = history or []
 
     def run(self) -> None:
         try:
             # 서버가 아직 안 떠 있으면 이번 요청은 기동 시간을 물게 된다.
             if not self._service.is_running():
                 self.started_loading.emit(self._request_id)
-            summary: Summary = summarize(self._question, self._results, self._service)
+            summary: Summary = summarize(
+                self._question, self._results, self._service, history=self._history
+            )
         except Exception as exc:  # noqa: BLE001 — 워커 예외를 신호로 안전하게 전달
             self.failed.emit(self._request_id, str(exc))
             return
