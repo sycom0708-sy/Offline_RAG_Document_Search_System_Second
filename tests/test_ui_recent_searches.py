@@ -1,8 +1,10 @@
 """사이드바 "최근 검색" 위젯 테스트 (Phase 7.7 재작업, 2026-08-13).
 
-PC 성능 선택 바로 아래에서 시작해 아래로 자라고, 공간이 부족하면 위쪽
-(오래된 항목)부터 빠지는 동작을 검증한다 — `AppState.recent_searches`는
-최신이 맨 앞이지만, 화면은 오래된 항목이 위·최신이 아래로 뒤집혀 보인다.
+PC 성능 선택 바로 아래에서 시작해 아래로 자라고, 공간이 부족하면 아래쪽
+(오래된 항목)부터 빠지는 동작을 검증한다 — `AppState.recent_searches`와
+같은 순서(최신이 맨 위)로 그대로 보여준다(T10.22, 2026-08-15 사용자 요청).
+그 전에는 뒤집어서 최신을 맨 아래에 뒀는데, 방금 쓴 검색어를 목록 아래에서
+찾아야 해서 불편하다는 지적이 있었다.
 """
 
 from __future__ import annotations
@@ -32,7 +34,8 @@ class TestRecentSearchesGrowthAndEviction:
 
         assert widget._list_layout.count() == 5  # fallback = 5, 저장도 5건뿐
 
-    def test_items_render_oldest_at_top_newest_at_bottom(self, qtbot):
+    def test_items_render_newest_at_top(self, qtbot):
+        """T10.22: 마지막 검색이 맨 위여야 한다(사용자 요청)."""
         widget = RecentSearches()
         qtbot.addWidget(widget)
         widget.set_max_height(10_000)  # 넉넉한 공간 — 5건 모두 표시
@@ -40,9 +43,9 @@ class TestRecentSearchesGrowthAndEviction:
         widget.set_items(_NEWEST_FIRST)
 
         texts = [widget._list_layout.itemAt(i).widget().toolTip() for i in range(widget._list_layout.count())]
-        assert texts == ["n5", "n4", "n3", "n2", "n1"]  # 오래된(n5) 위 → 최신(n1) 아래
+        assert texts == ["n1", "n2", "n3", "n4", "n5"]  # 최신(n1) 위 → 오래된(n5) 아래
 
-    def test_limited_height_keeps_only_the_newest_and_evicts_from_top(self, qtbot):
+    def test_limited_height_keeps_only_the_newest_and_evicts_from_bottom(self, qtbot):
         """공간이 2줄만 허용하면 최신 2건(n1, n2)만 남고 나머지(오래된 것부터)는 빠진다."""
         widget = RecentSearches()
         qtbot.addWidget(widget)
@@ -53,7 +56,7 @@ class TestRecentSearchesGrowthAndEviction:
         widget.set_items(_NEWEST_FIRST)
 
         texts = [widget._list_layout.itemAt(i).widget().toolTip() for i in range(widget._list_layout.count())]
-        assert texts == ["n2", "n1"]  # n3~n5(오래된 항목)는 빠지고 최신 2건만 남는다
+        assert texts == ["n1", "n2"]  # n3~n5(오래된 항목)는 빠지고 최신 2건만 남는다
 
     def test_zero_or_negative_max_height_shows_nothing(self, qtbot):
         widget = RecentSearches()
@@ -65,18 +68,17 @@ class TestRecentSearchesGrowthAndEviction:
         assert widget._list_layout.count() == 0
         assert widget.isVisible() is False
 
-    def test_adding_a_newer_search_appends_at_the_bottom(self, qtbot):
-        """새 검색이 추가되면(=newest-first 목록 맨 앞에 삽입) 화면에서는
-        맨 아래에 나타나야 한다 — "위에서 아래로 늘어난다"는 요구."""
+    def test_adding_a_newer_search_appears_at_the_top(self, qtbot):
+        """T10.22: 새 검색이 추가되면 화면 맨 위에 나타나야 한다."""
         widget = RecentSearches()
         qtbot.addWidget(widget)
         widget.set_max_height(10_000)
-        widget.set_items(["b", "a"])  # a가 최신
+        widget.set_items(["b", "a"])  # b가 최신
 
         widget.set_items(["c", "b", "a"])  # c를 새로 추가(newest-first 맨 앞)
 
         texts = [widget._list_layout.itemAt(i).widget().toolTip() for i in range(widget._list_layout.count())]
-        assert texts[-1] == "c"  # 새로 추가된 항목이 맨 아래
+        assert texts[0] == "c"  # 새로 추가된 항목이 맨 위
 
     def test_click_emits_full_query_even_when_elided(self, qtbot):
         widget = RecentSearches()

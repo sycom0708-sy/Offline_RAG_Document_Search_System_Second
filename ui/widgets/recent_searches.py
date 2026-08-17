@@ -87,10 +87,12 @@ class RecentSearches(QWidget):
                 widget.deleteLater()
 
         count = min(self._visible_count(), len(self._all_items))
-        # 오래된 → 최신 순으로 뒤집은 뒤 뒤쪽(최신) count건만 남긴다 —
-        # 공간이 부족해지면 위쪽(오래된 항목)부터 빠지고, 새 검색은 아래에
-        # 쌓인다.
-        visible = list(reversed(self._all_items))[-count:] if count else []
+        # 최신이 맨 위다(T10.22, 사용자 요청) — `_all_items`가 이미 최신순
+        # (`AppState.add_recent_search()`가 맨 앞에 넣는다)이라 앞에서부터
+        # count건을 그대로 쓴다. 공간이 부족해지면 아래쪽(오래된 항목)부터
+        # 빠진다. 예전에는 뒤집어서 최신을 아래에 쌓았는데, 새로 검색할
+        # 때마다 방금 쓴 검색어를 목록 아래에서 찾아야 했다.
+        visible = self._all_items[:count] if count else []
 
         self.setVisible(bool(visible))
         for query in visible:

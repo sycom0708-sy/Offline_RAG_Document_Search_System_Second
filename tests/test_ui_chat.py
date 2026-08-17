@@ -75,6 +75,42 @@ class TestSummaryCard:
         card.show_generating()
         assert card.body_text() == GENERATING_MESSAGE
 
+    # --- 진행 중 깜박임 (T10.22) -----------------------------------------
+
+    def test_pulses_while_preparing_the_model(self, qtbot):
+        """수십 초 걸리는 작업이라 "지금 동작 중"이 눈에 보여야 한다."""
+        card = SummaryCard()
+        qtbot.addWidget(card)
+        card.show_starting()
+        assert card.is_pulsing() is True
+
+    def test_pulses_while_generating(self, qtbot):
+        card = SummaryCard()
+        qtbot.addWidget(card)
+        card.show_generating()
+        assert card.is_pulsing() is True
+
+    def test_stops_pulsing_once_the_summary_arrives(self, qtbot):
+        """결과가 나온 뒤에도 깜박이면 아직 진행 중인 것처럼 읽힌다."""
+        card = SummaryCard()
+        qtbot.addWidget(card)
+        card.show_generating()
+
+        card.show_summary(Summary(status=SummaryStatus.OK, text="답변입니다."))
+
+        assert card.is_pulsing() is False
+        # 멈춘 자리의 불투명도가 남아 결과 문구가 흐리게 굳으면 안 된다.
+        assert card._pulse_effect.opacity() == 1.0
+
+    def test_stops_pulsing_on_error(self, qtbot):
+        card = SummaryCard()
+        qtbot.addWidget(card)
+        card.show_generating()
+
+        card.show_error("서버 기동 실패")
+
+        assert card.is_pulsing() is False
+
     def test_ok_summary_shows_text_without_badge(self, qtbot):
         card = SummaryCard()
         qtbot.addWidget(card)
