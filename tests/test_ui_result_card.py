@@ -106,6 +106,23 @@ class TestResultCard:
         body = card.findChild(QLabel, "ResultCardBody")
         assert "background-color:#FDE68A" in body.text()
 
+    def test_body_and_header_text_is_selectable(self, qtbot):
+        """T10.20(사용자 보고): 카드 텍스트가 드래그·복사(Ctrl+C)가 안 됐다 —
+        본문·파일명·위치 라벨에 TextSelectableByMouse가 빠져 있었다."""
+        from PySide6.QtCore import Qt
+
+        card = ResultCard(_hybrid(), "계약서")
+        qtbot.addWidget(card)
+
+        body = card.findChild(QLabel, "ResultCardBody")
+        name = card.findChild(QLabel, "ResultCardFileName")
+        location = card.findChild(QLabel, "ResultCardLocation")
+
+        for label in (body, name, location):
+            assert bool(
+                label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+
     def test_open_button_always_present(self, qtbot):
         """DESIGN §8 확정 3·4: 원문 열기는 카드 유형·관련성과 무관하게 항상 있어야 한다."""
         normal_card = ResultCard(_hybrid(low=False), "계약서")

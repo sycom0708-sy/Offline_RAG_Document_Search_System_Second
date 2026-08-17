@@ -117,6 +117,7 @@ def build_card_header(
 
     name_label = QLabel(hybrid_result.file_name)
     name_label.setObjectName("ResultCardFileName")
+    name_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     header.addWidget(name_label)
 
     sep = QLabel("·")
@@ -125,6 +126,7 @@ def build_card_header(
 
     location_label = QLabel(format_location(hybrid_result.result))
     location_label.setObjectName("ResultCardLocation")
+    location_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     header.addWidget(location_label)
 
     header.addStretch()

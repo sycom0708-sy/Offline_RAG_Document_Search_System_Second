@@ -51,6 +51,7 @@ class ResultCard(QFrame):
         body_label.setObjectName("ResultCardBody")
         body_label.setWordWrap(True)
         body_label.setTextFormat(Qt.TextFormat.RichText)
+        body_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body_label.setText(
             highlighted_excerpt(hybrid_result.content, query, case_sensitive, exact_word)
         )
