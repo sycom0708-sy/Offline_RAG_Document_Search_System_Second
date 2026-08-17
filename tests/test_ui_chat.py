@@ -425,6 +425,86 @@ class TestChatPanel:
         assert "리눅스" in body2.text()
 
 
+class TestChatScrollBehavior:
+    """T10.19(2026-08-15, 사용자 보고): 검색 결과 도착·AI 요약 진행 단계
+    전환이 말풍선 높이를 바꾸는데, 그때마다 다시 스크롤하지 않으면 그
+    사이에 늘어난 높이만큼 화면이 이전 위치에 멈춰 있는 것처럼 보인다.
+    작은 뷰포트로 실제 스크롤 가능한 상태를 만들어 확인한다."""
+
+    @staticmethod
+    def _shrink_viewport(panel, qtbot):
+        panel.show()
+        panel.resize(400, 150)  # 카드 몇 개만 넣어도 스크롤이 생기는 작은 높이
+        qtbot.wait(50)
+
+    @staticmethod
+    def _is_scrolled_to_bottom(panel) -> bool:
+        bar = panel._scroll.verticalScrollBar()
+        return bar.maximum() > 0 and bar.value() == bar.maximum()
+
+    def _wait_for_overflow(self, panel, qtbot) -> None:
+        """스크롤이 실제로 생길 만큼 레이아웃이 자리 잡을 때까지 기다린다
+        (Phase 4·5·7의 "화면 부착 전/후" 함정과 같은 종류 — 리사이즈 직후엔
+        `verticalScrollBar().maximum()`이 아직 0이다)."""
+        bar = panel._scroll.verticalScrollBar()
+        qtbot.waitUntil(lambda: bar.maximum() > 0, timeout=2000)
+
+    def test_show_excerpt_scrolls_to_bottom(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        self._shrink_viewport(panel, qtbot)
+
+        panel.send_message("계약서")
+        panel.show_excerpt(1, [_hybrid() for _ in range(5)])  # 카드 여러 개 → 말풍선이 커진다
+        self._wait_for_overflow(panel, qtbot)
+
+        # 검색 중 상태에서 스크롤을 위로 올려 "사용자가 다른 곳을 보고 있던" 상태를 흉내낸다.
+        panel._scroll.verticalScrollBar().setValue(0)
+        panel.show_excerpt(1, [_hybrid() for _ in range(6)])  # 카드가 하나 더 늘어 다시 커진다
+        qtbot.waitUntil(lambda: self._is_scrolled_to_bottom(panel), timeout=2000)
+
+    def test_summary_generating_scrolls_to_bottom(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        self._shrink_viewport(panel, qtbot)
+
+        panel.send_message("계약서")
+        panel.show_excerpt(1, [_hybrid() for _ in range(5)])
+        self._wait_for_overflow(panel, qtbot)
+        panel._scroll.verticalScrollBar().setValue(0)
+
+        panel.show_summary_generating(1)
+        qtbot.waitUntil(lambda: self._is_scrolled_to_bottom(panel), timeout=2000)
+
+    def test_completed_summary_scrolls_to_bottom(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        self._shrink_viewport(panel, qtbot)
+
+        panel.send_message("계약서")
+        panel.show_excerpt(1, [_hybrid() for _ in range(5)])
+        self._wait_for_overflow(panel, qtbot)
+        panel._scroll.verticalScrollBar().setValue(0)
+
+        panel.show_summary(1, Summary(status=SummaryStatus.OK, text="답변 " * 40))
+        qtbot.waitUntil(lambda: self._is_scrolled_to_bottom(panel), timeout=2000)
+
+    def test_second_message_scrolls_to_bottom_past_first_turn(self, qtbot):
+        """"다음 검색을 하면 직전 검색 끝부분에 멈춰 방금 보낸 질문이 안
+        보임" 보고 — 두 번째 메시지를 보내면 그 메시지까지 스크롤돼야 한다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        self._shrink_viewport(panel, qtbot)
+
+        panel.send_message("계약서")
+        panel.show_excerpt(1, [_hybrid() for _ in range(5)])
+        self._wait_for_overflow(panel, qtbot)
+        panel._scroll.verticalScrollBar().setValue(0)
+
+        panel.send_message("두 번째 질문")
+        qtbot.waitUntil(lambda: self._is_scrolled_to_bottom(panel), timeout=2000)
+
+
 class TestChatExcerptTableAndImage:
     """2026-08-14, 사용자 요청: 챗봇 즉시 발췌도 검색 화면(TableCard/ImageCard)과
     같은 수준으로 표·이미지를 렌더링해야 한다 — Phase 7.6 완료 시점엔 원시

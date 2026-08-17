@@ -312,31 +312,37 @@ class ChatPanel(QWidget):
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_excerpt(results)
+            self._scroll_to_bottom_deferred()
 
     def show_search_error(self, request_id: int, message: str) -> None:
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_search_error(message)
+            self._scroll_to_bottom_deferred()
 
     def show_summary_starting(self, request_id: int) -> None:
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_summary_starting()
+            self._scroll_to_bottom_deferred()
 
     def show_summary_generating(self, request_id: int) -> None:
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_summary_generating()
+            self._scroll_to_bottom_deferred()
 
     def show_summary(self, request_id: int, summary: Summary) -> None:
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_summary(summary)
+            self._scroll_to_bottom_deferred()
 
     def show_summary_error(self, request_id: int, message: str) -> None:
         bubble = self._bubbles.get(request_id)
         if bubble is not None:
             bubble.show_summary_error(message)
+            self._scroll_to_bottom_deferred()
 
     def turn_count(self) -> int:
         """테스트·검증용 — 지금까지 오간 턴 수."""
@@ -381,10 +387,7 @@ class ChatPanel(QWidget):
         self._bubbles[request_id] = bubble
         self._add_row(bubble, align_right=False)
 
-        # 방금 넣은 위젯은 아직 레이아웃이 안 돌아 `bar.maximum()`이 직전
-        # 값이다 — 지금 부르면 한 턴 늦게 스크롤된다. 다음 이벤트 루프로
-        # 미룬다.
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        self._scroll_to_bottom_deferred()
         self.message_sent.emit(request_id, text)
 
     def _add_row(self, widget: QWidget, *, align_right: bool) -> None:
@@ -446,6 +449,53 @@ class ChatPanel(QWidget):
         super().resizeEvent(event)
         for widget in self._bubble_widgets:
             self._apply_max_width(widget)
+
+    def _scroll_to_bottom_deferred(self) -> None:
+        """지금 막 늘어난(또는 늘어날) 위젯 높이를 반영해 맨 아래로 스크롤한다.
+
+        `_send()`뿐 아니라 검색 결과 도착(`show_excerpt`)·AI 요약 진행
+        단계 전환(`show_summary_starting`/`_generating`/실제 답변/오류)
+        에서도 불러야 한다(T10.19, 사용자 보고) — 이 호출들이 전부
+        말풍선 높이를 바꾸는데, 그때마다 다시 스크롤하지 않으면 그 사이에
+        늘어난 높이만큼 화면이 이전 위치에 멈춰 있는 것처럼 보인다("AI 요약
+        보기를 누르면 이전 메시지 위치로 올라가 버림", "다음 검색을 하면
+        직전 검색 끝부분에 멈춰 방금 보낸 질문이 안 보임").
+
+        🔴 `QTimer.singleShot(0, ...)`만으로는 부족하다 — 방금 넣거나 갈아
+        끼운 위젯은 이 시점에 레이아웃이 아직 안 돌아 `bar.maximum()`이
+        갱신 전 값(예: 0)이다. 0ms 뒤 타이머가 실행되는 시점에도 레이아웃이
+        아직 안 끝나 있는 경우가 실측으로 확인됐다(10번 연속
+        `processEvents()`를 돌려도 `maximum()`만 갱신되고 `value()`는 그대로
+        멈춰 있었다) — 그래서 "몇 턴 뒤"가 아니라 **범위가 실제로 바뀌는
+        순간**(`rangeChanged`)에 맞춰 스크롤한다.
+
+        🔴 레이아웃이 **한 번에 안 끝나고 여러 번에 걸쳐 다시 계산되는
+        경우도 실측으로 확인됐다**(예: 첫 재계산에서 348→418, 곧이어
+        418→482로 한 번 더) — `rangeChanged`를 한 번만 받고 바로 연결을
+        끊으면 그 사이의 값(예: 418)에서 멈춘다. 그래서 매번 값을
+        맞춰준 뒤 짧은 유휴 타이머를 다시 시작하고, **그 타이머가 방해
+        없이 끝까지 도달했을 때만** 연결을 끊는다 — 레이아웃이 잠잠해질
+        때까지 계속 따라간다.
+        """
+        bar = self._scroll.verticalScrollBar()
+
+        idle_timer = QTimer(self)
+        idle_timer.setSingleShot(True)
+
+        def _on_range_changed(_minimum: int, maximum: int) -> None:
+            bar.setValue(maximum)
+            idle_timer.start(120)
+
+        def _detach() -> None:
+            bar.rangeChanged.disconnect(_on_range_changed)
+
+        idle_timer.timeout.connect(_detach)
+        bar.rangeChanged.connect(_on_range_changed)
+        idle_timer.start(120)
+        # 레이아웃이 이미 끝나 range가 안 바뀌는 경우(예: 내용이 안 자라
+        # 스크롤이 애초에 없는 상태)에는 rangeChanged가 안 와서 위 리스너가
+        # 영영 안 불릴 수 있다 — 지금 값 기준으로 한 번 더 시도해 대비한다.
+        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self) -> None:
         bar = self._scroll.verticalScrollBar()
