@@ -32,6 +32,8 @@ class ResultList(QScrollArea):
     # 카드 단위 AI 요약 요청(T10.14) — (SummarySection, 그 카드의 결과)을
     # open_failed와 같은 방식으로 한 자리로 모아 MainWindow에 넘긴다.
     summarize_requested = Signal(object, object)
+    # "근처 내용 더보기" 요청(T10.21) — (NearbySection, 이 카드의 chunk_id).
+    nearby_requested = Signal(object, str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -135,6 +137,7 @@ class ResultList(QScrollArea):
             )
             card.open_failed.connect(self.open_failed)
             card.summarize_requested.connect(self.summarize_requested)
+            card.nearby_requested.connect(self.nearby_requested)
             self._layout.insertWidget(self._layout.count() - 1, card)
 
     def _add_more_button(self, remaining: int) -> None:

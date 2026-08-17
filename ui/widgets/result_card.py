@@ -17,6 +17,7 @@ from search.hybrid_search import HybridResult
 from search.office_link import plan_open
 from ui.highlight import highlighted_excerpt
 from ui.widgets.card_common import (
+    NearbySection,
     SummarySection,
     apply_low_relevance_style,
     build_card_header,
@@ -29,6 +30,8 @@ class ResultCard(QFrame):
     # 카드 단위 AI 요약 요청(T10.14) — (SummarySection, 이 카드의 결과).
     # MainWindow가 SummaryWorker를 만들어 SummarySection에 직결한다.
     summarize_requested = Signal(object, object)
+    # "근처 내용 더보기" 요청(T10.21) — (NearbySection, 이 카드의 chunk_id).
+    nearby_requested = Signal(object, str)
 
     def __init__(
         self,
@@ -68,10 +71,17 @@ class ResultCard(QFrame):
             self.summary_section.requested.connect(self._request_summary)
             layout.addWidget(self.summary_section)
 
+        self.nearby_section = NearbySection(hybrid_result.result.chunk_id)
+        self.nearby_section.requested.connect(self._request_nearby)
+        layout.addWidget(self.nearby_section)
+
         apply_low_relevance_style(self, hybrid_result)
 
     def _request_summary(self) -> None:
         self.summarize_requested.emit(self.summary_section, self._result)
+
+    def _request_nearby(self, chunk_id: str) -> None:
+        self.nearby_requested.emit(self.nearby_section, chunk_id)
 
     def _open_source(self) -> None:
         path = Path(self._result.result.file_path)

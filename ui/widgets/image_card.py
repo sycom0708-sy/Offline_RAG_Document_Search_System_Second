@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 from search.hybrid_search import HybridResult
 from search.office_link import plan_open
 from ui.widgets.card_common import (
+    NearbySection,
     SummarySection,
     apply_low_relevance_style,
     build_card_header,
@@ -38,6 +39,7 @@ THUMBNAIL_DISPLAY_SIZE = 120
 class ImageCard(QFrame):
     open_failed = Signal(str)
     summarize_requested = Signal(object, object)  # T10.14, ResultCard와 동일
+    nearby_requested = Signal(object, str)  # T10.21, ResultCard와 동일
 
     def __init__(self, hybrid_result: HybridResult, show_summary: bool = False, parent=None) -> None:
         super().__init__(parent)
@@ -89,10 +91,17 @@ class ImageCard(QFrame):
             self.summary_section.requested.connect(self._request_summary)
             layout.addWidget(self.summary_section)
 
+        self.nearby_section = NearbySection(hybrid_result.result.chunk_id)
+        self.nearby_section.requested.connect(self._request_nearby)
+        layout.addWidget(self.nearby_section)
+
         apply_low_relevance_style(self, hybrid_result)
 
     def _request_summary(self) -> None:
         self.summarize_requested.emit(self.summary_section, self._result)
+
+    def _request_nearby(self, chunk_id: str) -> None:
+        self.nearby_requested.emit(self.nearby_section, chunk_id)
 
     def _zoom(self) -> None:
         if self._image_data is None:

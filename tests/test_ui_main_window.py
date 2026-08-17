@@ -1191,6 +1191,60 @@ class TestCardSummaryWiring:
         qtbot.waitUntil(lambda: not window._active_summary_workers, timeout=SEARCH_TIMEOUT_MS)
 
 
+class TestNearbyContentWiring:
+    """"근처 내용 더보기"(T10.21) — 헤딩만 담은 짧은 청크 뒤에 실제 내용이
+    별도 청크로 이어지는 문서에서, 검색 결과 카드가 그 다음 청크를 실제
+    SQLite 조회로 가져와 보여주는지 확인한다. LLM을 안 써서 스텁 서비스가
+    필요 없다."""
+
+    def test_clicking_button_shows_the_next_chunk_in_the_same_document(self, window, qtbot):
+        from indexer.fts5.schema import connect as _connect
+        from indexer.fts5.store import store_document
+        from parser.schema import Chunk, ChunkType, ParsedDocument
+        from ui.widgets.result_card import ResultCard
+
+        conn = _connect(window.db_path)
+        document = ParsedDocument(doc_id="dnearby", file_path="근처.doc", file_name="근처.doc", title="t")
+        document.chunks = [
+            Chunk(
+                chunk_id="dnearby_c0", doc_id="dnearby", file_path="근처.doc", file_name="근처.doc",
+                type=ChunkType.TEXT, page_or_slide=None, content="-특이한헤딩문구-",
+            ),
+            Chunk(
+                chunk_id="dnearby_c1", doc_id="dnearby", file_path="근처.doc", file_name="근처.doc",
+                type=ChunkType.TEXT, page_or_slide=None, content="바로 다음 문단의 실제 절차 내용입니다",
+            ),
+        ]
+        store_document(conn, document)
+        conn.close()
+
+        window.input_bar.submit_text("특이한헤딩문구")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        cards = window.result_list.findChildren(ResultCard)
+        card = next(c for c in cards if c._result.result.chunk_id == "dnearby_c0")
+        card.nearby_section._button.click()
+
+        qtbot.waitUntil(
+            lambda: "바로 다음 문단" in card.nearby_section.content_text(), timeout=SEARCH_TIMEOUT_MS
+        )
+
+    def test_last_chunk_in_document_shows_not_found(self, window, qtbot):
+        """`indexed_db` 픽스처 문서는 각각 청크 1개뿐이라 항상 "마지막 청크"다."""
+        from ui.widgets.result_card import ResultCard
+
+        window.input_bar.submit_text("계약서")
+        qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+        card = window.result_list.findChild(ResultCard)
+        card.nearby_section._button.click()
+
+        qtbot.waitUntil(
+            lambda: "더 보여줄 근처 내용이 없습니다" in card.nearby_section.content_text(),
+            timeout=SEARCH_TIMEOUT_MS,
+        )
+
+
 class TestChatSearchProfileRegression:
     """🔴 T10.9 재발 방지 — 챗봇 경로도 `SearchWorker`를 그대로 쓰므로 같은
     버그(embedder=만 넘기고 profile= 누락 → 벡터 차원 불일치 → similarity가

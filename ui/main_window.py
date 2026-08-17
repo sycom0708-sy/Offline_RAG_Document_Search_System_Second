@@ -20,6 +20,7 @@ from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
 from indexer.pipeline import IndexingThread, IndexReport
 from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
+from search.chunk_neighbors import fetch_next_chunk
 from slm.service import SlmService
 from ui.search_worker import SearchWorker
 from ui.state import DB_PATH, AppState
@@ -180,6 +181,7 @@ class MainWindow(QMainWindow):
 
         self.result_list.open_failed.connect(self._on_open_failed)
         self.result_list.summarize_requested.connect(self._on_card_summarize_requested)
+        self.result_list.nearby_requested.connect(self._on_nearby_requested)
 
     # --- 입력 라우팅 (Phase 7.7) --------------------------------------------
 
@@ -336,6 +338,7 @@ class MainWindow(QMainWindow):
             panel.message_sent.connect(self._on_chat_message_sent)
             panel.summarize_requested.connect(self._on_chat_summarize_requested)
             panel.open_failed.connect(self._on_open_failed)
+            panel.nearby_requested.connect(self._on_nearby_requested)
             self._chat_panel_cache = panel
         self._chat_panel = self._chat_panel_cache
         self.result_list.show_chat_mode(self._chat_panel)
@@ -456,6 +459,28 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda w=worker: self._active_summary_workers.discard(w))
         self._active_summary_workers.add(worker)
         worker.start()
+
+    # --- "근처 내용 더보기" (T10.21) ------------------------------------------
+    #
+    # 헤딩만 담은 짧은 텍스트 청크 바로 뒤에 실제 내용(특히 표)이 별도 청크로
+    # 이어지는 문서가 있어, 검색어가 헤딩과 겹치면 그 헤딩 청크만 올라오고
+    # 실제 내용은 화면에 안 보이는 문제가 실사용에서 발견됐다(2026-08-15).
+    # 검색·챗봇 카드가 공유하는 `NearbySection`을 눌렀을 때만, 그 카드의
+    # chunk_id 바로 다음(같은 문서, 원본 순서 기준) 청크를 가져와 보여준다.
+    # 임베딩·LLM을 쓰지 않는 단순 SQLite 조회라 워커 스레드 없이 메인
+    # 스레드에서 바로 처리한다(검색·요약과 달리 블로킹 우려가 없다).
+
+    def _on_nearby_requested(self, section, chunk_id: str) -> None:
+        conn = connect(self.db_path)
+        try:
+            next_chunk = fetch_next_chunk(conn, chunk_id)
+        finally:
+            conn.close()
+
+        if next_chunk is None:
+            section.show_not_found()
+        else:
+            section.show_content(next_chunk)
 
     def _on_chat_summary_failed(self, request_id: int, message: str) -> None:
         if self._chat_panel is not None:

@@ -47,6 +47,7 @@ __all__ = [
     "build_card_header",
     "apply_low_relevance_style",
     "SummarySection",
+    "NearbySection",
     "build_table_grid",
     "fix_table_grid_height",
     "table_to_tsv",
@@ -238,6 +239,73 @@ class SummarySection(QWidget):
 
     def is_summary_visible(self) -> bool:
         return self._card.isVisibleTo(self)
+
+
+class NearbySection(QWidget):
+    """"근처 내용 더보기"(T10.21) — 이 카드 바로 다음(같은 문서, 원본 순서
+    기준) 청크의 내용을 눌렀을 때만 보여준다.
+
+    문서를 파싱할 때 헤딩 문단과 그 뒤에 이어지는 실제 내용(특히 표 —
+    Phase 1 결정: 표는 구조 보존을 위해 별도 청크로 분리)이 서로 다른
+    청크로 쪼개져 있는 경우가 있다. 검색어가 헤딩과 거의 그대로 겹치면
+    그 헤딩 청크만 1위로 올라오고, 바로 다음 청크(실제 내용)는 화면에
+    안 보일 수 있다(실사용에서 발견, 2026-08-15).
+
+    🔴 표·이미지 청크도 그리드·썸네일로 다시 그리지 않고 `content`를
+    그대로 텍스트로 보여준다 — `content`가 이미 표를 사람이 읽을 수
+    있는 텍스트로 담고 있어서(예: "1. 서류단계: ... 2. 서류전형") 이걸로
+    이번 문제(헤딩 뒤 내용이 안 보임)를 충분히 해결한다. 그리드 렌더링은
+    `showEvent` 높이 재계산(Phase 5) 등 이 카드가 이미 화면에 붙은
+    뒤라야 안전한 로직이 얽혀 있어, 나중에 필요해지면 별도로 붙인다.
+    """
+
+    requested = Signal(str)  # 이 카드의 chunk_id
+
+    def __init__(self, chunk_id: str, parent=None) -> None:
+        super().__init__(parent)
+        self._chunk_id = chunk_id
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        self._button = QPushButton("근처 내용 더보기")
+        self._button.setObjectName("ResultCardCopyButton")
+        self._button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._button.clicked.connect(self._on_click)
+        button_row.addWidget(self._button)
+        self._layout.addLayout(button_row)
+
+        self._content_label: QLabel | None = None
+
+    def _on_click(self) -> None:
+        self._button.setEnabled(False)
+        self.requested.emit(self._chunk_id)
+
+    def show_content(self, result) -> None:
+        """`MainWindow`가 `search.chunk_neighbors.fetch_next_chunk()`로 찾은
+        다음 청크(`SearchResult`)를 받아 그린다."""
+        self._button.setParent(None)
+        label = QLabel(result.content)
+        label.setObjectName("ResultCardBody")
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._layout.addWidget(label)
+        self._content_label = label
+
+    def show_not_found(self) -> None:
+        self._button.setParent(None)
+        label = QLabel("더 보여줄 근처 내용이 없습니다.")
+        label.setObjectName("AiSummaryHint")
+        self._layout.addWidget(label)
+        self._content_label = label
+
+    # --- 테스트·검증용 --------------------------------------------------
+
+    def content_text(self) -> str:
+        return self._content_label.text() if self._content_label is not None else ""
 
 
 # --- 표 그리드 (T5.2, 챗봇 즉시 발췌도 재사용 — 2026-08-14) --------------------

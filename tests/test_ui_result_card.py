@@ -278,6 +278,49 @@ class TestResultCard:
         section.receive_summary(0, Summary(status=SummaryStatus.OK, text="요약 결과입니다."))
         assert section.summary_text() == "요약 결과입니다."
 
+    # --- "근처 내용 더보기" (T10.21) --------------------------------------
+
+    def test_nearby_section_is_always_present(self, qtbot):
+        """AI 요약과 달리 LLM을 안 쓰므로 모델 설치 여부와 무관하게 항상 있다."""
+        card = ResultCard(_hybrid(), "계약서")
+        qtbot.addWidget(card)
+        assert card.nearby_section is not None
+
+    def test_clicking_nearby_button_emits_nearby_requested_with_chunk_id(self, qtbot):
+        result = _hybrid()
+        card = ResultCard(result, "계약서")
+        qtbot.addWidget(card)
+
+        requests = []
+        card.nearby_requested.connect(lambda section, chunk_id: requests.append((section, chunk_id)))
+        card.nearby_section.requested.emit(result.result.chunk_id)
+
+        assert len(requests) == 1
+        section, chunk_id = requests[0]
+        assert section is card.nearby_section
+        assert chunk_id == result.result.chunk_id
+
+    def test_nearby_section_shows_next_chunk_content(self, qtbot):
+        card = ResultCard(_hybrid(), "계약서")
+        qtbot.addWidget(card)
+
+        next_chunk = SearchResult(
+            chunk_id="c2", doc_id="d1", file_path="x", file_name="사규.docx",
+            type=ChunkType.TABLE, page_or_slide=4, content="1. 서류전형\n2. 필기전형",
+            caption="", score=0.0,
+        )
+        card.nearby_section.show_content(next_chunk)
+
+        assert "서류전형" in card.nearby_section.content_text()
+
+    def test_nearby_section_shows_not_found_message(self, qtbot):
+        card = ResultCard(_hybrid(), "계약서")
+        qtbot.addWidget(card)
+
+        card.nearby_section.show_not_found()
+
+        assert "더 보여줄 근처 내용이 없습니다" in card.nearby_section.content_text()
+
 
 class TestResultList:
     def test_initial_state_shows_hint_message(self, qtbot):

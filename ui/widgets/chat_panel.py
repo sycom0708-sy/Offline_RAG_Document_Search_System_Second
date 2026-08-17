@@ -87,6 +87,7 @@ class _AnswerBubble(QFrame):
 
     summarize_requested = Signal()
     open_failed = Signal(str)  # 카드들의 open_failed를 한 자리로 모아 ChatPanel.open_failed로 릴레이
+    nearby_requested = Signal(object, str)  # T10.21, open_failed와 같은 방식으로 릴레이
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -179,6 +180,7 @@ class _AnswerBubble(QFrame):
     def _add_result_card(self, result: HybridResult) -> None:
         card = make_result_card(result, "", False, False)
         card.open_failed.connect(self.open_failed)
+        card.nearby_requested.connect(self.nearby_requested)
         self._body_layout.addWidget(card)
 
     def _add_more_button(self, remaining: int) -> None:
@@ -269,6 +271,7 @@ class ChatPanel(QWidget):
     message_sent = Signal(int, str)  # (request_id, question)
     summarize_requested = Signal(int, list)  # (request_id, 그 턴의 검색 결과)
     open_failed = Signal(str)
+    nearby_requested = Signal(object, str)  # T10.21, open_failed와 같은 방식으로 릴레이
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -384,6 +387,7 @@ class ChatPanel(QWidget):
             lambda rid=request_id, b=bubble: self.summarize_requested.emit(rid, b.results)
         )
         bubble.open_failed.connect(self.open_failed)
+        bubble.nearby_requested.connect(self.nearby_requested)
         self._bubbles[request_id] = bubble
         self._add_row(bubble, align_right=False)
 
