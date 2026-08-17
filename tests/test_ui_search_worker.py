@@ -82,3 +82,61 @@ def test_no_embedder_falls_back_to_keyword_search_without_crashing(tmp_path):
 
     assert results
     assert results[0].chunk_id == "c1"
+
+
+# --- 대명사 후속 질문 폴백 검색 (T10.18) -------------------------------------
+
+
+class TestFallbackQuery:
+    def test_empty_result_retries_with_fallback_query_prepended(self, tmp_path):
+        """"그건 얼마야?" 단독으론 0건이지만, 직전 질문("계약서")을 붙이면
+        찾아야 한다."""
+        db_path = tmp_path / "index.sqlite3"
+        _build_db(db_path)
+
+        worker = SearchWorker(
+            db_path, "그건 얼마야?", request_id=2, embedder=None, fallback_query="계약서"
+        )
+        results = worker._search()
+
+        assert results
+        assert results[0].chunk_id == "c1"
+
+    def test_non_empty_result_ignores_fallback_query(self, tmp_path):
+        """이번 메시지만으로 이미 결과가 있으면 폴백을 시도하지 않는다 —
+        무관한 이전 질문이 섞여 결과가 오염되면 안 된다."""
+        db_path = tmp_path / "index.sqlite3"
+        _build_db(db_path)
+
+        worker = SearchWorker(
+            db_path, "계약서 손해배상", request_id=2, embedder=None, fallback_query="전혀 다른 검색어"
+        )
+        results = worker._search()
+
+        assert results
+        assert results[0].chunk_id == "c1"
+
+    def test_no_fallback_query_still_returns_empty(self, tmp_path):
+        """폴백이 없으면(예: 챗봇 첫 턴) 기존처럼 0건 그대로 반환돼야 한다."""
+        db_path = tmp_path / "index.sqlite3"
+        _build_db(db_path)
+
+        worker = SearchWorker(db_path, "전혀관련없는외계어", request_id=1, embedder=None)
+        results = worker._search()
+
+        assert results == []
+
+    def test_fallback_that_also_finds_nothing_returns_empty(self, tmp_path):
+        db_path = tmp_path / "index.sqlite3"
+        _build_db(db_path)
+
+        worker = SearchWorker(
+            db_path,
+            "전혀관련없는외계어",
+            request_id=2,
+            embedder=None,
+            fallback_query="역시관련없는단어",
+        )
+        results = worker._search()
+
+        assert results == []

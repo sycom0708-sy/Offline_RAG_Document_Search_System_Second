@@ -38,6 +38,7 @@ class SearchWorker(QThread):
         case_sensitive: bool = False,
         exact_word: bool = False,
         extensions: set[str] | None = None,
+        fallback_query: str | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -48,6 +49,12 @@ class SearchWorker(QThread):
         self._case_sensitive = case_sensitive
         self._exact_word = exact_word
         self._extensions = extensions
+        # T10.18(챗봇 전용) — "그건 얼마야?" 같은 대명사만 있는 후속 질문은
+        # 이번 메시지만으론 검색어가 빈약해 0건이 나오기 쉽다. 0건일 때만
+        # 직전 질문 텍스트를 덧붙여 한 번 더 검색한다 — LLM 없이 기존
+        # hybrid_search()를 재사용하므로 지연·안전장치 어느 쪽도 안 건드린다.
+        # 일반 검색 모드는 이 값을 안 넘기므로(항상 None) 영향이 없다.
+        self._fallback_query = fallback_query
 
     def run(self) -> None:
         try:
@@ -60,22 +67,10 @@ class SearchWorker(QThread):
     def _search(self) -> list[HybridResult]:
         conn = connect(self._db_path)
         try:
-            fetch_limit = CANDIDATE_LIMIT_WHEN_FILTERING if self._extensions else DISPLAY_LIMIT
-            results = hybrid_search(
-                conn,
-                self._query,
-                embedder=self._embedder,
-                # 🔴 반드시 embedder가 실제로 쓴 프로파일과 같이 넘겨야 한다.
-                # 안 넘기면 hybrid_search가 내부적으로 get_profile()(기본 LIGHT)로
-                # 벡터를 조회해, 권장 모드(HEAVY)에서 만든 벡터를 못 찾는다 —
-                # 차원이 안 맞는 것으로 처리돼 모든 결과의 similarity가 None이
-                # 되고, AI 요약 1단계가 "관련 문서를 찾을 수 없습니다"로 전부
-                # 막힌다(실사용에서 발견, 2026-08-11).
-                profile=self._embedder.profile if self._embedder is not None else None,
-                case_sensitive=self._case_sensitive,
-                exact_word=self._exact_word,
-                limit=fetch_limit,
-            )
+            results = self._run_query(conn, self._query)
+            if not results and self._fallback_query:
+                combined = f"{self._fallback_query} {self._query}".strip()
+                results = self._run_query(conn, combined)
         finally:
             conn.close()
 
@@ -85,3 +80,21 @@ class SearchWorker(QThread):
             ][:DISPLAY_LIMIT]
 
         return results
+
+    def _run_query(self, conn, query: str) -> list[HybridResult]:
+        fetch_limit = CANDIDATE_LIMIT_WHEN_FILTERING if self._extensions else DISPLAY_LIMIT
+        return hybrid_search(
+            conn,
+            query,
+            embedder=self._embedder,
+            # 🔴 반드시 embedder가 실제로 쓴 프로파일과 같이 넘겨야 한다.
+            # 안 넘기면 hybrid_search가 내부적으로 get_profile()(기본 LIGHT)로
+            # 벡터를 조회해, 권장 모드(HEAVY)에서 만든 벡터를 못 찾는다 —
+            # 차원이 안 맞는 것으로 처리돼 모든 결과의 similarity가 None이
+            # 되고, AI 요약 1단계가 "관련 문서를 찾을 수 없습니다"로 전부
+            # 막힌다(실사용에서 발견, 2026-08-11).
+            profile=self._embedder.profile if self._embedder is not None else None,
+            case_sensitive=self._case_sensitive,
+            exact_word=self._exact_word,
+            limit=fetch_limit,
+        )

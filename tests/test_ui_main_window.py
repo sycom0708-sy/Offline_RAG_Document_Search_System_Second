@@ -847,6 +847,24 @@ class TestAiChatWiring:
 
         assert panel.turn_count() == 0
 
+    def test_second_turn_falls_back_to_first_turns_question_when_alone_finds_nothing(
+        self, window, qtbot
+    ):
+        """T10.18: "그건 얼마야?" 같은 대명사만 있는 후속 질문은 그 자체로는
+        검색이 0건일 수 있다 — 직전 질문을 덧붙인 폴백 검색으로 살아나야 하고,
+        그 결과가 생기면 "AI 요약 보기" 버튼도 자연히 켜져야 한다."""
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서")
+        bubble1 = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bool(bubble1.results), timeout=SEARCH_TIMEOUT_MS)
+
+        panel.send_message("듣도보도못한 괴상한 단어들")
+        bubble2 = panel.bubble_for(2)
+        qtbot.waitUntil(lambda: bubble2._summarize_button.isEnabled(), timeout=SEARCH_TIMEOUT_MS)
+
+        assert bool(bubble2.results) is True
+
     def test_message_shows_excerpt_without_calling_the_llm(self, window, qtbot):
         """1단계는 검색만 한다 — sLM은 아직 호출되면 안 된다."""
         stub = self._stub_service(window)

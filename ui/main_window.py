@@ -361,12 +361,20 @@ class MainWindow(QMainWindow):
         )
 
     def _on_chat_message_sent(self, request_id: int, question: str) -> None:
-        """① 즉시 발췌 — 기존 `SearchWorker`를 무수정으로 그대로 쓴다.
+        """① 즉시 발췌 — 기존 `SearchWorker`를 무수정에 가깝게 그대로 쓴다.
 
         `SearchWorker._search()`가 이미 `embedder.profile`을 함께 넘긴다
         (T10.9 재발 방지) — 여기서 따로 챙길 게 없다.
+
+        T10.18: 직전 턴의 질문을 `fallback_query`로 같이 넘긴다 — "그건
+        얼마야?"처럼 대명사만 있는 후속 질문은 이번 메시지만으론 0건이
+        나오기 쉬운데, `SearchWorker`가 0건일 때만 이 텍스트를 덧붙여
+        한 번 더 검색한다. 검색 결과가 생기면 "AI 요약 보기" 버튼도
+        (`_AnswerBubble.show_excerpt()`가 이미 하던 대로) 자연히 켜진다 —
+        버튼 활성화 로직을 따로 안 건드려도 된다.
         """
         self._chat_questions[request_id] = question
+        fallback_query = self._chat_questions.get(request_id - 1)
 
         case_sensitive = self.sidebar.search_options.is_case_sensitive()
         exact_word = self.sidebar.search_options.is_exact_word()
@@ -380,6 +388,7 @@ class MainWindow(QMainWindow):
             case_sensitive=case_sensitive,
             exact_word=exact_word,
             extensions=extensions,
+            fallback_query=fallback_query,
         )
         worker.succeeded.connect(self._on_chat_search_succeeded)
         worker.failed.connect(self._on_chat_search_failed)
