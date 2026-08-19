@@ -739,16 +739,22 @@ NanumGothic → Malgun Gothic → sans-serif
 
 | 표시 | 출처 | 상태 |
 |---|---|---|
-| 총 | `indexed + skipped` (파생) | ✅ |
-| 신규 | — | ⚠️ **신설 필요** |
-| 변경 | — | ⚠️ **신설 필요** |
+| 총 | `IndexReport.scanned` | ✅ **신설** [Phase 11-B] |
+| 신규 | `IndexReport.created` | ✅ **신설** [Phase 11-B] |
+| 변경 | `IndexReport.updated` | ✅ **신설** [Phase 11-B] |
 | 삭제 | `IndexReport.pruned` | ✅ T10.5 |
 | 미변경 | `IndexReport.skipped` | ✅ Phase 8 |
 | 성공 | `IndexReport.indexed` | ✅ |
 | 실패 | `len(IndexReport.failures)` | ✅ T10.2에서 실제로 채워지도록 수정 |
 
-> `신규`/`변경` 분리는 `indexer/incremental/needs_reindex()`가 내부에서 이미 판별하고 있다
-> (`row is None`이면 신규). 반환값을 bool에서 열거형으로 넓히면 된다.
+> `신규`/`변경` 분리는 `indexer/incremental`이 내부에서 이미 판별하고 있었다(`row is None`이면
+> 신규). `needs_reindex()`의 bool 판정을 `classify_file() -> FileChange` 열거형으로 넓히고,
+> `needs_reindex()`는 그것을 bool로 좁히는 얇은 래퍼로 남겼다(Phase 8 호출부가 그대로 산다).
+
+> **`총`을 `indexed + skipped` 파생에서 `scanned`로 바꿨다 [Phase 11-B]** — 파싱에 실패한
+> 파일은 `indexed`에도 `skipped`에도 안 잡혀서, 파생값으로 두면 파일 진단에는 실패가 떠
+> 있는데 총계에서는 사라진다. 이 프로젝트에서 실패는 드문 일이 아니다(LibreOffice 미배치 시
+> 구버전 포맷 전량).
 
 #### 14.4.2 버튼
 
@@ -756,7 +762,23 @@ NanumGothic → Malgun Gothic → sans-serif
 |---|---|---|
 | 인덱스 업데이트 | `MainWindow._start_reindex()` | ✅ |
 | 취소 | `IndexingThread.stop_event.set()` | ✅ T10.4 |
-| 재시도 | 마지막 실행을 같은 대상으로 재실행 | ⚠️ 신설(간단) |
+| 재시도 | **실패한 파일만 강제 재파싱** | ✅ **확정·구현** [Phase 11-B, 사용자 확정] |
+
+> 🔴 **`재시도`가 "폴더 전체 재실행"이면 아무 일도 일어나지 않는다.** `parser/base.py`가
+> 파싱을 **시작할 때** mtime·해시를 채우고 `store_document()`가 그것을 `status=FAILED`
+> 문서에도 그대로 저장하기 때문에, 실패한 파일은 다음 인덱싱에서 `UNCHANGED`로 판정돼
+> 건너뛰어진다 — LibreOffice를 나중에 설치해도 그 `.doc`은 영원히 다시 시도되지 않는다.
+> Phase 8(증분 스킵)과 T10.2(FAILED 저장)가 만나 생긴 구멍이고, `재시도`가 이 구멍을 메운다.
+> `indexer.pipeline.reindex_files()`가 증분 판정을 무시하고 지정한 파일만 다시 파싱한다.
+>
+> 🔴 **`reindex_files()`는 `_prune_stale_documents()`를 부르지 않는다.** 대상이 폴더 일부라
+> 그대로 불렀다면 "이번 스캔에 없는 문서"에 **나머지 문서가 전부** 걸려 인덱스가 통째로
+> 지워진다(T10.5의 정반대 방향 사고). 폴더 정리를 `index_folder()` 쪽에만 두어 구조적으로 막았다.
+>
+> **재시도 대상은 재시작 후에도 살아 있다** — `IndexReport.failures`는 이번 실행의 값이라
+> 앱을 껐다 켜면 사라지지만, 실패는 인덱스에 `status=failed` 문서로 남는다
+> (`failed_document_paths()`). 안 그러면 앱을 켠 직후에는 인덱싱을 한 번 돌리기 전까지
+> 재시도할 방법이 없다.
 
 #### 14.4.3 기존 진행률 팝업과의 관계 **[확정]**
 
@@ -845,4 +867,14 @@ llama-server에는 반영되지 않는다. 다음 중 하나를 택해야 한다
 |---|---|
 | 설정값 적용 시점 | 14.5.2의 1안/2안 |
 | 사이드바 색상 실제 값 | `#1E293B` 계열 **[제안]** — 목업에서 추정한 값이라 확정 필요 |
-| `재시도` 버튼의 정확한 의미 | "마지막 대상 재실행"인지 "실패한 파일만 재시도"인지 |
+| ~~`재시도` 버튼의 정확한 의미~~ | ✅ **확정** [Phase 11-B, 사용자 확정] — "실패한 파일만 강제 재파싱"(§14.4.2) |
+
+### 14.10 확장 영역의 표시 범위 **[Phase 11-B 확정, 사용자 확정]**
+
+확장 영역(문서 형식 필터 · AI 챗봇 토글)은 **검색/대화 페이지에서만 보인다.** 11-A에서는
+네비게이션 항목에 붙어 있다는 이유만으로 문서 관리·설정 화면에서도 남아 있었는데, 안에 든
+것이 전부 검색 옵션이라 그 화면에서는 조작할 이유가 없다.
+
+🔴 **펼침 상태 자체(`AppState.search_expanded`)는 건드리지 않는다.** 페이지를 옮길 때 접어
+버리면 돌아왔을 때 사용자가 펼쳐 둔 상태가 사라지고, 그 값이 저장까지 되면 다음 실행에도
+접힌 채로 시작한다 — 보이는 것만 감추고 상태는 그대로 둔다.

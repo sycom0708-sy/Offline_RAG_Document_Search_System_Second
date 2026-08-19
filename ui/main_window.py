@@ -24,7 +24,12 @@ from PySide6.QtWidgets import (
 from config.settings import get_profile
 from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
-from indexer.pipeline import IndexingThread, IndexReport
+from indexer.pipeline import (
+    STAGE_DONE,
+    IndexingThread,
+    IndexReport,
+    failed_document_paths,
+)
 from indexer.vector.store import missing_vector_count
 from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
 from search.chunk_neighbors import fetch_next_chunk
@@ -64,6 +69,7 @@ class _IndexingBridge(QObject):
     """
 
     progress = Signal(int, int, str)  # done, total, 현재 처리 중인 파일 경로
+    stage = Signal(str, int, int)  # 단계(파싱/임베딩/완료), done, total (Phase 11-B)
     done = Signal(object)  # IndexReport
 
 
@@ -194,7 +200,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.pages, stretch=1)
         self.setCentralWidget(central)
 
-        self.document_page.set_folder(self.state.target_folder)
+        self._refresh_document_page()
 
     def _wire_signals(self) -> None:
         self.input_bar.submitted.connect(self._on_input_submitted)
@@ -216,6 +222,10 @@ class MainWindow(QMainWindow):
         self.settings_page.model_manager_requested.connect(self._open_model_manager)
         # Phase 11: 사이드바 "폴더 관리" → 문서 관리 페이지의 "폴더 선택".
         self.document_page.folder_requested.connect(self._open_folder_dialog)
+        # Phase 11-B: 인덱스 작업 버튼 3개 (DESIGN §14.4.2).
+        self.document_page.update_requested.connect(self._on_update_index_requested)
+        self.document_page.cancel_requested.connect(self._cancel_indexing)
+        self.document_page.retry_requested.connect(self._start_retry)
 
         self.result_list.open_failed.connect(self._on_open_failed)
         self.result_list.summarize_requested.connect(self._on_card_summarize_requested)
@@ -745,13 +755,7 @@ class MainWindow(QMainWindow):
         """`silent=True`면 진행률 팝업 없이 상태바로만 조용히 진행한다 (T8.5,
         watchdog가 트리거한 백그라운드 재인덱싱용 — 사용자가 다른 작업 중에
         팝업이 튀어나오면 안 된다)."""
-        # 두 인덱싱 스레드가 같은 DB에 동시에 쓰면 위험하다 — 이미 도는 중이면
-        # 새로 시작하지 않고 기존 팝업만 앞으로 가져온다(무음 모드면 팝업이
-        # 없을 수 있으니 그때는 아무것도 안 한다).
-        if self._indexing_thread is not None and self._indexing_thread.is_alive():
-            if self._indexing_progress_dialog is not None:
-                self._indexing_progress_dialog.raise_()
-                self._indexing_progress_dialog.activateWindow()
+        if self._indexing_busy():
             return
 
         folder_changed = self.state.target_folder != folder
@@ -763,12 +767,67 @@ class MainWindow(QMainWindow):
             # 거쳐 실제로 대상이 바뀐 경우에만 감시를 다시 건다.
             self._sync_folder_watcher()
 
+        # 폴더가 바뀌었을 수 있다 — 문서 관리 페이지의 경로 표시를 맞춘다.
+        self.document_page.set_folder(folder)
+        self._launch_indexing(folder, silent=silent)
+
+    def _on_update_index_requested(self) -> None:
+        """문서 관리 페이지의 `인덱스 업데이트` 버튼 (DESIGN §14.4.2).
+
+        대상 폴더가 없으면 인덱싱할 것이 없다 — 조용히 아무 일도 안 하는 대신
+        폴더 선택으로 이어준다.
+        """
+        if not self.state.target_folder:
+            self._open_folder_dialog()
+            return
+        self._start_reindex(self.state.target_folder)
+
+    def _start_retry(self) -> None:
+        """실패한 파일만 강제로 다시 파싱한다 (Phase 11-B `재시도` [사용자 확정]).
+
+        대상은 문서 관리 페이지가 지금 보여주고 있는 실패 목록 그대로다 —
+        화면에 보이는 것과 다른 집합을 다시 계산하면 "무엇을 재시도했는지"가
+        어긋난다.
+        """
+        if self._indexing_busy():
+            return
+        paths = self.document_page.failure_paths()
+        if not paths:
+            return
+        self._launch_indexing(self.state.target_folder or "", silent=True, files=paths)
+
+    def _indexing_busy(self) -> bool:
+        """이미 인덱싱 중이면 True. 그 경우 기존 팝업을 앞으로 가져온다.
+
+        두 인덱싱 스레드가 같은 DB에 동시에 쓰면 위험하다 — 이미 도는 중이면
+        새로 시작하지 않는다(무음 모드면 팝업이 없을 수 있으니 그때는
+        아무것도 안 한다).
+        """
+        if self._indexing_thread is None or not self._indexing_thread.is_alive():
+            return False
+        if self._indexing_progress_dialog is not None:
+            self._indexing_progress_dialog.raise_()
+            self._indexing_progress_dialog.activateWindow()
+        return True
+
+    def _launch_indexing(
+        self, folder: str, *, silent: bool, files: list[Path] | None = None
+    ) -> None:
+        """인덱싱 스레드를 띄우고 진행 표시를 건다.
+
+        🔴 **문서 관리 페이지가 열려 있으면 팝업을 띄우지 않는다**
+        (DESIGN §14.4.3) — 페이지 안에 이미 같은 진행 표시가 있어 창이
+        겹친다. 다른 페이지에서 시작된 인덱싱(폴더 감시·모드 전환 자동 보완)은
+        기존 팝업을 그대로 쓴다. 사용자가 문서 관리 화면을 보고 있지 않은데
+        진행 상황을 놓치면 안 되기 때문이다.
+        """
         # 이전 "원문 열기" 실패 안내가 남아 있으면 새 인덱싱 진행률과 한 줄에
         # 겹쳐 보인다(실측 확인) — 새 인덱싱을 시작하는 시점에 지운다.
         self.status_bar_widget.set_warning(None)
 
         bridge = _IndexingBridge(self)
         bridge.progress.connect(self._on_indexing_progress)
+        bridge.stage.connect(self._on_indexing_stage)
         bridge.done.connect(self._on_indexing_done)
         self._indexing_bridge = bridge  # GC 방지를 위해 보관
 
@@ -777,9 +836,13 @@ class MainWindow(QMainWindow):
             folder,
             on_progress=lambda done, total, path: bridge.progress.emit(done, total, str(path)),
             on_done=lambda report: bridge.done.emit(report),
+            on_stage=lambda stage, done, total: bridge.stage.emit(stage, done, total),
+            files=files,
         )
 
-        if not silent:
+        self.document_page.set_busy(True)
+
+        if not silent and self.current_page() != PAGE_DOCUMENTS:
             dialog = IndexingProgressDialog(parent=self)
             dialog.cancel_requested.connect(self._cancel_indexing)
             dialog.show()
@@ -828,8 +891,22 @@ class MainWindow(QMainWindow):
 
     def _on_indexing_progress(self, done: int, total: int, current_path: str) -> None:
         self.status_bar_widget.set_indexing_progress(done, total)
+        self.document_page.set_progress(done, total, current_path)
         if self._indexing_progress_dialog is not None:
             self._indexing_progress_dialog.set_progress(done, total, current_path)
+
+    def _on_indexing_stage(self, stage: str, done: int, total: int) -> None:
+        """현재 단계를 문서 관리 페이지와 진행률 팝업에 함께 반영한다 (Phase 11-B).
+
+        팝업에도 넘기는 이유는, 임베딩 구간(607청크 136초 실측) 동안 파일
+        진행률이 마지막 값에 멈춰 있어 그동안 팝업이 굳은 것처럼 보였기
+        때문이다 — 파일 진행률과 별개의 줄로 보여준다.
+        """
+        if stage == STAGE_DONE:
+            return  # 완료 처리는 `_on_indexing_done`이 한다
+        self.document_page.set_stage(stage, done, total)
+        if self._indexing_progress_dialog is not None:
+            self._indexing_progress_dialog.set_stage(stage, done, total)
 
     def _on_indexing_done(self, report: IndexReport) -> None:
         self._refresh_format_filter_options()
@@ -838,11 +915,64 @@ class MainWindow(QMainWindow):
         if report.stale_image_chunk_ids:
             # 재파싱·정리로 사라진 이미지 청크의 옛 썸네일을 지운다 (Phase 8, T8.4).
             evict_thumbnails(report.stale_image_chunk_ids)
+        self.document_page.set_busy(False)
+        self.document_page.set_stats(
+            {
+                "total": report.scanned,
+                "created": report.created,
+                "updated": report.updated,
+                "pruned": report.pruned,
+                "skipped": report.skipped,
+                "indexed": report.indexed,
+                "failed": len(report.failures),
+            }
+        )
+        self.document_page.set_failures(report.failures)
+        self.document_page.set_last_run(self._last_indexed_at())
         if self._indexing_progress_dialog is not None:
             self._indexing_progress_dialog.close()
             self._indexing_progress_dialog = None
         if self._last_query:
             self._run_search(self._last_query)
+
+    def _refresh_document_page(self) -> None:
+        """앱 기동 시점의 문서 관리 페이지 상태 (Phase 11-B).
+
+        통계는 "이번 실행"의 값이라 아직 없지만, **마지막 실행 시각과 실패
+        목록은 인덱스에 남아 있다** — DB에서 읽어 채운다. 안 그러면 앱을 켠
+        직후에는 실패한 파일이 있어도 화면이 깨끗해 보이고 `재시도` 버튼도
+        꺼져 있어, 인덱싱을 한 번 돌리기 전에는 재시도할 방법이 없다.
+        """
+        self.document_page.set_folder(self.state.target_folder)
+        self.document_page.set_last_run(self._last_indexed_at())
+        try:
+            conn = connect(self.db_path)
+            try:
+                paths = failed_document_paths(conn)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — 조회 실패가 앱 기동을 막으면 안 된다
+            paths = []
+        self.document_page.set_failures(
+            [(path, "이전 실행에서 실패했습니다.") for path in paths]
+        )
+
+    def _last_indexed_at(self) -> datetime | None:
+        """`MAX(documents.indexed_at)` — 마지막 인덱싱 시각. 없으면 None."""
+        try:
+            conn = connect(self.db_path)
+            try:
+                row = conn.execute("SELECT MAX(indexed_at) AS ts FROM documents").fetchone()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001
+            return None
+        if row is None or not row["ts"]:
+            return None
+        try:
+            return datetime.fromisoformat(row["ts"])
+        except ValueError:
+            return None
 
     def _libreoffice_warning(self, report: IndexReport) -> str | None:
         """T10.2: LibreOffice가 없어 구버전 문서가 조용히 빠졌다면 안내한다."""
@@ -861,20 +991,12 @@ class MainWindow(QMainWindow):
     def _refresh_status_bar(self) -> None:
         conn = connect(self.db_path)
         doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-        row = conn.execute("SELECT MAX(indexed_at) AS ts FROM documents").fetchone()
         conn.close()
 
         # store.py는 UTC 오프셋을 포함한 isoformat()으로 저장한다. fromisoformat()이
         # 오프셋을 그대로 파싱해 tz-aware datetime을 돌려주므로, format_relative_time이
         # 같은 타임존 기준으로 "지금"을 구해 비교한다 — 로컬 타임존과 섞이지 않는다.
-        last_indexed_at = None
-        if row is not None and row["ts"]:
-            try:
-                last_indexed_at = datetime.fromisoformat(row["ts"])
-            except ValueError:
-                last_indexed_at = None
-
-        self.status_bar_widget.set_idle(doc_count, last_indexed_at)
+        self.status_bar_widget.set_idle(doc_count, self._last_indexed_at())
 
         # T10.26: 시작 시점에는 알아서 재인덱싱을 걸지 않는다 — 앱을 켜자마자
         # 몇 분짜리 작업이 튀어나오면 놀란다. 대신 왜 검색이 안 되는지는

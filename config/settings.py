@@ -15,6 +15,16 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODELS_DIR = PROJECT_ROOT / "models"
 
+# 파서가 추출·캡처한 이미지를 모아두는 곳 (Phase 11-D).
+#
+# 예전에는 문서 폴더 옆에 `<문서폴더>/.assets/<파일명>/`으로 흩어져 저장됐다
+# (`parser/base.py`의 옛 기본값) — 문서가 서브폴더 곳곳에 있으니 `.assets`도
+# 곳곳에 생겼고, 지우려면 트리 전체를 뒤져야 했다. 게다가 **사용자의 원본
+# 문서 폴더**에 쓰기를 하는 것이라 OneDrive·백업 도구가 이걸 같이 동기화하는
+# 부작용도 있었다. 여기 한 곳으로 모아 `data/`(이미 통째로 .gitignore 대상)와
+# 같은 운명이 되게 한다 — 지우려면 폴더 하나만 지우면 된다.
+ASSETS_DIR = PROJECT_ROOT / "data" / "assets"
+
 # 유사도 임계값 — 여러 곳에서 쓰이므로 여기 한 곳에서만 정의한다.
 #   · DESIGN §5.6: 이 값 미만이면 결과 카드를 흐리게 + "관련성 낮음" 표시
 #   · TECH 5.3 1단계 안전장치: Phase 7에서 이 값 미만이면 sLM을 호출하지 않음

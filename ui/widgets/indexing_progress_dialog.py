@@ -76,6 +76,14 @@ class IndexingProgressDialog(QDialog):
         self._time_label.setObjectName("IndexingProgressTime")
         layout.addWidget(self._time_label)
 
+        # 현재 단계 (Phase 11-B). 파일 진행률과 **따로** 보여준다 — 임베딩
+        # 구간은 청크 단위로 돌아(607청크 136초 실측) 그동안 위의 파일
+        # 진행률이 마지막 값에 멈춰 있어 팝업이 굳은 것처럼 보였다.
+        self._stage_label = QLabel("")
+        self._stage_label.setObjectName("IndexingProgressStage")
+        self._stage_label.setVisible(False)
+        layout.addWidget(self._stage_label)
+
         # 지금 처리 중인 파일 — 전체 경로는 길어서 가운데를 생략(...)해 줄인다.
         # 전체 경로가 궁금할 때를 위해 툴팁에는 원본을 그대로 남긴다.
         self._file_label = QLabel("")
@@ -109,6 +117,18 @@ class IndexingProgressDialog(QDialog):
             self._start_time = now
         self._samples.append((now, done))
         self._update_time_label(now, done, total)
+
+    def set_stage(self, stage: str, done: int = 0, total: int = 0) -> None:
+        """현재 단계를 한 줄 덧붙인다 (Phase 11-B)."""
+        text = f"단계: {stage}"
+        if total > 0:
+            text += f" · {done:,}/{total:,}"
+        self._stage_label.setText(text)
+        self._stage_label.setVisible(True)
+
+    def stage_text(self) -> str:
+        """테스트·검증용."""
+        return self._stage_label.text()
 
     def _update_time_label(self, now: float, done: int, total: int) -> None:
         elapsed = now - self._start_time

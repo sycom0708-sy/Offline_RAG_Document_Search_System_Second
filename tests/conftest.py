@@ -14,6 +14,27 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 HWP_SAMPLE_ENV = "HWP_SAMPLE_PATH"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_assets_dir(monkeypatch, tmp_path_factory):
+    """`index_folder()`를 부르는 모든 테스트를 실제 `data/assets/`에서 격리한다 (Phase 11-D).
+
+    🔴 `indexer/pipeline.py`는 `from config.settings import ASSETS_DIR`로
+    값을 **임포트 시점에 지역 이름으로 복사**해 온다 — 그래서
+    `config.settings.ASSETS_DIR`만 패치해서는 파이프라인에 안 먹고,
+    `indexer.pipeline.ASSETS_DIR`을 직접 바꿔야 한다.
+
+    이 fixture가 없으면 `index_folder()`를 부르는 모든 테스트가 이 PC의
+    실제 프로젝트 `data/assets/`에 doc_id 폴더를 만든다 — 실측: 전체
+    스위트 한 번에 31개 폴더·159KB가 생겼다. Phase 7.7의
+    `data/app_state.json` 오염(테스트가 `AppState.save()`를 인자 없이 불러
+    실제 상태 파일을 덮어쓴 문제), T10.5의 `data/index.sqlite3` 오염과
+    같은 종류의 함정이다.
+    """
+    import indexer.pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "ASSETS_DIR", tmp_path_factory.mktemp("assets_isolated"))
+
+
 def find_hwp_sample() -> Path | None:
     """.hwp는 코드로 생성할 수 없어 실제 파일에 의존한다.
 

@@ -104,9 +104,11 @@ class TestIndexFolderSkipsUnchangedFiles:
         parsed_paths = []
         real_parse_file = pipeline.parse_file
 
-        def counting_parse_file(path):
+        def counting_parse_file(path, **kwargs):
+            # Phase 11-D부터 파이프라인이 asset_dir=...을 넘긴다 — 그대로
+            # 전달해야 실제 parse_file()과 같은 경로로 동작한다.
             parsed_paths.append(path)
-            return real_parse_file(path)
+            return real_parse_file(path, **kwargs)
 
         monkeypatch.setattr(pipeline, "parse_file", counting_parse_file)
 

@@ -62,3 +62,20 @@ def test_count_supported_matches_scan_length(tmp_path):
     (tmp_path / "b.pdf").write_bytes(b"x")
     (tmp_path / "c.bak").write_bytes(b"x")
     assert count_supported(tmp_path) == 2 == len(list(scan_folder(tmp_path)))
+
+
+def test_scan_skips_office_lock_files(tmp_path, sample_txt):
+    """Office 잠금 파일(`~$...`)은 대상이 아니다 (Phase 11-B).
+
+    확장자가 원본과 같아 지원 형식 판정을 통과하지만 내용은 스텁이라 항상
+    파싱에 실패한다 — 문서 관리 페이지에 "고칠 수 없는 실패"로 남는다.
+    """
+    import shutil
+
+    from indexer.scanner import scan_folder
+
+    shutil.copy(sample_txt, tmp_path / "보고서.txt")
+    shutil.copy(sample_txt, tmp_path / "~$보고서.txt")
+
+    names = [p.name for p in scan_folder(tmp_path)]
+    assert names == ["보고서.txt"]

@@ -144,6 +144,9 @@ class Sidebar(QFrame):
         self.recent_searches.item_selected.connect(self.recent_search_selected)
         self._layout.addWidget(self.recent_searches)
 
+        # `set_expanded`/`set_active_page`가 서로의 값을 읽으므로 둘 다 먼저
+        # 정의해 둔다 — 순서를 반대로 두면 첫 호출에서 아직 없는 속성을 읽는다.
+        self._active_page = PAGE_SEARCH
         self._expanded = not expanded  # set_expanded가 실제로 반영하도록 반대로 둔다
         self.set_expanded(expanded)
         self.set_active_page(PAGE_SEARCH)
@@ -158,7 +161,7 @@ class Sidebar(QFrame):
         if expanded == self._expanded:
             return
         self._expanded = expanded
-        self._expansion.setVisible(expanded)
+        self._sync_expansion_visibility()
         self.expand_button.setText(
             EXPAND_EXPANDED_TEXT if expanded else EXPAND_COLLAPSED_TEXT
         )
@@ -167,11 +170,27 @@ class Sidebar(QFrame):
     def is_expanded(self) -> bool:
         return self._expanded
 
+    def _sync_expansion_visibility(self) -> None:
+        """확장 영역은 **검색/대화 페이지에서만** 보인다 (11-A 후속 [사용자 확정]).
+
+        안에 든 것(문서 형식 필터·AI 챗봇 토글)이 검색 옵션이라 문서 관리·설정
+        화면에서는 조작할 이유가 없는데, 11-A에서는 네비게이션 항목에 붙어
+        있다는 이유만으로 어느 페이지에서나 남아 있었다.
+
+        🔴 펼침 상태(`self._expanded`)는 **건드리지 않는다.** 페이지를 옮길 때
+        접어버리면 돌아왔을 때 사용자가 펼쳐 둔 상태가 사라지고, 그 값이
+        `AppState`에 저장까지 되면 다음 실행에도 접힌 채로 시작한다.
+        """
+        self._expansion.setVisible(self._expanded and self._active_page == PAGE_SEARCH)
+
     # --- 네비게이션 -------------------------------------------------
 
     def set_active_page(self, page: str) -> None:
+        self._active_page = page
         for key, button in self._nav_buttons.items():
             button.set_active(key == page)
+        self._sync_expansion_visibility()
+        self._update_recent_searches_max_height()
 
     # --- 최근 검색 --------------------------------------------------
 

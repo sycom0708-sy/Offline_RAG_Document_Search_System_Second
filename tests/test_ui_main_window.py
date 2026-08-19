@@ -7,6 +7,9 @@ DoD: 검색 → 필터/옵션 조합 → 텍스트 결과 확인 → 원문 열�
 
 from __future__ import annotations
 
+import threading
+from pathlib import Path
+
 import pytest
 from PySide6.QtWidgets import QPushButton
 
@@ -1628,3 +1631,214 @@ class TestPhase11Shell:
         qtbot.addWidget(win)
 
         assert str(tmp_path) in win.document_page.folder_text()
+
+
+class _FakeIndexingThread:
+    """인덱싱 스레드 대역 — 실제로 돌리지 않고 받은 인자만 기록한다."""
+
+    instances: list = []
+
+    def __init__(self, db_path, root, on_progress=None, on_done=None, embed=True,
+                 on_stage=None, files=None):
+        self.db_path = db_path
+        self.root = root
+        self.on_progress = on_progress
+        self.on_done = on_done
+        self.on_stage = on_stage
+        self.files = files
+        self.started = False
+        self.stop_event = threading.Event()
+        _FakeIndexingThread.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def is_alive(self):
+        return self.started
+
+    def join(self, timeout=None):
+        self.started = False
+
+
+class TestDocumentPage:
+    """Phase 11-B: 문서 관리 페이지 (DESIGN 14.4)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        # 이 클래스는 배선·표시만 본다. `MainWindow`를 연달아 만들면 ONNX
+        # 워밍업 스레드가 이 PC에서 access violation을 자주 낸다(Phase 8 이래
+        # 알려진 문제) — 쓰지 않는 워밍업을 꺼서 피한다.
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    @pytest.fixture
+    def fake_thread(self, monkeypatch):
+        import ui.main_window as main_window_module
+
+        _FakeIndexingThread.instances = []
+        monkeypatch.setattr(main_window_module, "IndexingThread", _FakeIndexingThread)
+        return _FakeIndexingThread
+
+    # --- 버튼 배선 ---------------------------------------------------
+
+    def test_update_button_starts_reindex_on_target_folder(self, qtbot, window, fake_thread, tmp_path):
+        window.state.target_folder = str(tmp_path)
+
+        window.document_page.update_button.click()
+
+        assert len(fake_thread.instances) == 1
+        thread = fake_thread.instances[0]
+        assert thread.started is True
+        assert thread.files is None  # 폴더 전체 인덱싱
+
+    def test_update_button_opens_folder_dialog_when_no_target(self, qtbot, window, monkeypatch):
+        """대상 폴더가 없으면 조용히 아무 일도 안 하는 대신 폴더 선택으로 이어준다."""
+        opened = []
+        monkeypatch.setattr(MainWindow, "_open_folder_dialog", lambda self: opened.append(True))
+        window.state.target_folder = ""
+
+        window.document_page.update_button.click()
+
+        assert opened == [True]
+
+    def test_cancel_button_signals_the_indexing_thread(self, qtbot, window, fake_thread, tmp_path):
+        window.state.target_folder = str(tmp_path)
+        window.document_page.update_button.click()
+
+        window.document_page.cancel_button.click()
+
+        assert fake_thread.instances[0].stop_event.is_set()
+
+    # --- 재시도 (사용자 확정: 실패 파일만 강제 재파싱) --------------------
+
+    def test_retry_reindexes_only_the_failed_files(self, qtbot, window, fake_thread, tmp_path):
+        window.state.target_folder = str(tmp_path)
+        window.document_page.set_failures([(Path("a.doc"), "변환 실패")])
+
+        window.document_page.retry_button.click()
+
+        assert len(fake_thread.instances) == 1
+        assert fake_thread.instances[0].files == [Path("a.doc")]
+
+    def test_retry_is_disabled_without_failures(self, qtbot, window):
+        window.document_page.set_failures([])
+        assert window.document_page.retry_button.isEnabled() is False
+
+        window.document_page.set_failures([(Path("a.doc"), "변환 실패")])
+        assert window.document_page.retry_button.isEnabled() is True
+
+    def test_startup_reads_failures_left_in_the_index(self, qtbot, indexed_db, tmp_path):
+        """앱을 켠 직후에도 재시도할 수 있어야 한다 — 실패는 인덱스에 남아 있다."""
+        conn = connect(indexed_db)
+        conn.execute("UPDATE documents SET status = 'failed' WHERE doc_id = 'd1'")
+        conn.commit()
+        conn.close()
+
+        win = MainWindow(db_path=indexed_db, state=AppState.load(path=tmp_path / "state.json"))
+        qtbot.addWidget(win)
+
+        assert len(win.document_page.failure_paths()) == 1
+        assert win.document_page.retry_button.isEnabled() is True
+
+    # --- 통계·진단 표시 ----------------------------------------------
+
+    def test_report_fills_the_seven_stat_cells(self, qtbot, window):
+        from indexer.pipeline import IndexReport
+
+        report = IndexReport(
+            scanned=10, created=3, updated=2, pruned=1, skipped=4, indexed=5,
+            failures=[(Path("a.doc"), "변환 실패")],
+        )
+
+        window._on_indexing_done(report)
+
+        page = window.document_page
+        assert page.stat_value("total") == "10"
+        assert page.stat_value("created") == "3"
+        assert page.stat_value("updated") == "2"
+        assert page.stat_value("pruned") == "1"
+        assert page.stat_value("skipped") == "4"
+        assert page.stat_value("indexed") == "5"
+        assert page.stat_value("failed") == "1"
+
+    def test_failures_are_listed_with_file_and_reason(self, qtbot, window):
+        from indexer.pipeline import IndexReport
+
+        window._on_indexing_done(IndexReport(failures=[(Path("보고서.doc"), "변환 실패")]))
+
+        rows = window.document_page.failure_rows()
+        assert any("보고서.doc" in row and "변환 실패" in row for row in rows)
+        assert window.document_page.failure_badge.text() == "1건"
+
+    def test_stage_is_shown_while_indexing(self, qtbot, window):
+        from indexer.pipeline import STAGE_EMBEDDING
+
+        window._on_indexing_stage(STAGE_EMBEDDING, 128, 607)
+
+        assert "임베딩" in window.document_page.stage_text()
+        assert "128" in window.document_page.stage_text()
+
+    def test_busy_state_swaps_the_badge_and_buttons(self, qtbot, window):
+        page = window.document_page
+        page.set_busy(True)
+        assert page.update_button.isEnabled() is False
+        assert page.cancel_button.isEnabled() is True
+
+        page.set_busy(False)
+        assert page.update_button.isEnabled() is True
+        assert page.cancel_button.isEnabled() is False
+
+    # --- 진행률 팝업과의 관계 (DESIGN 14.4.3) --------------------------
+
+    def test_no_popup_while_the_document_page_is_open(self, qtbot, window, fake_thread, tmp_path):
+        from ui.widgets.sidebar import PAGE_DOCUMENTS
+
+        window.show_page(PAGE_DOCUMENTS)
+        window.state.target_folder = str(tmp_path)
+
+        window.document_page.update_button.click()
+
+        assert window._indexing_progress_dialog is None
+        assert window.document_page.is_busy() is True
+
+    def test_popup_appears_when_started_from_another_page(self, qtbot, window, fake_thread, tmp_path):
+        from ui.widgets.sidebar import PAGE_SETTINGS
+
+        window.show_page(PAGE_SETTINGS)
+
+        window._start_reindex(str(tmp_path))
+
+        assert window._indexing_progress_dialog is not None
+        window._indexing_progress_dialog.close()
+
+
+class TestSidebarExpansionScope:
+    """확장 영역은 검색/대화 페이지에서만 보인다 (11-A 후속, 사용자 확정)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    def test_expansion_hides_on_other_pages_and_returns(self, qtbot, window):
+        from ui.widgets.sidebar import PAGE_DOCUMENTS, PAGE_SEARCH
+
+        window.sidebar.set_expanded(True)
+        assert window.sidebar._expansion.isVisibleTo(window.sidebar) is True
+
+        window.show_page(PAGE_DOCUMENTS)
+        assert window.sidebar._expansion.isVisibleTo(window.sidebar) is False
+        # 펼침 상태 자체는 남아야 한다 — 접어버리면 AppState에까지 번진다.
+        assert window.sidebar.is_expanded() is True
+
+        window.show_page(PAGE_SEARCH)
+        assert window.sidebar._expansion.isVisibleTo(window.sidebar) is True
+
+    def test_page_switch_does_not_change_saved_expand_state(self, qtbot, window):
+        from ui.widgets.sidebar import PAGE_SETTINGS
+
+        window.sidebar.expand_button.click()
+        assert window.state.search_expanded is True
+
+        window.show_page(PAGE_SETTINGS)
+
+        assert window.state.search_expanded is True
+

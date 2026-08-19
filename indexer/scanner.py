@@ -8,11 +8,23 @@ from typing import Iterator
 from parser.registry import is_supported
 
 
+# Word·Excel·PowerPoint가 문서를 열어 둔 동안 옆에 만드는 잠금 파일 접두사.
+# 확장자는 원본과 같아(`~$보고서.docx`) `is_supported()`를 통과하지만 내용은
+# 수백 바이트짜리 스텁이라 **항상 파싱에 실패한다**.
+_OFFICE_LOCK_PREFIX = "~$"
+
+
 def scan_folder(root: str | Path) -> Iterator[Path]:
     """대상 폴더를 재귀적으로 탐색해 지원 형식 파일 경로만 순서대로 반환한다.
 
     숨김 폴더(`.`로 시작)는 건너뛴다 — 인덱스 캐시(`.assets` 등) 자기 자신을
     스캔 대상에 포함시키지 않기 위함이다.
+
+    Office 잠금 파일(`~$...`)도 건너뛴다 [Phase 11-B]. 지금까지는 조용히 실패
+    목록에 쌓이기만 해서 눈에 띄지 않았는데, 문서 관리 페이지가 실패를
+    보여주기 시작하자 **고칠 수 없는 실패 항목**으로 남는 것이 드러났다
+    (실제 인덱스에서 `~$인증자격시험 세부사항_인증_1_28_v3.doc` 발견) —
+    원본이 아니라 임시 파일이라 `재시도`를 눌러도 영원히 실패한다.
     """
     root = Path(root)
     if not root.is_dir():
@@ -20,6 +32,8 @@ def scan_folder(root: str | Path) -> Iterator[Path]:
 
     for path in sorted(root.rglob("*")):
         if any(part.startswith(".") for part in path.relative_to(root).parts):
+            continue
+        if path.name.startswith(_OFFICE_LOCK_PREFIX):
             continue
         if path.is_file() and is_supported(path):
             yield path

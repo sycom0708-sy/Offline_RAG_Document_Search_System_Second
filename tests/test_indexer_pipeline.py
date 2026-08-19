@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -234,3 +236,264 @@ def test_indexing_thread_runs_in_background_and_reports_done(tmp_path, sample_tx
     conn = connect(db_path)
     assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
     conn.close()
+
+
+# --- Phase 11-B: 문서 관리 페이지가 쓰는 지표 (DESIGN §14.4.1) ---------------
+
+
+def test_report_separates_created_from_updated(tmp_path, sample_txt):
+    """`신규`/`변경`을 따로 센다 — 판별은 원래부터 둘을 구분하고 있었다."""
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(sample_txt, work / "a.txt")
+    conn = connect(":memory:")
+
+    first = index_folder(conn, work, embed=False)
+    assert (first.created, first.updated, first.skipped) == (1, 0, 0)
+
+    # 내용을 바꾸면 "변경"으로 잡혀야 한다(신규가 아니다).
+    #
+    # mtime을 손으로 밀어 준다. `classify_file()`은 mtime을 먼저 보는데,
+    # 복사 직후 덮어쓰면 Windows 시스템 클럭 틱(약 15.6ms) 안에 들어가 mtime이
+    # 같은 값으로 찍힐 수 있고, 그러면 내용이 달라도 "그대로"로 판정된다 —
+    # 실제로 전체 실행에서만 이 테스트가 실패했다(단독 실행은 통과). 시계에
+    # 기대지 않고 판정 자체를 검증하도록 고정한다.
+    target = work / "a.txt"
+    target.write_text("완전히 다른 내용", encoding="utf-8")
+    stat = target.stat()
+    os.utime(target, (stat.st_atime, stat.st_mtime + 10))
+    second = index_folder(conn, work, embed=False)
+    assert (second.created, second.updated, second.skipped) == (0, 1, 0)
+
+    # 그대로면 둘 다 0이고 미변경만 는다 (Phase 8).
+    third = index_folder(conn, work, embed=False)
+    assert (third.created, third.updated, third.skipped) == (0, 0, 1)
+
+
+def test_report_scanned_counts_every_target_file(tmp_path, sample_txt):
+    """`총`은 indexed+skipped 파생이 아니라 실제 대상 파일 수다.
+
+    파싱에 실패한 파일은 indexed에도 skipped에도 안 잡혀, 파생값으로 두면
+    파일 진단에는 실패가 떠 있는데 총계에서는 사라진다.
+    """
+    work = tmp_path / "work"
+    work.mkdir()
+    for i in range(3):
+        shutil.copy(sample_txt, work / f"f{i}.txt")
+
+    conn = connect(":memory:")
+    report = index_folder(conn, work, embed=False)
+    assert report.scanned == 3
+
+
+def test_stage_callback_reports_parsing(tmp_path, sample_txt):
+    from indexer.pipeline import STAGE_DONE, STAGE_PARSING
+
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(sample_txt, work / "a.txt")
+
+    stages = []
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False, on_stage=lambda s, d, t: stages.append(s))
+
+    assert stages[0] == STAGE_PARSING
+    assert stages[-1] == STAGE_DONE
+
+
+def test_failed_document_paths_reads_persisted_failures(tmp_path, sample_txt):
+    """실패는 인덱스에 남아 있으므로 앱을 껐다 켜도 다시 읽을 수 있어야 한다."""
+    from indexer.pipeline import failed_document_paths
+
+    work = tmp_path / "work"
+    work.mkdir()
+    target = work / "a.txt"
+    shutil.copy(sample_txt, target)
+
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False)
+    assert failed_document_paths(conn) == []
+
+    conn.execute("UPDATE documents SET status = 'failed'")
+    conn.commit()
+    assert [p.name for p in failed_document_paths(conn)] == ["a.txt"]
+
+
+def test_reindex_files_forces_reparse_of_unchanged_files(tmp_path, sample_txt):
+    """🔴 재시도의 존재 이유 — 실패한 문서도 mtime·해시가 저장돼 있어
+    보통의 재인덱싱에서는 `UNCHANGED`로 건너뛰어진다."""
+    from indexer.incremental import FileChange, classify_file
+    from indexer.pipeline import reindex_files
+
+    work = tmp_path / "work"
+    work.mkdir()
+    target = work / "a.txt"
+    shutil.copy(sample_txt, target)
+
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False)
+
+    # 파일을 손대지 않았으니 일반 판정은 "그대로"다.
+    assert classify_file(conn, target) is FileChange.UNCHANGED
+    assert index_folder(conn, work, embed=False).skipped == 1
+
+    # 재시도는 그 판정을 무시하고 실제로 다시 파싱한다.
+    report = reindex_files(conn, [target], embed=False)
+    assert report.skipped == 0
+    assert report.indexed == 1
+
+
+def test_reindex_files_does_not_prune_other_documents(tmp_path, sample_txt):
+    """🔴 재시도가 폴더 정리를 부르면 대상 밖 문서가 통째로 사라진다.
+
+    `_prune_stale_documents()`는 "이번 스캔에 없는 문서를 지운다"인데, 재시도
+    대상은 폴더의 일부뿐이라 나머지 전부가 그 조건에 걸린다(T10.5와 같은
+    함정의 반대 방향).
+    """
+    from indexer.pipeline import reindex_files
+
+    work = tmp_path / "work"
+    work.mkdir()
+    for name in ("a.txt", "b.txt", "c.txt"):
+        shutil.copy(sample_txt, work / name)
+
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False)
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 3
+
+    reindex_files(conn, [work / "a.txt"], embed=False)
+
+    names = sorted(r[0] for r in conn.execute("SELECT file_name FROM documents"))
+    assert names == ["a.txt", "b.txt", "c.txt"]
+
+
+def test_indexing_thread_with_files_runs_retry_path(tmp_path, sample_txt):
+    work = tmp_path / "work"
+    work.mkdir()
+    for name in ("a.txt", "b.txt"):
+        shutil.copy(sample_txt, work / name)
+    db_path = tmp_path / "index.sqlite3"
+
+    conn = connect(db_path)
+    index_folder(conn, work, embed=False)
+    conn.close()
+
+    result = {}
+    done_event = threading.Event()
+    thread = IndexingThread(
+        db_path,
+        work,
+        on_done=lambda report: (result.update(report=report), done_event.set()),
+        embed=False,
+        files=[work / "a.txt"],
+    )
+    thread.start()
+    assert done_event.wait(timeout=60)
+    thread.join()
+
+    report = result["report"]
+    assert report.scanned == 1  # b.txt는 대상이 아니었다
+    assert report.indexed == 1
+    assert report.skipped == 0  # 강제 재파싱
+
+
+def test_indexing_thread_reports_done_even_when_the_run_fails(tmp_path):
+    """🔴 예외가 나도 완료 통지는 반드시 간다 (Phase 11-B).
+
+    통지가 안 가면 문서 관리 페이지가 "인덱싱 중"에 갇히고 `인덱스 업데이트`
+    버튼이 계속 비활성이라 앱을 껐다 켜야 회복된다. 대상 폴더가 사라진 경우가
+    실제로 밟을 수 있는 경로다(`scan_folder()`가 예외를 던진다).
+    """
+    missing = tmp_path / "없어진폴더"
+    result = {}
+    done_event = threading.Event()
+
+    thread = IndexingThread(
+        tmp_path / "index.sqlite3",
+        missing,
+        on_done=lambda report: (result.update(report=report), done_event.set()),
+        embed=False,
+    )
+    thread.start()
+    assert done_event.wait(timeout=30), "예외가 난 실행이 완료를 통지하지 않았다"
+    thread.join()
+
+    report = result["report"]
+    assert report.warnings  # 왜 아무 일도 안 일어났는지는 남아야 한다
+    assert report.indexed == 0
+
+
+# --- Phase 11-D: 이미지 자산 중앙화 (data/assets/<doc_id>/) -----------------
+
+
+def test_extracted_images_land_in_the_central_assets_dir(tmp_path, monkeypatch, sample_docx):
+    """🔴 이미지가 문서 폴더 옆 `.assets`가 아니라 `ASSETS_DIR/<doc_id>/`에 생겨야 한다."""
+    from indexer import pipeline as pipeline_module
+    from parser.utils.ids import make_doc_id
+
+    assets_dir = tmp_path / "central_assets"
+    monkeypatch.setattr(pipeline_module, "ASSETS_DIR", assets_dir)
+
+    work = tmp_path / "work"
+    work.mkdir()
+    target = work / "문서.docx"
+    shutil.copy(sample_docx, target)
+
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False)
+
+    doc_id = make_doc_id(target)
+    doc_assets = assets_dir / doc_id
+    assert doc_assets.is_dir()
+    assert any(doc_assets.iterdir())
+    # 원본 문서 옆에는 아무것도 안 생겨야 한다.
+    assert not (work / ".assets").exists()
+
+
+def test_stored_image_path_points_into_the_central_dir(tmp_path, monkeypatch, sample_docx):
+    from indexer import pipeline as pipeline_module
+
+    assets_dir = tmp_path / "central_assets"
+    monkeypatch.setattr(pipeline_module, "ASSETS_DIR", assets_dir)
+
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(sample_docx, work / "문서.docx")
+
+    conn = connect(":memory:")
+    index_folder(conn, work, embed=False)
+
+    row = conn.execute(
+        "SELECT image_json FROM chunks WHERE image_json IS NOT NULL LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    image_path = Path(json.loads(row[0])["image_path"])
+    assert assets_dir in image_path.parents
+
+
+def test_pruning_a_document_removes_its_asset_folder(tmp_path, monkeypatch, sample_docx):
+    """🔴 문서가 지워지면 그 doc_id 폴더도 함께 지워져야 한다 — 안 지우면
+    중앙화된 곳이 지워진 문서의 잔재로 영원히 불어난다."""
+    from indexer import pipeline as pipeline_module
+    from parser.utils.ids import make_doc_id
+
+    assets_dir = tmp_path / "central_assets"
+    monkeypatch.setattr(pipeline_module, "ASSETS_DIR", assets_dir)
+
+    old_folder = tmp_path / "old"
+    old_folder.mkdir()
+    target = old_folder / "문서.docx"
+    shutil.copy(sample_docx, target)
+
+    conn = connect(":memory:")
+    index_folder(conn, old_folder, embed=False)
+    doc_id = make_doc_id(target)
+    assert (assets_dir / doc_id).is_dir()
+
+    new_folder = tmp_path / "new"
+    new_folder.mkdir()
+    shutil.copy(sample_docx, new_folder / "다른문서.docx")
+
+    index_folder(conn, new_folder, embed=False)  # old_folder는 이제 스캔 대상이 아니다
+
+    assert not (assets_dir / doc_id).exists()
