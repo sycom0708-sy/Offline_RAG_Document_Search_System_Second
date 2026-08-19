@@ -74,11 +74,14 @@ class ModelManagerDialog(QDialog):
         """`verify_checksums=False`는 테스트용이다 — 실제 GGUF(수 GB)를 해시하지
         않게 한다. `MainWindow(db_path=..., state=...)`와 같은 주입 방식."""
         super().__init__(parent)
+        self.setObjectName("ModelManagerDialog")
         self.setWindowTitle("모델 관리")
         self.setMinimumWidth(560)
         self._verify_checksums = verify_checksums
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
 
         intro = QLabel(INTRO_TEXT)
         intro.setObjectName("ModelManagerIntro")
@@ -96,7 +99,8 @@ class ModelManagerDialog(QDialog):
             layout.addWidget(row)
 
         divider = QFrame()
-        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setObjectName("ModelManagerDivider")
+        divider.setFixedHeight(1)
         layout.addWidget(divider)
 
         slm_label = QLabel("AI 요약 모델 (sLM) — 선택 설치")
@@ -114,6 +118,8 @@ class ModelManagerDialog(QDialog):
         footer = QHBoxLayout()
         footer.addStretch()
         self.refresh_button = QPushButton("새로고침 (파일 확인)")
+        self.refresh_button.setObjectName("PrimaryButton")
+        self.refresh_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_button.clicked.connect(self.refresh)
         footer.addWidget(self.refresh_button)
         layout.addLayout(footer)
@@ -230,9 +236,14 @@ class _ModelRow(QWidget):
         # 기본 QWidget은 포커스를 받지 못한다 — 다이얼로그가 특정 행에 포커스를
         # 주려면(예: 콤보에서 미설치 옵션을 골랐을 때) 명시적으로 정책을 켜야 한다.
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setObjectName("ModelRow")
+        # 🔴 순정 QWidget은 스타일시트의 background/border를 기본적으로 안 그린다
+        # (QFrame과 다르다) — 이 속성 없이 #ModelRow에 배경을 걸면 조용히 무시된다.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setHorizontalSpacing(10)
 
         name = QLabel(profile.repo_id)
         name.setObjectName("ModelRowName")
@@ -243,10 +254,14 @@ class _ModelRow(QWidget):
         layout.addWidget(self._badge, 0, 1)
 
         self._folder_btn = QPushButton("폴더 열기")
+        self._folder_btn.setObjectName("SidebarFooterButton")
+        self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._folder_btn.clicked.connect(lambda: self.folder_requested.emit(self._profile.local_dir))
         layout.addWidget(self._folder_btn, 0, 2)
 
         self._download_btn = QPushButton("설치 안내")
+        self._download_btn.setObjectName("SidebarFooterButton")
+        self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         # LIGHT는 항상 번들 설치라 버튼이 쓰일 일이 없다. HEAVY(KURE-v1)는
         # Phase 7.5부터 변환 파이프라인이 생겨 안내가 실제로 의미 있다 —
         # "다운로드"가 아니라 "직접 변환하거나 폴더를 복사하라"는 안내라
@@ -338,9 +353,12 @@ class _SlmRow(QWidget):
         super().__init__(parent)
         self._profile = profile
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setObjectName("ModelRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         layout = QGridLayout(self)
-        layout.setContentsMargins(4, 8, 4, 8)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setHorizontalSpacing(10)
 
         tier = _TIER_LABEL.get(profile.key, "")
         name = QLabel(f"{profile.label} · {profile.size_gb:.2f} GB")
@@ -352,12 +370,16 @@ class _SlmRow(QWidget):
         layout.addWidget(self._badge, 0, 1)
 
         self._folder_btn = QPushButton("폴더 열기")
+        self._folder_btn.setObjectName("SidebarFooterButton")
+        self._folder_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._folder_btn.clicked.connect(
             lambda: self.folder_requested.emit(self._profile.local_path.parent)
         )
         layout.addWidget(self._folder_btn, 0, 2)
 
         self._download_btn = QPushButton("다운로드 안내")
+        self._download_btn.setObjectName("SidebarFooterButton")
+        self._download_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._download_btn.clicked.connect(
             lambda: self.download_requested.emit(self._profile)
         )

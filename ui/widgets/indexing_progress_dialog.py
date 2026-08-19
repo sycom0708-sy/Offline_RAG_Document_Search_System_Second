@@ -53,6 +53,7 @@ class IndexingProgressDialog(QDialog):
         time_source: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(parent)
+        self.setObjectName("IndexingProgressDialog")
         self.setWindowTitle("인덱싱 중")
         self.setMinimumWidth(360)
 
@@ -62,6 +63,8 @@ class IndexingProgressDialog(QDialog):
         self._samples: deque[tuple[float, int]] = deque(maxlen=_RATE_WINDOW)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
 
         self._info_label = QLabel("인덱싱 준비 중…")
         self._info_label.setObjectName("IndexingProgressInfo")
@@ -93,7 +96,10 @@ class IndexingProgressDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.addStretch()  # 취소 버튼을 우측 하단에 배치
         self.cancel_button = QPushButton("취소")
-        self.cancel_button.setObjectName("IndexingProgressCancelButton")
+        # 문서 관리 페이지의 "취소"/"재시도"와 같은 톤(Phase 11-E) — 이
+        # 팝업만 다른 회색이 되지 않도록 새 클래스 대신 기존 토큰을 쓴다.
+        self.cancel_button.setObjectName("SidebarFooterButton")
+        self.cancel_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_button.clicked.connect(self._on_cancel_clicked)
         buttons.addWidget(self.cancel_button)
         layout.addLayout(buttons)

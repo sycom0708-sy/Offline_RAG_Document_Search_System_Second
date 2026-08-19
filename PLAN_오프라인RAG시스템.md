@@ -1645,6 +1645,54 @@ Phase 7.7의 `data/app_state.json` 오염(`AppState.save()`를 인자 없이 부
 ① `python -m indexer.cli index ../exdoc`(또는 문서 관리 페이지의 `인덱스 업데이트`)로 전체
 재인덱싱 → ② `python -m scripts.clean_assets ../exdoc`로 dry-run 확인 → ③ `--yes`로 실제 삭제.
 
+### 11-E 팝업 3종 재도색 — ✅ 완료 (2026-08-19, 사용자 요청)
+
+`폴더 관리`·`모델 관리`·`인덱싱 진행률` 팝업 스크린샷을 보고 "스타일을 바꿔달라"는 요청이
+이어졌다(먼저 폴더 관리, 다음에 모델 관리, 마지막에 나머지 전부). 셋 다 Phase 4·7 시절
+"최소 구현"으로 만들어진 뒤 Phase 11의 카드형 디자인 시스템이 자리 잡는 동안 재도색을 못
+받아, 문서 관리·설정 페이지 옆에서 기본 Qt 버튼·여백 없는 레이아웃으로 튀고 있었다
+(스크린샷으로 확인).
+
+**새 색·새 클래스를 만들지 않고 기존 토큰만 재사용했다** — 다이얼로그마다 다른 색이 되면
+예외가 하나씩 늘어난다. 공통으로 한 것: 다이얼로그 자체에 `objectName` + 흰 배경, 루트
+레이아웃에 여백(20px)·간격, 주 액션은 `PrimaryButton`(파랑), 보조 액션은
+`SidebarFooterButton`(회색)으로 통일, 얇은 구분선(`#E5E7EB`) 적용.
+
+#### 폴더 관리 (`ui/widgets/folder_dialog.py`)
+
+경로 라벨 위에 `PageEyebrow`("대상 폴더")를 얹고, 본문에서는 중복 표기("대상 폴더: ")를 뺐다
+— 문서 관리 카드가 이미 쓰는 "라벨은 눈썹이, 값은 본문이" 원칙과 같다.
+
+#### 모델 관리 (`ui/widgets/model_manager_dialog.py`)
+
+행마다 카드 배경(`#ModelRow`, 문서 관리의 StatCell과 같은 톤)을 둘러 표처럼 붙어 보이던
+목록을 분리하고, 상태 배지를 문서 관리의 `PageBadge`와 같은 알약(pill) 모양으로 바꿨다.
+
+🔴 **`_ModelRow`/`_SlmRow`가 순정 `QWidget`이라 `WA_StyledBackground` 없이는 QSS의
+`background`가 조용히 무시된다** — `QFrame`과 다른 점이라 놓치기 쉬운 함정, 속성을 명시로
+추가해 해결했다.
+
+🔴 **재도색 검증 중 실제 버그를 잡았다** — 버튼에 QSS `background`를 직접 지정하면 Qt의
+기본 "비활성화" 회색 처리가 더는 자동으로 안 먹어서, 비활성 버튼(이미 설치된 모델의
+"설치 안내")과 활성 버튼("폴더 열기")이 스크린샷에서 구분이 안 됐다. `#SidebarFooterButton:disabled`
+규칙을 추가했는데, 이 토큰은 문서 관리 페이지의 "취소"/"재시도" 버튼과 공유라 그쪽 비활성
+표시도 같이 고쳐졌다 — 토큰을 공유하는 구조가 아니었다면 이 버그를 세 번 따로 겪었을 것이다.
+
+#### 인덱싱 진행률 (`ui/widgets/indexing_progress_dialog.py`)
+
+상태 텍스트를 굵게, `IndexingProgressStage`(Phase 11-B에서 objectName만 붙이고 QSS를
+빠뜨렸던 라벨)에 스타일을 채우고, 취소 버튼을 `SidebarFooterButton`으로 통일해 다른 두
+팝업과 톤을 맞췄다.
+
+#### 검증
+
+`QWidget.grab()`으로 팝업 3개 전부 시각 확인. 새 테스트는 추가하지 않았다 — 기존 테스트가
+`objectName` 문자열이 아니라 위젯 속성(`.folder_label`/`.reindex_button`/`.cancel_button`
+등)을 참조하고 있어 재도색에 영향받지 않는다는 것을 실행으로 확인했다. 전체 906 passed /
+5 skipped 유지.
+
+DESIGN 문서는 건드리지 않았다 — 새 색·새 토큰을 만들지 않고 Phase 11이 이미 정의한 것만
+재사용했기 때문에 명세를 갱신할 내용이 없다.
 
 ### 11-A 중 잡은 기존 결함 — 리사이즈 시 화면 깜박임 (2026-08-18, 사용자 보고)
 

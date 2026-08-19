@@ -284,6 +284,16 @@ QMainWindow, #CentralWidget {
     background: #E5E7EB;
 }
 
+/* 🔴 배경을 커스텀 색으로 지정하는 순간 Qt의 기본 "비활성화" 회색 처리가
+   더는 자동으로 안 먹는다 — 이 규칙 없이는 비활성 버튼과 활성 버튼이
+   똑같아 보여 무엇을 누를 수 있는지 구분이 안 된다(모델 관리 팝업에서
+   실제로 이렇게 나온 것을 캡처로 확인). */
+#SidebarFooterButton:disabled {
+    background: #F7F8F9;
+    color: #C7CDD6;
+    border-color: #EEF1F4;
+}
+
 /* ---------- 결과 리스트 / 카드 (§5) ---------- */
 
 #ResultList {
@@ -533,6 +543,24 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
+/* Phase 11-E — 나머지 두 팝업(폴더 관리·모델 관리)과 눈높이를 맞춘다.
+   지금까지 이 다이얼로그는 배경·여백 지정이 전혀 없어 기본 Qt 여백으로
+   붙어 보였다. */
+#IndexingProgressDialog {
+    background: #FFFFFF;
+}
+
+#IndexingProgressInfo {
+    color: #1F2937;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+#IndexingProgressStage {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+
 #IndexingProgressFile {
     color: #9CA3AF;
     font-size: 12px;
@@ -549,11 +577,46 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
-/* ---------- 모델 관리 팝업 ---------- */
+/* ---------- 폴더 관리 팝업 (Phase 11-E) ---------- */
+
+/* 문서 관리 카드와 같은 눈높이로 맞춘다 — 새 색을 만들지 않고 PageEyebrow·
+   PrimaryButton·SidebarFooterButton 토큰을 그대로 재사용한다. */
+#FolderDialog {
+    background: #FFFFFF;
+}
+
+#FolderDialogPath {
+    color: #1F2937;
+    font-size: 13px;
+}
+
+#FolderDialogDivider {
+    background: #E5E7EB;
+}
+
+/* ---------- 모델 관리 팝업 (Phase 11-E 재도색) ---------- */
+
+/* 폴더 관리 팝업과 같은 원칙 — 새 색을 만들지 않고 기존 카드·배지·버튼
+   토큰을 재사용한다. */
+#ModelManagerDialog {
+    background: #FFFFFF;
+}
 
 #ModelManagerIntro, #ModelManagerPlaceholder {
     color: #9CA3AF;
     font-size: 12px;
+}
+
+#ModelManagerDivider {
+    background: #E5E7EB;
+}
+
+/* 행 하나 = 카드 하나. 지금까지는 배경·경계가 없어 목록이 표처럼 붙어
+   보였다 — 문서 관리 페이지의 통계 칸(StatCell)과 같은 톤으로 분리한다. */
+#ModelRow {
+    background: #F8FAFC;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
 }
 
 #ModelRowName {
@@ -562,23 +625,29 @@ QMainWindow, #CentralWidget {
     font-weight: 700;
 }
 
-#ModelRowBadge[state="installed"] {
-    color: #15803D;
+/* 배지를 알약(pill) 모양으로 — 문서 관리 페이지의 PageBadge와 같은 형태
+   (배경+패딩+둥근 모서리)로 맞추고, 색상 자체는 기존 3색을 그대로 쓴다. */
+#ModelRowBadge {
+    border-radius: 10px;
+    padding: 2px 8px;
     font-size: 11px;
     font-weight: 700;
 }
 
+#ModelRowBadge[state="installed"] {
+    background: #DCFCE7;
+    color: #15803D;
+}
+
 #ModelRowBadge[state="pending"] {
+    background: #EEF2F7;
     color: #52606D;
-    font-size: 11px;
-    font-weight: 700;
 }
 
 /* 파일은 있으나 크기·체크섬이 안 맞는다 (T7.9) */
 #ModelRowBadge[state="invalid"] {
+    background: #FEE2E2;
     color: #B91C1C;
-    font-size: 11px;
-    font-weight: 700;
 }
 
 #ModelRowNote {
