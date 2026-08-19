@@ -39,6 +39,15 @@ class AppState:
     # 사이드바 "최근 검색" 목록(Phase 7.7). 최신이 맨 앞, 최대
     # RECENT_SEARCHES_LIMIT건 — 목록 갱신은 ui.state 밖(MainWindow)에서 한다.
     recent_searches: list[str] = dataclasses.field(default_factory=list)
+    # Phase 11: 사이드바 "검색/대화" 옆 확장 영역(문서 형식 · AI 챗봇 사용)의
+    # 펼침 상태. 기본은 접힘 — 평소 화면을 비워두자는 것이 이 배치의 목적이다.
+    search_expanded: bool = False
+    # Phase 11: UI에서 뺐지만 **기능은 살아 있는** 검색 옵션(DESIGN §14.7).
+    # `hybrid_search()`의 인자는 그대로 두고 값만 여기서 읽는다 — 이 파일을
+    # 직접 고치면 켤 수 있고, 나중에 UI를 되살릴 때도 배선이 남아 있다.
+    # 기본값은 둘 다 꺼짐으로, UI가 있던 시절의 기본 상태와 같다.
+    case_sensitive: bool = False
+    exact_word: bool = False
 
     def __post_init__(self) -> None:
         # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자

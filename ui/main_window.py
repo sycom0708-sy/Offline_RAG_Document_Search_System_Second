@@ -13,7 +13,13 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QMainWindow,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
 from config.settings import get_profile
 from indexer.fts5.schema import connect
@@ -28,13 +34,15 @@ from ui.state import DB_PATH, AppState
 from ui.summary_worker import SummaryWorker
 from ui.thumbnail_cache import evict_thumbnails
 from ui.widgets.chat_panel import ChatPanel
+from ui.widgets.document_page import DocumentPage
 from ui.widgets.folder_dialog import FolderDialog
 from ui.widgets.indexing_progress_dialog import IndexingProgressDialog
 from ui.widgets.model_manager_dialog import ModelManagerDialog
 from ui.widgets.result_header import ResultHeader
 from ui.widgets.result_list import ResultList
 from ui.widgets.search_bar import InputBar
-from ui.widgets.sidebar import Sidebar
+from ui.widgets.settings_page import SettingsPage
+from ui.widgets.sidebar import PAGE_DOCUMENTS, PAGE_SEARCH, PAGE_SETTINGS, Sidebar
 from ui.widgets.status_bar import StatusBar
 
 
@@ -142,11 +150,15 @@ class MainWindow(QMainWindow):
         # PC 성능 콤보가 저장된 프로파일로 바로 시작하도록 생성 시점에
         # 넘긴다 — 기본값으로 만든 뒤 따로 맞추면 화면은 "경량"인데 실제로는
         # 권장으로 검색되는 어긋난 상태가 됐었다(실사용 중 발견).
-        self.sidebar = Sidebar(initial_profile=self.state.model_profile)
+        self.sidebar = Sidebar(expanded=self.state.search_expanded)
         root.addWidget(self.sidebar)
 
+        # Phase 11: 본문은 3페이지를 갈아 끼운다(DESIGN §14.1). 검색/대화
+        # 페이지만 입력창·상태바를 갖는다 — 문서 관리·설정에는 없다.
+        self.pages = QStackedWidget()
+        self.pages.setObjectName("MainArea")
+
         main_area = QWidget()
-        main_area.setObjectName("MainArea")
         main_layout = QVBoxLayout(main_area)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -166,27 +178,76 @@ class MainWindow(QMainWindow):
         self.status_bar_widget = StatusBar()
         main_layout.addWidget(self.status_bar_widget)
 
-        root.addWidget(main_area, stretch=1)
+        # PC 성능 콤보가 저장된 프로파일로 바로 시작하도록 생성 시점에 넘긴다 —
+        # 기본값으로 만든 뒤 따로 맞추면 화면은 "경량"인데 실제로는 권장으로
+        # 검색되는 어긋난 상태가 됐었다(실사용 중 발견, Phase 11에서 설정
+        # 페이지로 옮겨 오면서도 같은 이유로 유지한다).
+        self.document_page = DocumentPage()
+        self.settings_page = SettingsPage(initial_profile=self.state.model_profile)
+
+        self._page_index = {
+            PAGE_SEARCH: self.pages.addWidget(main_area),
+            PAGE_DOCUMENTS: self.pages.addWidget(self.document_page),
+            PAGE_SETTINGS: self.pages.addWidget(self.settings_page),
+        }
+
+        root.addWidget(self.pages, stretch=1)
         self.setCentralWidget(central)
+
+        self.document_page.set_folder(self.state.target_folder)
 
     def _wire_signals(self) -> None:
         self.input_bar.submitted.connect(self._on_input_submitted)
         self.result_header.close_requested.connect(self._clear_all)
 
         self.sidebar.format_filter.selection_changed.connect(self._on_filters_changed)
-        self.sidebar.search_options.case_sensitive_changed.connect(self._on_filters_changed)
-        self.sidebar.search_options.exact_word_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.ai_summary_changed.connect(self._on_ai_chat_toggled)
-
-        self.sidebar.performance_combo.profile_activated.connect(self._on_profile_activated)
-        self.sidebar.performance_combo.model_manager_requested.connect(self._open_model_manager)
-        self.sidebar.model_manager_requested.connect(self._open_model_manager)
-        self.sidebar.folder_requested.connect(self._open_folder_dialog)
         self.sidebar.recent_search_selected.connect(self.input_bar.submit_text)
+        self.sidebar.page_requested.connect(self.show_page)
+        self.sidebar.expand_toggled.connect(self._on_expand_toggled)
+
+        # Phase 11: 설정 페이지로 옮겨온 위젯들 — 동작은 그대로다.
+        self.settings_page.performance_combo.profile_activated.connect(
+            self._on_profile_activated
+        )
+        self.settings_page.performance_combo.model_manager_requested.connect(
+            self._open_model_manager
+        )
+        self.settings_page.model_manager_requested.connect(self._open_model_manager)
+        # Phase 11: 사이드바 "폴더 관리" → 문서 관리 페이지의 "폴더 선택".
+        self.document_page.folder_requested.connect(self._open_folder_dialog)
 
         self.result_list.open_failed.connect(self._on_open_failed)
         self.result_list.summarize_requested.connect(self._on_card_summarize_requested)
         self.result_list.nearby_requested.connect(self._on_nearby_requested)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().resizeEvent(event)
+        # 사이드바는 최근 검색이 잡은 고정 높이 때문에 창보다 작아지지 못할 수
+        # 있고, 그러면 자신의 resizeEvent가 안 온다 — 창에서 직접 알려준다.
+        self.sidebar.refresh_recent_searches_space()
+
+    # --- 페이지 전환 (Phase 11) ---------------------------------------------
+
+    def show_page(self, page: str) -> None:
+        """본문을 해당 페이지로 바꾸고 네비게이션 활성 표시를 맞춘다."""
+        index = self._page_index.get(page)
+        if index is None:
+            return
+        self.pages.setCurrentIndex(index)
+        self.sidebar.set_active_page(page)
+
+    def current_page(self) -> str:
+        """테스트·검증용 — 지금 보이는 페이지 키."""
+        for page, index in self._page_index.items():
+            if index == self.pages.currentIndex():
+                return page
+        return PAGE_SEARCH
+
+    def _on_expand_toggled(self, expanded: bool) -> None:
+        """확장 상태는 다음 실행에서도 유지한다(DESIGN §14.2.2)."""
+        self.state.search_expanded = expanded
+        self.state.save()
 
     # --- 입력 라우팅 (Phase 7.7) --------------------------------------------
 
@@ -256,8 +317,8 @@ class MainWindow(QMainWindow):
         self._request_seq += 1
         request_id = self._request_seq
 
-        case_sensitive = self.sidebar.search_options.is_case_sensitive()
-        exact_word = self.sidebar.search_options.is_exact_word()
+        case_sensitive = self.state.case_sensitive
+        exact_word = self.state.exact_word
         extensions = self.sidebar.format_filter.selected_extensions()
 
         worker = SearchWorker(
@@ -287,8 +348,8 @@ class MainWindow(QMainWindow):
             self.result_list.show_empty(hint)
             return
 
-        case_sensitive = self.sidebar.search_options.is_case_sensitive()
-        exact_word = self.sidebar.search_options.is_exact_word()
+        case_sensitive = self.state.case_sensitive
+        exact_word = self.state.exact_word
         self.result_list.show_results(
             results, self._last_query, case_sensitive, exact_word, self._ai_summary_available
         )
@@ -364,8 +425,8 @@ class MainWindow(QMainWindow):
         if not self._last_results:
             self.result_list.show_empty(self._empty_result_hint())
             return
-        case_sensitive = self.sidebar.search_options.is_case_sensitive()
-        exact_word = self.sidebar.search_options.is_exact_word()
+        case_sensitive = self.state.case_sensitive
+        exact_word = self.state.exact_word
         self.result_list.show_results(
             self._last_results, self._last_query, case_sensitive, exact_word, self._ai_summary_available
         )
@@ -389,8 +450,8 @@ class MainWindow(QMainWindow):
         self._chat_questions[request_id] = question
         fallback_query = self._chat_questions.get(request_id - 1)
 
-        case_sensitive = self.sidebar.search_options.is_case_sensitive()
-        exact_word = self.sidebar.search_options.is_exact_word()
+        case_sensitive = self.state.case_sensitive
+        exact_word = self.state.exact_word
         extensions = self.sidebar.format_filter.selected_extensions()
 
         worker = SearchWorker(
@@ -592,7 +653,7 @@ class MainWindow(QMainWindow):
         if extensions:
             names = ", ".join(ext.lstrip(".") for ext in sorted(extensions))
             return f"{names}만 검색 중입니다. 전체로 넓혀보세요."
-        if self.sidebar.search_options.is_exact_word():
+        if self.state.exact_word:
             return "'일치되는 단어' 옵션을 꺼보세요."
         return None
 
@@ -664,7 +725,7 @@ class MainWindow(QMainWindow):
     def _open_model_manager(self, focus_profile: str) -> None:
         dialog = ModelManagerDialog(focus_profile=focus_profile, parent=self)
         dialog.exec()
-        self.sidebar.performance_combo.refresh()
+        self.settings_page.performance_combo.refresh()
         # sLM을 새로 넣었거나 지웠을 수 있다 — AI 챗봇 토글을 다시 판정한다.
         self._refresh_ai_chat_availability()
 

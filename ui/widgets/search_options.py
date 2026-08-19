@@ -9,6 +9,12 @@ Phase 7.6에서 "AI 요약 보기"(검색마다 자동 1회 요약)를 "AI 챗�
 교체했다 — 라벨·툴팁만 바뀌고 내부 시그널/메서드 이름(`ai_summary_changed`
 등)은 그대로 둔다(호출부 변경을 최소화하기 위한 의도적 선택, PLAN Phase
 7.6 참고).
+
+**Phase 11에서 토글이 1개로 줄었다** (DESIGN §14.7) — `대/소문자 구분`과
+`일치되는 단어`를 화면에서 뺐다. **검색 기능 자체는 그대로다**: `hybrid_search()`
+의 `case_sensitive`/`exact_word` 인자도, Phase 2에서 만든 FTS5 접두/완전 토큰
+매칭 전환도 살아 있고, 값을 `AppState`에서 읽도록 바꿨을 뿐이다. 기능 회귀는
+`tests/test_indexer_search.py`가 UI 없이 계속 검증한다.
 """
 
 from __future__ import annotations
@@ -27,8 +33,6 @@ AI_SUMMARY_UNAVAILABLE_TOOLTIP = (
 
 class SearchOptions(QWidget):
     ai_summary_changed = Signal(bool)
-    case_sensitive_changed = Signal(bool)
-    exact_word_changed = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -44,14 +48,6 @@ class SearchOptions(QWidget):
         self.ai_summary.toggled.connect(self.ai_summary_changed.emit)
         layout.addWidget(self.ai_summary)
         self.set_ai_summary_available(False)  # 실제 설치 여부는 MainWindow가 알려준다
-
-        self.case_sensitive = ToggleSwitch("대/소문자 구분")
-        self.case_sensitive.toggled.connect(self.case_sensitive_changed.emit)
-        layout.addWidget(self.case_sensitive)
-
-        self.exact_word = ToggleSwitch("일치되는 단어")
-        self.exact_word.toggled.connect(self.exact_word_changed.emit)
-        layout.addWidget(self.exact_word)
 
     def set_ai_summary_available(self, available: bool) -> None:
         """모델 설치 여부에 따라 토글을 열고 닫는다.
@@ -74,9 +70,3 @@ class SearchOptions(QWidget):
 
     def is_ai_summary(self) -> bool:
         return self.ai_summary.isChecked()
-
-    def is_case_sensitive(self) -> bool:
-        return self.case_sensitive.isChecked()
-
-    def is_exact_word(self) -> bool:
-        return self.exact_word.isChecked()

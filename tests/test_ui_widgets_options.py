@@ -9,12 +9,17 @@ from ui.widgets.search_options import SearchOptions
 
 
 class TestSearchOptions:
-    def test_all_three_toggles_default_off(self, qtbot):
+    def test_chat_toggle_defaults_off(self, qtbot):
+        """Phase 11: 토글은 `AI 챗봇 사용` 하나만 남았다(DESIGN §14.7).
+
+        대/소문자·일치되는 단어는 화면에서 뺐고 기능은 `AppState`로 옮겼다 —
+        기능 회귀는 `tests/test_indexer_search.py`가 UI 없이 검증한다.
+        """
         widget = SearchOptions()
         qtbot.addWidget(widget)
         assert widget.ai_summary.isChecked() is False
-        assert widget.is_case_sensitive() is False
-        assert widget.is_exact_word() is False
+        assert not hasattr(widget, "case_sensitive")
+        assert not hasattr(widget, "exact_word")
 
     def test_ai_summary_toggle_disabled_until_model_installed(self, qtbot):
         """Phase 7: placeholder는 걷혔지만 **모델이 없으면 여전히 비활성**이다.
@@ -55,29 +60,6 @@ class TestSearchOptions:
         qtbot.addWidget(widget)
         widget.set_ai_summary(True)  # 저장된 상태가 ON이어도
         assert widget.is_ai_summary() is False  # 모델이 없으면 안 켜진다
-
-    def test_case_sensitive_toggle_emits_signal(self, qtbot):
-        widget = SearchOptions()
-        qtbot.addWidget(widget)
-        received = []
-        widget.case_sensitive_changed.connect(received.append)
-        widget.case_sensitive.setChecked(True)
-        assert received == [True]
-
-    def test_exact_word_toggle_emits_signal(self, qtbot):
-        widget = SearchOptions()
-        qtbot.addWidget(widget)
-        received = []
-        widget.exact_word_changed.connect(received.append)
-        widget.exact_word.setChecked(True)
-        assert received == [True]
-
-    def test_toggles_are_independent(self, qtbot):
-        widget = SearchOptions()
-        qtbot.addWidget(widget)
-        widget.case_sensitive.setChecked(True)
-        assert widget.is_exact_word() is False
-        assert widget.is_case_sensitive() is True
 
 
 class TestPerformanceCombo:

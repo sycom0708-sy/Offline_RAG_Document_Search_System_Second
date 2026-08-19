@@ -94,7 +94,10 @@ class TestEndToEndSearch:
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
         window.result_header._close_button.click()
-        window.sidebar.search_options.case_sensitive.setChecked(True)
+        # Phase 11에서 대소문자 토글이 사라져 형식 필터로 같은 경로
+        # (`_on_filters_changed`)를 친다.
+        window.sidebar.format_filter.set_available_formats([".txt", ".docx"])
+        window.sidebar.format_filter._format_checkboxes[".txt"].setChecked(True)
 
         assert window.result_list.card_count() == 0
 
@@ -200,29 +203,30 @@ class TestSidebarOptionsAffectResults:
         assert all(c._result.file_name.endswith(".docx") for c in cards)
         assert len(cards) <= baseline_count
 
-    def test_case_sensitive_toggle_changes_results(self, qtbot, window):
-        """메모.txt는 "API"(대문자), 공지.txt는 "api"(소문자)를 담고 있다."""
+    def test_case_sensitive_still_works_from_app_state(self, qtbot, window):
+        """Phase 11: 토글은 UI에서 뺐지만 **기능은 살아 있다**(DESIGN §14.7).
+
+        위젯이 아니라 `AppState`에서 읽으므로, 값을 켜면 검색 결과가 실제로
+        달라져야 한다. 메모.txt는 "API"(대문자), 공지.txt는 "api"(소문자)다.
+        """
         from ui.widgets.result_card import ResultCard
 
         window.input_bar.submit_text("API")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
-        before_names = {c._result.file_name for c in window.result_list.findChildren(ResultCard)}
-        assert {"메모.txt", "공지.txt"} <= before_names  # 대소문자 구분 OFF: 둘 다 잡힘
+        before = {c._result.file_name for c in window.result_list.findChildren(ResultCard)}
+        assert {"메모.txt", "공지.txt"} <= before  # 꺼짐: 둘 다 잡힌다
 
-        before_count = window.result_list.card_count()
-        window.sidebar.search_options.case_sensitive.setChecked(True)
+        window.state.case_sensitive = True
+        window.input_bar.submit_text("API")
         qtbot.waitUntil(
-            lambda: window.result_list.card_count() != before_count
-            and window.result_list.card_count() > 0,
+            lambda: {c._result.file_name for c in window.result_list.findChildren(ResultCard)}
+            == {"메모.txt"},
             timeout=SEARCH_TIMEOUT_MS,
         )
 
-        after_names = {c._result.file_name for c in window.result_list.findChildren(ResultCard)}
-        assert after_names == {"메모.txt"}  # 대소문자 구분 ON: "API" 정확히 일치하는 것만
-
-    def test_exact_word_excludes_mid_token_match(self, qtbot, window):
-        """'계약'으로 검색 시 일치단어 ON이면 '계약서'(부분 포함)는 빠져야 한다."""
-        window.sidebar.search_options.exact_word.setChecked(True)
+    def test_exact_word_still_works_from_app_state(self, qtbot, window):
+        """Phase 11: 일치단어도 UI에서만 빠지고 기능은 유지된다(DESIGN §14.7)."""
+        window.state.exact_word = True
         window.input_bar.submit_text("계약")
         # `_layout.count() >= 1`은 "검색 중" placeholder만으로도 참이 되어 실제
         # 검색 완료를 기다리지 못했다(실측 재현됨) — card_count로 완료를 확인한다.
@@ -237,12 +241,6 @@ class TestSidebarOptionsAffectResults:
         for card in cards:
             content = card._result.content
             assert "계약" in content
-
-    def test_options_persist_across_new_search(self, qtbot, window):
-        """옵션을 켠 채로 검색어를 바꿔도 옵션이 유지돼야 한다."""
-        window.sidebar.search_options.exact_word.setChecked(True)
-        window.input_bar.submit_text("계약")
-        assert window.sidebar.search_options.is_exact_word() is True
 
     def test_changing_option_reruns_last_query(self, qtbot, window):
         """DESIGN 요구: 옵션 변경 시 검색을 다시 눌러야 하는 게 아니라 자동 반영돼야 한다."""
@@ -269,6 +267,18 @@ class TestPerformanceComboStartupSync:
     권장으로 검색되는데 화면은 경량이라고 말하는 어긋난 상태(실사용 중 발견).
     """
 
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        """이 클래스는 콤보 표시가 저장된 프로파일과 맞는지만 본다.
+
+        콤보 동기화는 `_build_ui()`가 `Sidebar(initial_profile=...)`로 끝내는
+        일이라 워밍업과 무관하다 — 꺼도 이 테스트가 잡으려는 회귀는 그대로
+        검증된다. `TestFolderWatch`와 같은 이유로 끈다: `MainWindow.__init__`
+        마다 뜨는 백그라운드 ONNX 워밍업 스레드가 이 PC에서 access violation을
+        일으켜 전체 테스트 실행이 여기서 통째로 멈춘다.
+        """
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
     def test_combo_reflects_saved_heavy_profile_on_startup(self, qtbot, indexed_db, tmp_path):
         from config.settings import HEAVY
 
@@ -277,12 +287,12 @@ class TestPerformanceComboStartupSync:
         win = MainWindow(db_path=indexed_db, state=state)
         qtbot.addWidget(win)
 
-        assert win.sidebar.performance_combo.current_profile() == HEAVY.key
+        assert win.settings_page.performance_combo.current_profile() == HEAVY.key
 
     def test_combo_reflects_saved_light_profile_on_startup(self, qtbot, window):
         from config.settings import LIGHT
 
-        assert window.sidebar.performance_combo.current_profile() == LIGHT.key
+        assert window.settings_page.performance_combo.current_profile() == LIGHT.key
 
 
 class TestRecentSearchWiring:
@@ -865,30 +875,164 @@ class TestAiChatWiring:
 
         assert bool(bubble2.results) is True
 
-    def test_message_shows_excerpt_without_calling_the_llm(self, window, qtbot):
-        """1단계는 검색만 한다 — sLM은 아직 호출되면 안 된다."""
-        stub = self._stub_service(window)
+    @staticmethod
+    def _blocking_stub_service(window):
+        """응답을 붙들고 있는 sLM 스텁. (stub, release) 를 돌려준다.
+
+        T10.23의 "자동 생성"·"직전 생성 취소"는 **생성이 진행 중인 순간**을
+        관찰해야 검증할 수 있는데, 즉시 응답하는 스텁으로는 그 구간이 없다.
+        """
+        import threading
+
+        from slm.client import Completion
+
+        release = threading.Event()
+
+        class _BlockingStub:
+            def __init__(self):
+                self.calls = 0
+                self.aborted = False
+
+            def is_available(self):
+                return True
+
+            def is_running(self):
+                return True
+
+            def chat(self, messages, **_kwargs):
+                self.calls += 1
+                release.wait(timeout=5)
+                return Completion(
+                    text="계약서 기준 조항입니다. [1]", elapsed_sec=0.1, completion_tokens=5
+                )
+
+            def abort_active_request(self):
+                # 실제 서비스는 연결을 끊어 생성을 멈춘다. 스텁은 대기를 푼다.
+                self.aborted = True
+                release.set()
+
+            def shutdown(self):
+                release.set()
+
+        stub = _BlockingStub()
+        window._slm_service = stub
+        window._ai_summary_available = True
+        return stub, release
+
+    def test_excerpt_appears_without_waiting_for_the_llm(self, window, qtbot):
+        """①(즉시 발췌)은 sLM을 기다리지 않는다.
+
+        T10.23으로 ②가 자동 시작되지만, ①까지 생성 완료를 기다리게 되면 2단
+        구조의 존재 이유(검색 7~14ms로 먼저 보여준다)가 사라진다 — 생성이 아직
+        안 끝난 시점에 이미 발췌가 있어야 한다.
+        """
+        stub, release = self._blocking_stub_service(window)
         panel = self._turn_on_chat(window)
 
         panel.send_message("계약서 검토 기준")
         bubble = panel.bubble_for(1)
         qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+
+        assert bubble.summary is None  # 발췌는 나왔고 답변은 아직 생성 중
+
+        release.set()
+        qtbot.waitUntil(lambda: bubble.summary is not None, timeout=SEARCH_TIMEOUT_MS)
+        assert stub.calls == 1
+
+    def test_summary_starts_automatically_without_pressing_the_button(self, window, qtbot):
+        """T10.23(2026-08-18, 사용자 요청): 챗봇 모드는 버튼을 누르지 않아도
+        발췌 직후 AI 답변 생성이 시작된다 — 이게 일반 검색과 챗봇을 가르는
+        지점이다(그전까지는 첫 턴에서 두 모드가 사실상 같은 화면이었다)."""
+        stub = self._stub_service(window)
+        window._ai_summary_available = True
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        bubble = panel.bubble_for(1)
+
+        qtbot.waitUntil(lambda: bubble.summary is not None, timeout=SEARCH_TIMEOUT_MS)
+        assert stub.calls == 1  # 클릭 없이 호출됐다
+
+    def test_no_search_result_does_not_start_a_summary(self, window, qtbot):
+        """근거가 0건이면 모델을 부르지 않는다 — 1단계가 어차피 막지만,
+        말풍선에 헛된 "생성 중" 표시가 뜨지 않게 여기서 먼저 거른다."""
+        stub = self._stub_service(window)
+        window._ai_summary_available = True
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("듣도보도못한 괴상한 단어들")
+        bubble = panel.bubble_for(1)
+        qtbot.waitUntil(lambda: bubble.results == [], timeout=SEARCH_TIMEOUT_MS)
+        qtbot.wait(300)
 
         assert stub.calls == 0
 
-    def test_summarize_button_triggers_llm_and_shows_summary(self, window, qtbot):
-        """② AI 요약 — ①이 이미 받은 결과를 그대로 넘겨 검색을 다시 하지 않는다."""
+    def test_next_question_cancels_the_running_summary(self, window, qtbot):
+        """T10.23 동시 요청 정책[사용자 확정]: 답변 생성 중 다음 질문이 오면
+        직전 생성을 접는다.
+
+        결과만 버리면 부족하다 — `SlmService`가 요청을 한 줄로 세우기 때문에
+        버려질 추론이 계속 돌면 방금 한 질문의 답변이 그만큼 밀린다. 그래서
+        워커가 실제로 `cancel()`되는지(=서버 생성 중단까지 가는지) 본다.
+        """
+        stub, release = self._blocking_stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        qtbot.waitUntil(lambda: window._chat_summary is not None, timeout=SEARCH_TIMEOUT_MS)
+        first_worker = window._chat_summary[1]
+
+        panel.send_message("계약 갱신")
+
+        assert first_worker._cancelled is True
+        assert stub.aborted is True  # 결과 폐기가 아니라 실제 중단 요청까지 갔다
+
+        bubble1 = panel.bubble_for(1)
+        assert bubble1._summarize_button.isEnabled() is True  # 원하면 다시 생성 가능
+        release.set()
+
+    def test_cancelled_turn_keeps_its_excerpt(self, window, qtbot):
+        """취소는 실패가 아니다 — ①로 받은 발췌는 그대로 남아 있어야 한다."""
+        stub, release = self._blocking_stub_service(window)
+        panel = self._turn_on_chat(window)
+
+        panel.send_message("계약서 검토 기준")
+        qtbot.waitUntil(lambda: window._chat_summary is not None, timeout=SEARCH_TIMEOUT_MS)
+        bubble1 = panel.bubble_for(1)
+        assert bool(bubble1.results) is True
+
+        panel.send_message("계약 갱신")
+
+        assert bool(bubble1.results) is True  # 발췌 유지
+        assert bubble1.summary is None  # 답변은 안 남는다
+        release.set()
+
+    def test_summarize_button_regenerates_using_the_same_results(self, window, qtbot):
+        """② AI 요약 — ①이 이미 받은 결과를 그대로 넘겨 검색을 다시 하지 않는다.
+
+        T10.23 이후 버튼은 "처음 생성"이 아니라 **다시 생성** 역할로 남는다
+        (취소된 턴을 되살리는 용도) — 어느 경로로 들어오든 ①의 결과를 재사용
+        한다는 성질은 그대로여야 한다.
+        """
         stub = self._stub_service(window)
+        window._ai_summary_available = True
         panel = self._turn_on_chat(window)
 
         panel.send_message("계약서 검토 기준")
         bubble = panel.bubble_for(1)
-        qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
+        qtbot.waitUntil(lambda: bubble.summary is not None, timeout=SEARCH_TIMEOUT_MS)
+        assert stub.calls == 1  # 자동으로 한 번
+        results_after_auto = bubble.results
 
         bubble._summarize_button.click()
+        qtbot.waitUntil(lambda: stub.calls == 2, timeout=SEARCH_TIMEOUT_MS)
 
-        qtbot.waitUntil(lambda: stub.calls > 0, timeout=SEARCH_TIMEOUT_MS)
-        qtbot.waitUntil(lambda: "계약서" in bubble.summary_text(), timeout=SEARCH_TIMEOUT_MS)
+        assert bubble.results is results_after_auto  # 검색을 다시 하지 않았다
+        # stub.calls는 chat() 진입 시점에 오르지만 화면 갱신은 succeeded 신호가
+        # 도착한 뒤다 — 바로 단정하면 경합이 난다(실제로 간헐 실패했다).
+        qtbot.waitUntil(
+            lambda: "계약서" in bubble.summary_text(), timeout=SEARCH_TIMEOUT_MS
+        )
 
     def test_toggle_off_restores_result_cards(self, window, qtbot):
         self._stub_service(window)
@@ -942,16 +1086,14 @@ class TestAiChatWiring:
 
         panel.send_message("계약서 검토 기준")
         bubble1 = panel.bubble_for(1)
-        qtbot.waitUntil(lambda: bool(bubble1.results), timeout=SEARCH_TIMEOUT_MS)
-        bubble1._summarize_button.click()
+        # T10.23: 버튼을 누르지 않아도 ①이 끝나면 ②가 자동으로 시작된다.
         qtbot.waitUntil(lambda: bubble1.summary is not None, timeout=SEARCH_TIMEOUT_MS)
 
         panel.send_message("계약 갱신")  # indexed_db 픽스처의 발표자료.pptx에 매칭되는 실제 검색어
         bubble2 = panel.bubble_for(2)
-        qtbot.waitUntil(lambda: bool(bubble2.results), timeout=SEARCH_TIMEOUT_MS)
-        bubble2._summarize_button.click()
+        qtbot.waitUntil(lambda: bubble2.summary is not None, timeout=SEARCH_TIMEOUT_MS)
 
-        qtbot.waitUntil(lambda: len(stub.calls) >= 2, timeout=SEARCH_TIMEOUT_MS)
+        assert len(stub.calls) >= 2
         second_call_body = "\n".join(m["content"] for m in stub.calls[1])
         assert "계약서 검토 기준" in second_call_body  # 이전 턴의 질문
         assert "계약서 기준 조항입니다" in second_call_body  # 이전 턴의 답변(스텁 기본 텍스트)
@@ -1292,3 +1434,197 @@ class TestChatSearchProfileRegression:
         qtbot.waitUntil(lambda: bool(bubble.results), timeout=SEARCH_TIMEOUT_MS)
 
         assert bubble.results[0].similarity is not None
+
+
+class TestProfileSwitchBackfillsVectors:
+    """T10.26(2026-08-18, 사용자 보고) — 모드를 바꿔도 그 모델 벡터가 없으면
+    검색이 고장 난 것처럼 보인다.
+
+    🔴 실사용에서 겪은 증상: 권장 모드로 바꿨더니 무엇을 물어도 "관련 문서를
+    찾을 수 없습니다". 원인은 인덱스에 경량 모델 벡터만 있어서 모든 결과의
+    유사도가 None이 되고, AI 요약 1단계가 이를 "관련성 판단 불가"로 보고 전부
+    막은 것. 벡터는 (chunk_id, model) 복합키로 모델마다 따로 저장되므로
+    (Phase 7.5) **모드 전환만으로는 절대 생기지 않는다**.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        # 이 클래스는 배선만 본다 — 실제 임베딩은 필요 없고, MainWindow를
+        # 연달아 만들면 ONNX 워밍업 스레드가 이 PC에서 크래시를 자주 낸다.
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    def test_switching_to_a_profile_without_vectors_starts_a_reindex(
+        self, qtbot, indexed_db, tmp_path, monkeypatch
+    ):
+        from config.settings import HEAVY
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.target_folder = str(tmp_path)
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        started = []
+        monkeypatch.setattr(
+            MainWindow, "_start_reindex", lambda self, folder, silent=False: started.append(folder)
+        )
+
+        win._on_profile_activated(HEAVY.key)
+
+        assert started == [str(tmp_path)], "벡터가 없는 모드로 바꿨는데 채우지 않았다"
+
+    def test_switching_to_a_profile_that_already_has_vectors_does_nothing(
+        self, qtbot, indexed_db, tmp_path, monkeypatch
+    ):
+        """경량 벡터는 `indexed_db` 픽스처가 이미 만들어 뒀다 — 다시 돌 이유가 없다."""
+        from config.settings import HEAVY, LIGHT
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.target_folder = str(tmp_path)
+        state.model_profile = HEAVY.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        started = []
+        monkeypatch.setattr(
+            MainWindow, "_start_reindex", lambda self, folder, silent=False: started.append(folder)
+        )
+
+        win._on_profile_activated(LIGHT.key)
+
+        assert started == []
+
+    def test_no_target_folder_does_not_start_a_reindex(
+        self, qtbot, indexed_db, tmp_path, monkeypatch
+    ):
+        """대상 폴더가 없으면 재인덱싱할 것도 없다 — 빈 경로로 돌리면 안 된다."""
+        from config.settings import HEAVY
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.target_folder = ""
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        started = []
+        monkeypatch.setattr(
+            MainWindow, "_start_reindex", lambda self, folder, silent=False: started.append(folder)
+        )
+
+        win._on_profile_activated(HEAVY.key)
+
+        assert started == []
+
+    def test_startup_warns_instead_of_starting_a_long_job(self, qtbot, indexed_db, tmp_path):
+        """시작하자마자 몇 분짜리 작업이 튀어나오면 놀란다 — 알려만 준다."""
+        from config.settings import HEAVY
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = HEAVY.key
+        state.target_folder = str(tmp_path)
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        warning = win.status_bar_widget._warning_label
+        assert warning.isVisibleTo(win.status_bar_widget)
+        assert "벡터가 없는 문서" in warning.text()
+
+
+class TestPhase11Shell:
+    """Phase 11-A — 3페이지 셸 + 확장 영역 (DESIGN §14.1·§14.2)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        # 이 클래스는 배선만 본다. MainWindow를 연달아 만들면 이 PC에서
+        # ONNX 워밍업 스레드 크래시가 자주 재현된다(Phase 8·T10.26과 같은 우회).
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    def test_starts_on_the_search_page(self, qtbot, window):
+        from ui.widgets.sidebar import PAGE_SEARCH
+
+        assert window.current_page() == PAGE_SEARCH
+
+    def test_nav_switches_pages(self, qtbot, window):
+        from ui.widgets.sidebar import PAGE_DOCUMENTS, PAGE_SEARCH, PAGE_SETTINGS
+
+        window.sidebar._nav_buttons[PAGE_DOCUMENTS].click()
+        assert window.current_page() == PAGE_DOCUMENTS
+
+        window.sidebar._nav_buttons[PAGE_SETTINGS].click()
+        assert window.current_page() == PAGE_SETTINGS
+
+        window.sidebar._nav_buttons[PAGE_SEARCH].click()
+        assert window.current_page() == PAGE_SEARCH
+
+    def test_expand_button_does_not_navigate(self, qtbot, window):
+        """🔴 확장 버튼은 네비게이션과 독립이다(DESIGN §14.2.2).
+
+        하나로 묶으면 "필터 좀 보려고 눌렀는데 페이지가 바뀐다"가 된다.
+        """
+        from ui.widgets.sidebar import PAGE_SETTINGS
+
+        window.sidebar._nav_buttons[PAGE_SETTINGS].click()
+        before = window.current_page()
+
+        window.sidebar.expand_button.click()
+
+        assert window.sidebar.is_expanded() is True
+        assert window.current_page() == before  # 페이지는 그대로
+
+    def test_expansion_is_collapsed_by_default_and_hides_options(self, qtbot, window):
+        assert window.sidebar.is_expanded() is False
+        assert window.sidebar._expansion.isVisibleTo(window.sidebar) is False
+
+        window.sidebar.expand_button.click()
+
+        assert window.sidebar._expansion.isVisibleTo(window.sidebar) is True
+
+    def test_expand_state_is_persisted(self, qtbot, window):
+        window.sidebar.expand_button.click()
+        assert window.state.search_expanded is True
+
+        window.sidebar.expand_button.click()
+        assert window.state.search_expanded is False
+
+    def test_saved_expand_state_is_restored_on_startup(self, qtbot, indexed_db, tmp_path):
+        state = AppState.load(path=tmp_path / "state.json")
+        state.search_expanded = True
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win.sidebar.is_expanded() is True
+
+    def test_folder_button_moved_to_document_page(self, qtbot, window, monkeypatch):
+        """사이드바 `폴더 관리`가 문서 관리의 `폴더 선택`으로 흡수됐다(DESIGN §14.8)."""
+        opened = []
+        monkeypatch.setattr(MainWindow, "_open_folder_dialog", lambda self: opened.append(True))
+
+        window.document_page.folder_button.click()
+
+        assert opened == [True]
+        assert not hasattr(window.sidebar, "folder_button")
+
+    def test_model_manager_moved_to_settings_page(self, qtbot, window, monkeypatch):
+        opened = []
+        monkeypatch.setattr(
+            MainWindow, "_open_model_manager", lambda self, profile: opened.append(profile)
+        )
+
+        window.settings_page.model_button.click()
+
+        assert len(opened) == 1
+        assert not hasattr(window.sidebar, "model_button")
+
+    def test_removed_toggles_are_gone_from_the_ui(self, qtbot, window):
+        """대/소문자·일치되는 단어는 화면에서 사라졌다 — 기능은 AppState로 유지된다."""
+        options = window.sidebar.search_options
+
+        assert hasattr(options, "ai_summary")
+        assert not hasattr(options, "case_sensitive")
+        assert not hasattr(options, "exact_word")
+
+    def test_document_page_shows_selected_folder(self, qtbot, indexed_db, tmp_path):
+        state = AppState.load(path=tmp_path / "state.json")
+        state.target_folder = str(tmp_path)
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert str(tmp_path) in win.document_page.folder_text()
