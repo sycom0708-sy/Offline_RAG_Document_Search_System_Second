@@ -579,3 +579,64 @@ class TestHwpHeadingByFontSize:
         outer = next(iter(root.iter("Paragraph")))
         assert HwpParser._paragraph_size(outer, sizes) == 0.0
 
+
+class TestDocxFontSizeFallback:
+    """Heading 스타일이 없는 문서(=`.doc` 변환본)를 글꼴 크기로 구한다 (T10.32).
+
+    실측: `.doc` 9개 전부가 변환 후에도 스타일이 `MS바탕글`·`Normal`뿐이라
+    스타일로는 제목이 0개였다. 반면 변환이 크기를 명시값으로 박아줘 크기로는 찾힌다.
+    """
+
+    def _build(self, tmp_path, rows, styled=False):
+        import docx
+        from docx.shared import Pt
+
+        source = docx.Document()
+        if styled:
+            source.add_paragraph("스타일 제목", style="Heading 1")
+        for size, text in rows:
+            paragraph = source.add_paragraph()
+            run = paragraph.add_run(text)
+            run.font.size = Pt(size)
+        path = tmp_path / "sample.docx"
+        source.save(path)
+        return path
+
+    def _headings(self, tmp_path, rows, styled=False):
+        from parser.formats.docx_parser import DocxParser
+
+        path = self._build(tmp_path, rows, styled)
+        document = DocxParser(asset_dir=tmp_path / "assets").parse(path)
+        return [c.heading for c in document.chunks if c.type.value == "text"]
+
+    def test_largest_font_paragraph_becomes_the_heading(self, tmp_path):
+        headings = self._headings(tmp_path, [
+            (16.0, "고객 추천서"),
+            (10.0, "본문이 이어집니다 " * 5),
+        ])
+        assert headings == ["고객 추천서"]
+
+    def test_only_the_largest_size_is_used(self, tmp_path):
+        """🔴 문턱만 쓰면 12pt 노이즈가 16pt 진짜 제목을 덮어쓴다.
+
+        실측: `6.코치추천서(KAC)`에서 `코치 추천서`(16pt) 뒤에 `20  .    .`과
+        `(사)한국코치협회 귀하`가 12pt로 붙어 있었다.
+        """
+        headings = self._headings(tmp_path, [
+            (16.0, "코치 추천서"),
+            (10.0, "본문이 이어집니다 " * 5),
+            (12.0, "(사)한국코치협회 귀하"),
+            (10.0, "이어지는 본문입니다 " * 5),
+        ])
+        assert set(headings) == {"코치 추천서"}
+
+    def test_uniform_font_document_has_no_heading(self, tmp_path):
+        assert self._headings(tmp_path, [
+            (10.0, "첫 문단입니다 " * 5),
+            (10.0, "둘째 문단입니다 " * 5),
+        ]) == [""]
+
+    def test_style_based_document_ignores_the_fallback(self, tmp_path):
+        """두 기준을 섞으면 제목 수준이 뒤죽박죽이 된다 — 스타일이 있으면 그것만 쓴다."""
+        headings = self._headings(tmp_path, [(28.0, "아주 큰 본문 줄")], styled=True)
+        assert headings == ["스타일 제목"]
