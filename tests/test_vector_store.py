@@ -11,6 +11,7 @@ from indexer.vector.store import (
     embed_missing,
     fetch_vectors,
     missing_chunk_ids,
+    missing_vector_count,
     store_vectors,
     vector_stats,
 )
@@ -104,6 +105,28 @@ def test_missing_chunk_ids_lists_unembedded(db):
 
     store_vectors(db, ids[:1], _vectors(1), MODEL)
     assert missing_chunk_ids(db, MODEL) == ids[1:]
+
+
+def test_missing_vector_count_matches_the_id_list(db):
+    """T10.26 — UI가 "이 모드로 검색이 되는 상태인가"만 볼 때 쓰는 개수 질의."""
+    ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks ORDER BY id")]
+    assert missing_vector_count(db, MODEL) == len(ids)
+
+    store_vectors(db, ids[:1], _vectors(1), MODEL)
+    assert missing_vector_count(db, MODEL) == len(ids) - 1
+
+    store_vectors(db, ids[1:], _vectors(len(ids) - 1), MODEL)
+    assert missing_vector_count(db, MODEL) == 0
+
+
+def test_missing_vector_count_is_model_specific(db):
+    """🔴 모드를 바꾸면 벡터가 0개인 상태가 된다 — 이걸 못 알아채면 검색 결과의
+    유사도가 전부 None이 되고 AI 요약이 통째로 막힌다(실사용 보고, 2026-08-18)."""
+    ids = [r["chunk_id"] for r in db.execute("SELECT chunk_id FROM chunks")]
+    store_vectors(db, ids, _vectors(len(ids)), MODEL)
+
+    assert missing_vector_count(db, MODEL) == 0
+    assert missing_vector_count(db, "다른-모델") == len(ids)
 
 
 def test_missing_is_model_specific(db):

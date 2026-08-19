@@ -66,6 +66,26 @@ def fetch_vectors(
     return result
 
 
+def missing_vector_count(conn: sqlite3.Connection, model_key: str) -> int:
+    """이 모델 기준으로 벡터가 없는 청크 수 (T10.26).
+
+    `missing_chunk_ids()`와 같은 조건이지만 id 목록을 만들지 않는다 — UI가
+    "이 모드로 검색이 되는 상태인가"만 확인하는 용도라 개수면 충분하고,
+    청크가 수만 개인 인덱스에서 목록을 통째로 들고 올 이유가 없다.
+    """
+    row = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM chunks c
+        LEFT JOIN chunk_vectors v
+               ON v.chunk_id = c.chunk_id AND v.model = ?
+        WHERE v.chunk_id IS NULL
+        """,
+        (model_key,),
+    ).fetchone()
+    return int(row[0])
+
+
 def missing_chunk_ids(conn: sqlite3.Connection, model_key: str) -> list[str]:
     """현재 모델 기준으로 벡터가 없는 청크 목록."""
     rows = conn.execute(
