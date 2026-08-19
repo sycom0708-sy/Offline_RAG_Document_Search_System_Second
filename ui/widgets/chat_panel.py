@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -67,10 +68,11 @@ NO_RESULTS_TEXT = "관련 문서를 찾을 수 없습니다."
 # 직접 정의했다.
 EXCERPT_LIMIT = 5
 
-# 말풍선 최대 폭(70%) — 목업 기준값(65%)에서 사용자 확인 후 넓혔다
-# [2026-08-13]. Qt QSS는 max-width를 지원하지 않아 위젯의
+# 말풍선 최대 폭(80%) — 목업 기준값 65% → 70%[2026-08-13] → 80%[2026-08-18].
+# 답변 카드(표·AI 요약)가 길어지면서 오른쪽 회색 여백이 과하게 남는다는
+# 사용자 지적으로 다시 넓혔다. Qt QSS는 max-width를 지원하지 않아 위젯의
 # setMaximumWidth()로 직접 계산한다(ChatPanel.resizeEvent 참고).
-MAX_BUBBLE_WIDTH_RATIO = 0.70
+MAX_BUBBLE_WIDTH_RATIO = 0.80
 
 # QSS #ChatUserMessage의 padding(8px 12px)에 여유를 더한 근사값 — 아래
 # _natural_single_line_width()에서 쓴다.
@@ -289,7 +291,7 @@ class ChatPanel(QWidget):
         self._next_id = 0
         self._bubbles: dict[int, _AnswerBubble] = {}
         # 좌/우 정렬 행에 들어간 위젯들(사용자 라벨 + AI 말풍선) — 창 크기가
-        # 바뀔 때마다 최대 폭(65%)을 다시 계산해야 해서 전부 기억해 둔다.
+        # 바뀔 때마다 최대 폭을 다시 계산해야 해서 전부 기억해 둔다.
         self._bubble_widgets: list[QWidget] = []
 
         layout = QVBoxLayout(self)
@@ -404,12 +406,12 @@ class ChatPanel(QWidget):
         bubble.open_failed.connect(self.open_failed)
         bubble.nearby_requested.connect(self.nearby_requested)
         self._bubbles[request_id] = bubble
-        self._add_row(bubble, align_right=False)
+        self._add_row(bubble, align_right=False, expand=True)
 
         self._scroll_to_bottom_deferred()
         self.message_sent.emit(request_id, text)
 
-    def _add_row(self, widget: QWidget, *, align_right: bool) -> None:
+    def _add_row(self, widget: QWidget, *, align_right: bool, expand: bool = False) -> None:
         """`widget`을 좌/우 정렬 행으로 감싸 대화창 맨 끝(stretch 앞)에 넣는다.
 
         QSS는 margin-left:auto나 max-width를 지원하지 않으므로, 정렬은
@@ -426,6 +428,20 @@ class ChatPanel(QWidget):
         if align_right:
             row_layout.addStretch()
             row_layout.addWidget(widget)
+        elif expand:
+            # 답변 말풍선은 **상한까지 실제로 넓힌다** (2026-08-18, 사용자 요청).
+            #
+            # `setMaximumWidth()`만으로는 안 넓어진다 — 상한은 "이 이상 크지
+            # 말라"일 뿐이고, 위젯은 자기 `sizeHint`만큼만 차지한 뒤 남는
+            # 공간은 전부 `addStretch()`가 먹는다(실측: 회색 영역 877px에
+            # 표 카드가 475px만 씀). 늘어나게 하려면 늘일 권한을 줘야 한다.
+            #
+            # stretch 인자를 위젯 1 / 여백 0으로 주는 게 핵심이다 — 둘 다
+            # 1이면 남는 공간을 반씩 나눠 가져 상한(80%)에 못 미친 채 멈춘다.
+            # 위젯이 먼저 상한까지 자라고, 그러고도 남는 20%를 여백이 받는다.
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, widget.sizePolicy().verticalPolicy())
+            row_layout.addWidget(widget, 1)
+            row_layout.addStretch(0)
         else:
             row_layout.addWidget(widget)
             row_layout.addStretch()

@@ -24,7 +24,7 @@ from parser.schema import ChunkType, ImageData, TableData
 from search.hybrid_search import HybridResult
 from slm.summarize import Summary, SummaryStatus
 from slm.verify import VerificationResult
-from ui.widgets.chat_panel import ChatPanel
+from ui.widgets.chat_panel import MAX_BUBBLE_WIDTH_RATIO, ChatPanel
 from ui.widgets.result_list import ResultList
 from ui.widgets.table_card import TableCard
 from ui.widgets.summary_card import (
@@ -755,7 +755,7 @@ class TestBubbleAlignment:
         bubble = panel.bubble_for(1)
         assert 0 < bubble.maximumWidth() < 16777215  # Qt 기본 무제한 값보다 작아야 한다
 
-    def test_resize_updates_bubble_max_width_to_70_percent(self, qtbot):
+    def test_resize_updates_bubble_max_width_to_the_configured_ratio(self, qtbot):
         panel = ChatPanel()
         qtbot.addWidget(panel)
         panel.show()
@@ -765,7 +765,9 @@ class TestBubbleAlignment:
         qtbot.wait(50)
 
         bubble = panel.bubble_for(1)
-        expected = int(panel._transcript.width() * 0.70)
+        # 비율을 바꿀 때 이 테스트도 같이 고쳐야 하는 상태였다(0.70 하드코딩)
+        # — 상수를 그대로 쓰면 값 변경이 테스트를 깨뜨리지 않는다.
+        expected = int(panel._transcript.width() * MAX_BUBBLE_WIDTH_RATIO)
         # eliding·레이아웃 반올림 오차를 감안해 근사 비교한다.
         assert abs(bubble.maximumWidth() - expected) <= 2
 
@@ -795,3 +797,44 @@ class TestBubbleAlignment:
             assert user_label.minimumWidth() >= expected_min - 2
         finally:
             app.setStyleSheet(original_style)
+
+
+class TestAnswerBubbleFillsAvailableWidth:
+    """답변 말풍선은 상한(80%)까지 **실제로 넓어져야** 한다 (2026-08-18, 사용자 요청).
+
+    🔴 `setMaximumWidth()`만으로는 안 넓어진다 — 상한은 "이 이상 크지 말라"일
+    뿐이라 위젯은 자기 `sizeHint`만큼만 차지하고 남는 공간은 `addStretch()`가
+    다 먹는다(실측: 회색 영역 877px에 표 카드가 475px만 썼다). 비율 상수만
+    올리고 끝냈다면 화면은 하나도 안 바뀌었을 것이다.
+    """
+
+    def test_answer_bubble_grows_to_the_cap(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.show()
+        panel.resize(1000, 600)
+        qtbot.wait(50)
+        panel.send_message("계약서")
+        qtbot.wait(50)
+
+        bubble = panel.bubble_for(1)
+        cap = int(panel._transcript.width() * MAX_BUBBLE_WIDTH_RATIO)
+
+        assert abs(bubble.width() - cap) <= 2, (
+            f"상한 {cap}px인데 실제 폭이 {bubble.width()}px — 늘어나지 않았다"
+        )
+
+    def test_user_message_still_hugs_its_text(self, qtbot):
+        """질문 말풍선까지 넓어지면 안 된다 — 짧은 질문이 폭 전체를 차지한다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.show()
+        panel.resize(1000, 600)
+        qtbot.wait(50)
+        panel.send_message("계약서")
+        qtbot.wait(50)
+
+        cap = int(panel._transcript.width() * MAX_BUBBLE_WIDTH_RATIO)
+        user_label = panel._bubble_widgets[0]
+
+        assert user_label.width() < cap
