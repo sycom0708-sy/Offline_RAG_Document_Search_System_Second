@@ -426,3 +426,27 @@ class TestDocxHeadingTracking:
         assert first.content.startswith("표지 문단")
         assert first.heading == ""
 
+
+class TestXlsxSheetHeading:
+    """시트 1행의 제목 칸을 쓰되, 시트명과 겹치면 비운다 [사용자 확정]."""
+
+    def _heading(self, rows, sheet_title):
+        from parser.formats.xlsx_parser import XlsxParser
+        from parser.schema import TableData
+
+        return XlsxParser._sheet_heading(TableData.from_rows(rows, caption=sheet_title), sheet_title)
+
+    def test_single_filled_cell_in_first_row_is_the_heading(self):
+        assert self._heading([["개발 관련 파일 목록", "", ""], ["a", "b", "c"]], "Sheet1") == "개발 관련 파일 목록"
+
+    def test_heading_equal_to_sheet_name_is_dropped(self):
+        """표 카드가 이미 시트명을 위치로 보여준다 — 같은 문자열을 두 줄로 띄우지 않는다."""
+        assert self._heading([["2.주행 시작", "", ""], ["a", "b", "c"]], "2.주행 시작") == ""
+
+    def test_whitespace_only_difference_still_counts_as_equal(self):
+        assert self._heading([["2. 주행 시작", ""], ["a", "b"]], "2.주행 시작") == ""
+
+    def test_column_header_row_is_not_a_heading(self):
+        """여러 칸이 차 있으면 제목이 아니라 열 머리글이고, 그건 표가 이미 보여준다."""
+        assert self._heading([["번호", "이름", "비고"], ["1", "김", ""]], "Sheet1") == ""
+
