@@ -11,10 +11,12 @@ Phase 7의 출처 표기(T7.3)와 형식이 어긋나면 사용자가 답변의 
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
-from indexer.fts5.search import SearchResult
+from indexer.fts5.search import SearchResult, query_term_variants
+from parser.schema import ChunkType
 from search.chunk_view import format_location
 
 # 기권 시 모델이 **그대로** 출력해야 하는 문구. 채점기가 이 문자열을 찾는다.
@@ -82,11 +84,20 @@ class Excerpt:
     text: str
 
     @classmethod
-    def from_result(cls, result: SearchResult) -> "Excerpt":
+    def from_result(
+        cls, result: SearchResult, *, heading: str = "", query: str = ""
+    ) -> "Excerpt":
+        text = result.content
+        if result.type == ChunkType.TABLE and getattr(result, "table_json", None):
+            text = render_table_text(
+                result.table_json, result.content, heading=heading, query=query
+            )
+        elif heading:
+            text = f"{heading}\n\n{result.content}"
         return cls(
             file_name=result.file_name,
             location=format_location(result),
-            text=result.content,
+            text=text,
         )
 
 
@@ -102,10 +113,110 @@ class HistoryTurn:
     answer: str
 
 
-def to_excerpts(results) -> list[Excerpt]:
-    """`SearchResult` 또는 `HybridResult` 목록을 발췌로 바꾼다."""
-    # HybridResult는 SearchResult를 `.result`에 감싸고 있다.
-    return [Excerpt.from_result(getattr(r, "result", r)) for r in results]
+def render_table_text(
+    table_json: str | None,
+    fallback: str,
+    *,
+    heading: str = "",
+    query: str = "",
+    max_chars: int = DEFAULT_MAX_CHARS_PER_EXCERPT,
+) -> str:
+    """표 청크를 행·열 구조가 보이는 형태로 만든다 (T10.25).
+
+    🔴 평문으로 펼치면 **열 머리글이 셀에서 멀어져** 모델이 축을 뭉갠다.
+    실측(2026-08-18, 사용자 보고): 등급×지원유형 2축 표에서 "KPC 응시자는
+    40만원"처럼 **다른 등급의 열 값**을 등급 이름에 붙였다. 머리글을 각 행
+    바로 위에 두면 모델이 할 일이 "읽어서 옮기기"로 줄어든다 — 같은 질문에서
+    세 등급이 전부 정확히 나왔다.
+
+    형식은 SYSTEM_PROMPT의 예시(`구분 | 최소 사양 | 권장 사양`)와 맞춘다.
+    프롬프트 문구를 건드리지 않으므로 Phase 6·7 실측치가 그대로 유효하다.
+
+    `max_chars`를 넘으면 **행 단위로** 자른다 — `format_excerpts`의 글자 수
+    절단에 맡기면 행 중간이 잘려 "40만" 같은 반쪽 셀이 남는다.
+    """
+    try:
+        table = json.loads(table_json) if table_json else None
+    except (TypeError, ValueError):
+        table = None
+    if not isinstance(table, dict):
+        return fallback
+
+    rows = table.get("rows") or []
+    header = [str(h).strip() for h in (table.get("header_row") or []) if str(h).strip()]
+    if not rows and not header:
+        return fallback
+
+    def _cells(row):
+        cells = row if isinstance(row, list) else row.get("cells", row)
+        if not isinstance(cells, (list, tuple)):
+            return []
+        return [_WHITESPACE.sub(" ", str(c)).strip() for c in cells]
+
+    lines = []
+    if heading:
+        lines.extend([heading, ""])
+    if header:
+        lines.append(" | ".join(header))
+
+    body = []
+    for row in rows:
+        cells = _cells(row)
+        if not any(cells):
+            continue
+        body.append(" | ".join(cells[: len(header)] if header else cells))
+
+    # 🔴 질문과 관련된 행을 **먼저** 넣는다 (T10.27).
+    #
+    # 원래 순서대로 채우면 예산(`max_chars`)이 앞쪽 행에 다 쓰이고 정작 답이
+    # 있는 행이 잘려나간다 — 실측: 응시료는 15~18행짜리 표의 9~11번째 행이라
+    # 상시 위험했다. 반대로 관련 행이 앞으로 오면 표가 몇 행으로 줄어 프롬프트도
+    # 크게 작아진다(프롬프트 처리가 지연의 93%다: 35.6ms/토큰 × 3,922토큰 = 140초).
+    #
+    # 조사 처리는 FTS5·재순위와 **같은 함수**를 쓴다 — 따로 구현하면 판정이
+    # 갈려서 "검색에는 걸렸는데 발췌에는 없다"가 된다(T10.8의 교훈).
+    if query:
+        variants = query_term_variants(query)
+        if variants:
+            def _hit(line: str) -> bool:
+                return any(any(form in line for form in forms) for forms in variants)
+
+            hits = [line for line in body if _hit(line)]
+            # 한 행도 안 걸리면(질문에 없는 말로 적힌 표) 원래대로 앞에서부터
+            # 채운다 — 관련 행을 못 찾았다고 표를 통째로 비우면 답할 근거가
+            # 사라진다. 걸린 게 있을 때만 그 행들로 좁힌다.
+            if hits:
+                body = hits
+
+    used = sum(len(line) + 1 for line in lines)
+    for line in body:
+        if used + len(line) + 1 > max_chars and len(lines) > (2 if heading else 0):
+            break
+        lines.append(line)
+        used += len(line) + 1
+
+    return "\n".join(lines) if lines else fallback
+
+
+def to_excerpts(results, heading_for=None, query: str = "") -> list[Excerpt]:
+    """`SearchResult` 또는 `HybridResult` 목록을 발췌로 바꾼다.
+
+    `heading_for(result) -> str`을 주면 그 결과 바로 앞 청크의 제목을 발췌
+    맨 위에 얹는다 (T10.25) — 표에는 등급·구분이 안 적혀 있고 바로 앞 문단에
+    있는 경우가 흔하다(실측: "KAC … 코치인증자격 1단계" 다음 청크가 그 등급의
+    표). 이게 없으면 모델이 표를 정확히 읽어도 어느 등급인지 말할 수 없다.
+    """
+    excerpts = []
+    for r in results:
+        result = getattr(r, "result", r)
+        heading = ""
+        if heading_for is not None:
+            try:
+                heading = heading_for(result) or ""
+            except Exception:  # noqa: BLE001 — 맥락은 보조 정보다, 실패해도 요약은 계속
+                heading = ""
+        excerpts.append(Excerpt.from_result(result, heading=heading, query=query))
+    return excerpts
 
 
 def _truncate(text: str, limit: int) -> str:

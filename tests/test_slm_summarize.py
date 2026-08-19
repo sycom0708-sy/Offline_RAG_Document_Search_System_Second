@@ -74,7 +74,9 @@ class _FakeService:
 
 class TestGate1SimilarityThreshold:
     def test_keeps_results_at_or_above_threshold(self):
-        excerpts = select_excerpts([_hybrid(0.8), _hybrid(0.5)])
+        # 내용을 다르게 준다 — 같으면 중복 제거(T10.24)에 걸려 임계값이 아니라
+        # 중복 규칙을 보게 된다.
+        excerpts = select_excerpts([_hybrid(0.8, content="A"), _hybrid(0.5, content="B")])
         assert len(excerpts) == 2
 
     def test_drops_results_below_threshold(self):
@@ -87,8 +89,58 @@ class TestGate1SimilarityThreshold:
         """
         assert select_excerpts([_hybrid(None)]) == []
 
+
+class TestExcerptDeduplication:
+    """T10.24(2026-08-18, 사용자 보고에서 출발) — 같은 내용이 발췌 칸을 나눠 먹지 않는다.
+
+    실측: "코치인증자격시험 응시료가 얼마야?"에서 **완전히 같은 1,945자 청크가
+    2칸**을 차지해, 다른 단계(KPC/KSC)의 응시료 표가 그만큼 밀려났다. 근거가
+    5칸뿐이라 중복 하나가 곧 근거 하나의 손실이다.
+    """
+
+    def test_identical_content_is_kept_only_once(self):
+        excerpts = select_excerpts([_hybrid(0.8), _hybrid(0.7), _hybrid(0.6)])
+
+        assert len(excerpts) == 1
+
+    def test_deduplication_frees_a_slot_for_different_evidence(self):
+        """중복을 걷어낸 자리에 **다른** 근거가 들어와야 의미가 있다."""
+        results = [
+            _hybrid(0.8, content="같은 표 내용"),
+            _hybrid(0.7, content="같은 표 내용"),
+            _hybrid(0.6, content="KPC 응시료는 30만원이다"),
+            _hybrid(0.55, content="KSC 응시료는 40만원이다"),
+        ]
+
+        texts = [e.text for e in select_excerpts(results, max_excerpts=3)]
+
+        assert texts == ["같은 표 내용", "KPC 응시료는 30만원이다", "KSC 응시료는 40만원이다"]
+
+    def test_ranking_order_is_preserved(self):
+        """🔴 순서는 절대 바꾸지 않는다.
+
+        유사도 순으로 바꿔봤더니 짧은 헤딩 조각들이 상위를 채우고 금액이 실린
+        표가 전부 밀려났다(실측: 프롬프트에 남은 금액이 20/35만원뿐, 30/45·
+        40/60만원 소실). 호출부의 순위(T10.8·T10.11)를 그대로 따른다.
+        """
+        results = [
+            _hybrid(0.55, content="긴 표 — 순위는 위"),
+            _hybrid(0.95, content="짧은 헤딩 — 유사도만 높음"),
+        ]
+
+        texts = [e.text for e in select_excerpts(results)]
+
+        assert texts == ["긴 표 — 순위는 위", "짧은 헤딩 — 유사도만 높음"]
+
+    def test_different_content_is_all_kept(self):
+        results = [_hybrid(0.8, content="A"), _hybrid(0.7, content="B")]
+
+        assert len(select_excerpts(results)) == 2
+
     def test_limits_excerpt_count(self):
-        excerpts = select_excerpts([_hybrid(0.9) for _ in range(10)], max_excerpts=3)
+        excerpts = select_excerpts(
+            [_hybrid(0.9, content=f"근거 {i}") for i in range(10)], max_excerpts=3
+        )
         assert len(excerpts) == 3
 
     def test_summarize_does_not_call_model_without_evidence(self):

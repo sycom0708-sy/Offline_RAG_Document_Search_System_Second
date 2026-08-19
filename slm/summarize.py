@@ -74,6 +74,8 @@ def select_excerpts(
     *,
     threshold: float = SIMILARITY_THRESHOLD,
     max_excerpts: int = DEFAULT_MAX_EXCERPTS,
+    heading_for=None,
+    query: str = "",
 ) -> list[Excerpt]:
     """1단계 안전장치 — 근거로 쓸 만한 결과만 골라 발췌로 바꾼다.
 
@@ -90,7 +92,23 @@ def select_excerpts(
         r for r in results
         if getattr(r, "similarity", None) is not None and r.similarity >= threshold
     ]
-    return to_excerpts(eligible[:max_excerpts])
+
+    # 내용이 완전히 같은 청크가 여러 개 올라오면 한정된 발췌 칸(기본 5)을
+    # 같은 근거가 나눠 먹는다 — 실측(2026-08-18, "응시료가 얼마야?"): 1,945자
+    # 짜리 **동일 청크가 2칸**을 차지해, 다른 단계(KPC/KSC)의 응시료 표가
+    # 그만큼 밀려났다. 순서 자체는 건드리지 않는다 — 호출부가 넘겨준 순위
+    # (T10.8/T10.11의 일치 개수·본문 길이 우선)가 표처럼 내용이 실린 청크를
+    # 위로 올려주고 있어서, 유사도 순으로 바꾸면 오히려 짧은 헤딩 조각들이
+    # 상위를 채우고 금액 표가 전부 빠진다(실측 확인).
+    seen: set[str] = set()
+    unique = []
+    for r in eligible:
+        if r.content in seen:
+            continue
+        seen.add(r.content)
+        unique.append(r)
+
+    return to_excerpts(unique[:max_excerpts], heading_for=heading_for, query=query)
 
 
 def summarize(
@@ -101,6 +119,7 @@ def summarize(
     threshold: float = SIMILARITY_THRESHOLD,
     max_excerpts: int = DEFAULT_MAX_EXCERPTS,
     history: list[HistoryTurn] = (),
+    heading_for=None,
 ) -> Summary:
     """검색 결과를 근거로 질문에 답한다. 4단계 안전장치를 모두 통과시킨다.
 
@@ -108,7 +127,14 @@ def summarize(
     쓰이지 않고(1단계는 그대로 이번 턴의 `results`만 본다) `build_messages()`가
     맥락으로만 프롬프트에 얹는다.
     """
-    excerpts = select_excerpts(results, threshold=threshold, max_excerpts=max_excerpts)
+    excerpts = select_excerpts(
+        results,
+        threshold=threshold,
+        max_excerpts=max_excerpts,
+        heading_for=heading_for,
+        # T10.27: 표에서 질문과 관련된 행을 우선 남기기 위해 질문을 그대로 넘긴다.
+        query=question,
+    )
 
     # --- 1단계: 근거가 없으면 모델을 부르지 않는다 ---
     if not excerpts:
