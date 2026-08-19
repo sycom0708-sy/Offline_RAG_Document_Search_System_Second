@@ -167,6 +167,71 @@ class TestConcurrency:
         service.shutdown()
 
 
+class TestAbort:
+    """T10.23 — 진행 중인 추론을 실제로 끊는 경로."""
+
+    def test_abort_delegates_to_the_active_client(self, fake_server):
+        service = SlmService(SLM_RECOMMENDED)
+        client = service.ensure_ready()
+
+        service.abort_active_request()
+
+        assert client._abort_requested is True
+        service.shutdown()
+
+    def test_abort_is_safe_before_any_server_started(self):
+        """서버가 없을 때 불러도 조용히 넘어가야 한다 — 취소는 실패하면 안 된다."""
+        service = SlmService(SLM_RECOMMENDED)
+        service.abort_active_request()  # 예외가 나면 실패
+
+    def test_abort_does_not_wait_for_the_request_lock(self, fake_server):
+        """🔴 이게 이 기능의 핵심 함정이다.
+
+        `chat()`은 추론이 끝날 때까지(채택 모델 중앙 18.3초) `_lock`을 쥔다.
+        `abort_active_request()`가 같은 락을 잡으려 하면, 취소를 부르는 **UI
+        스레드가 그 시간만큼 얼어붙는다** — 멈춤을 없애려던 기능이 멈춤을
+        만든다. 락이 잡혀 있는 상태에서도 즉시 돌아오는지 확인한다.
+        """
+        service = SlmService(SLM_RECOMMENDED)
+        client = service.ensure_ready()
+
+        holding = threading.Event()
+        release = threading.Event()
+
+        def hold_lock():
+            with service._lock:
+                holding.set()
+                release.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        assert holding.wait(timeout=5)
+
+        started = time.perf_counter()
+        service.abort_active_request()
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 1.0, f"락을 기다렸다({elapsed:.2f}s) — UI가 그만큼 멎는다"
+        assert client._abort_requested is True
+
+        release.set()
+        holder.join(timeout=5)
+        service.shutdown()
+
+    def test_ensure_ready_clears_a_stale_abort_flag(self, fake_server):
+        """취소 표시가 남아 있으면 다음 요청이 시작하자마자 취소로 처리된다."""
+        service = SlmService(SLM_RECOMMENDED)
+        client = service.ensure_ready()
+        service.abort_active_request()
+        assert client._abort_requested is True
+
+        again = service.ensure_ready()
+
+        assert again is client
+        assert client._abort_requested is False
+        service.shutdown()
+
+
 class TestAvailability:
     def test_missing_model_raises_with_guidance(self, monkeypatch):
         monkeypatch.setattr(

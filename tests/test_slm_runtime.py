@@ -243,3 +243,40 @@ def test_end_to_end_completion():
 
     assert "서울" in result.text
     assert result.completion_tokens > 0
+
+
+class TestClientAbort:
+    """T10.23 — `LlamaClient`가 요청을 실제로 끊을 수 있어야 한다.
+
+    `stream=False`라 llama-server는 생성이 다 끝나야 응답을 시작한다 — 즉
+    블로킹 구간에는 응답 객체가 아직 없고, 끊으려면 **연결 자체**를 다른
+    스레드에서 닫아야 한다(urllib으로는 불가능해 http.client를 직접 쓴다).
+    """
+
+    def test_abort_before_request_makes_the_next_post_fail_fast(self):
+        from slm.client import LlamaClient, LlamaClientAborted
+
+        client = LlamaClient(port=1)  # 아무도 안 듣는 포트 — 연결까지 갈 일이 없다
+        client.abort()
+
+        with pytest.raises(LlamaClientAborted):
+            client._post("/v1/chat/completions", {"messages": []})
+
+    def test_clear_abort_lets_requests_through_again(self):
+        from slm.client import LlamaClient, LlamaClientAborted, LlamaClientError
+
+        client = LlamaClient(port=1)
+        client.abort()
+        client.clear_abort()
+
+        # 중단 표시가 지워졌으므로 이제는 "취소"가 아니라 평범한 연결 실패여야 한다.
+        with pytest.raises(LlamaClientError) as caught:
+            client._post("/v1/chat/completions", {"messages": []})
+        assert not isinstance(caught.value, LlamaClientAborted)
+
+    def test_aborted_is_a_subclass_of_client_error(self):
+        """기존 호출부는 `LlamaClientError`만 잡는다 — 취소가 그물을 빠져나가
+        예상 못 한 예외로 올라오면 안 된다."""
+        from slm.client import LlamaClientAborted, LlamaClientError
+
+        assert issubclass(LlamaClientAborted, LlamaClientError)

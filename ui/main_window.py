@@ -19,6 +19,7 @@ from config.settings import get_profile
 from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
 from indexer.pipeline import IndexingThread, IndexReport
+from indexer.vector.store import missing_vector_count
 from parser.utils.libreoffice import INSTALL_HINT, is_missing_libreoffice_error
 from search.chunk_neighbors import fetch_next_chunk
 from slm.service import SlmService
@@ -103,6 +104,10 @@ class MainWindow(QMainWindow):
         # 검색 워커와 같은 이유로 **실행 중인 요약 워커를 전부 붙들어야 한다** —
         # 참조를 잃으면 실행 중인 QThread가 GC되며 앱이 통째로 죽는다.
         self._active_summary_workers: set[SummaryWorker] = set()
+        # T10.23: 진행 중인 **챗봇** 답변 생성 (request_id, worker). 다음 질문이
+        # 오면 이걸 끊는다 — 카드 단위 요약(T10.14)은 대화가 아니라 각자
+        # 독립이므로 여기에 넣지 않고 취소 대상도 아니다.
+        self._chat_summary: tuple[int, SummaryWorker] | None = None
         # 챗봇 모드가 켜져 있을 때만 값이 있다 — 결과 영역을 누가 갖고 있는지
         # (카드 목록 vs 이 패널) 판단하는 기준이다.
         self._chat_panel: ChatPanel | None = None
@@ -345,6 +350,8 @@ class MainWindow(QMainWindow):
         self._sync_result_header()  # 챗봇 모드는 헤더가 없다(DESIGN §5.8)
 
     def _deactivate_chat_mode(self) -> None:
+        # 화면에서 사라지는데 4.8GB 모델을 계속 돌릴 이유가 없다(T10.23).
+        self._cancel_chat_summary()
         self._chat_panel = None
         self._render_current_results()
         self._sync_result_header()
@@ -376,6 +383,9 @@ class MainWindow(QMainWindow):
         (`_AnswerBubble.show_excerpt()`가 이미 하던 대로) 자연히 켜진다 —
         버튼 활성화 로직을 따로 안 건드려도 된다.
         """
+        # T10.23: 답변 생성 중에 다음 질문이 오면 직전 것을 접는다(사용자 확정).
+        self._cancel_chat_summary()
+
         self._chat_questions[request_id] = question
         fallback_query = self._chat_questions.get(request_id - 1)
 
@@ -400,11 +410,39 @@ class MainWindow(QMainWindow):
         self._active_workers.add(worker)
         worker.start()
 
+    def _cancel_chat_summary(self) -> None:
+        """진행 중이던 챗봇 답변 생성을 접는다 (T10.23, 사용자 확정 정책).
+
+        결과를 버리는 데 그치지 않고 서버 쪽 생성까지 끊는다 — `SlmService`가
+        요청을 한 줄로 세우기 때문에, 버려질 추론을 살려두면 방금 한 질문의
+        답변이 그만큼 늦어진다(중앙 18.3초씩 밀린다).
+        """
+        if self._chat_summary is None:
+            return
+        request_id, worker = self._chat_summary
+        self._chat_summary = None
+        if worker.isRunning():
+            worker.cancel()
+            if self._chat_panel is not None:
+                self._chat_panel.show_summary_cancelled(request_id)
+
     def _on_chat_search_succeeded(self, request_id: int, results: list) -> None:
         # 턴마다 독립이라 "더 최신 질의가 왔으니 버린다" 판단이 필요 없다 —
         # ChatPanel이 request_id로 그 턴의 말풍선을 찾아 그리기만 한다.
-        if self._chat_panel is not None:
-            self._chat_panel.show_excerpt(request_id, results)
+        if self._chat_panel is None:
+            return
+        self._chat_panel.show_excerpt(request_id, results)
+
+        # T10.23: 챗봇 모드는 ①을 그린 **직후 ②를 자동으로 시작한다** — 버튼을
+        # 누르게 하지 않는다. 이게 일반 검색과 챗봇을 가르는 지점이다(첫 턴부터
+        # 성격이 갈린다). Phase 7.6이 자동 생성을 두 번 반려했던 이유는 "기다리는
+        # 동안 화면이 비어 있다"였는데, 지금은 ①이 7~14ms에 이미 발췌를 채우므로
+        # 그 문제가 없다 — 빈 화면 대기가 아니라 답변이 뒤이어 채워지는 형태다.
+        #
+        # 근거가 없으면(0건) 부르지 않는다: 1단계가 어차피 모델을 안 부르지만,
+        # 여기서 걸러야 말풍선에 헛된 "생성 중" 표시가 안 뜬다.
+        if results and self._ai_summary_available:
+            self._on_chat_summarize_requested(request_id, results)
 
     def _on_chat_search_failed(self, request_id: int, message: str) -> None:
         if self._chat_panel is not None:
@@ -422,13 +460,21 @@ class MainWindow(QMainWindow):
 
         question = self._chat_questions.get(request_id, "")
         history = self._chat_panel.history_before(request_id) if self._chat_panel is not None else []
-        worker = SummaryWorker(question, results, self._slm_service, request_id, history=history)
+        worker = SummaryWorker(
+            question,
+            results,
+            self._slm_service,
+            request_id,
+            history=history,
+            db_path=self.db_path,  # T10.25: 표 발췌에 앞 문단 제목을 얹기 위해
+        )
         worker.started_loading.connect(self._on_chat_summary_loading)
         worker.succeeded.connect(self._on_chat_summary_succeeded)
         worker.failed.connect(self._on_chat_summary_failed)
         worker.finished.connect(worker.deleteLater)
         worker.finished.connect(lambda w=worker: self._active_summary_workers.discard(w))
         self._active_summary_workers.add(worker)
+        self._chat_summary = (request_id, worker)
         worker.start()
 
     def _on_chat_summary_loading(self, request_id: int) -> None:
@@ -436,6 +482,7 @@ class MainWindow(QMainWindow):
             self._chat_panel.show_summary_starting(request_id)
 
     def _on_chat_summary_succeeded(self, request_id: int, summary) -> None:
+        self._forget_chat_summary(request_id)
         if self._chat_panel is not None:
             self._chat_panel.show_summary(request_id, summary)
 
@@ -451,7 +498,9 @@ class MainWindow(QMainWindow):
     def _on_card_summarize_requested(self, section, result) -> None:
         section.show_generating()
 
-        worker = SummaryWorker(self._last_query, [result], self._slm_service, 0)
+        worker = SummaryWorker(
+            self._last_query, [result], self._slm_service, 0, db_path=self.db_path
+        )
         worker.started_loading.connect(section.show_starting)
         worker.succeeded.connect(section.receive_summary)
         worker.failed.connect(section.receive_error)
@@ -483,8 +532,14 @@ class MainWindow(QMainWindow):
             section.show_content(next_chunk)
 
     def _on_chat_summary_failed(self, request_id: int, message: str) -> None:
+        self._forget_chat_summary(request_id)
         if self._chat_panel is not None:
             self._chat_panel.show_summary_error(request_id, message)
+
+    def _forget_chat_summary(self, request_id: int) -> None:
+        """그 턴이 끝났으면 추적에서 뺀다 — 이미 끝난 워커를 취소하지 않도록."""
+        if self._chat_summary is not None and self._chat_summary[0] == request_id:
+            self._chat_summary = None
 
     def _on_open_failed(self, message: str) -> None:
         """"원문 열기" 실패를 사용자에게 보여준다.
@@ -518,6 +573,10 @@ class MainWindow(QMainWindow):
 
         # 요약 워커는 추론이 끝날 때까지 최대 18초를 더 기다릴 수 있어 검색보다
         # 여유가 필요하다. 다만 무한정 기다리면 창이 안 닫히므로 상한을 둔다.
+        # T10.23: 자동 요약이 기본이 되면서 "생성 중 창 닫기"가 흔해졌다 —
+        # 먼저 끊으면 아래 대기가 사실상 즉시 끝난다.
+        for worker in list(self._active_summary_workers):
+            worker.cancel()
         for worker in list(self._active_summary_workers):
             worker.wait(_SUMMARY_SHUTDOWN_WAIT_MS)
 
@@ -566,6 +625,39 @@ class MainWindow(QMainWindow):
         self.state.save()
         self._embedder = None
         self._start_embedder_warmup()
+
+        # T10.26: 모드를 바꿔도 그 모델의 벡터가 인덱스에 없으면 검색 결과의
+        # 유사도가 전부 None이 되고, AI 요약 1단계가 이를 "관련성 판단 불가"로
+        # 보고 통째로 막는다 — 사용자에겐 "관련 문서를 찾을 수 없습니다"만
+        # 보여서 검색이 고장 난 것처럼 느껴진다(실사용 보고, 2026-08-18).
+        # 벡터는 모델별로 따로 저장되므로(Phase 7.5의 (chunk_id, model) 복합키)
+        # 전환만으로는 절대 생기지 않는다. 없으면 지금 채운다.
+        self._backfill_vectors_if_needed()
+
+    def _missing_vector_count(self) -> int:
+        """활성 프로파일 기준으로 벡터가 없는 청크 수. 실패하면 0(모른다)."""
+        try:
+            conn = connect(self.db_path)
+            try:
+                return missing_vector_count(conn, self.state.model_profile)
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — 확인 실패가 앱을 막으면 안 된다
+            return 0
+
+    def _backfill_vectors_if_needed(self) -> None:
+        """활성 모델 벡터가 비어 있으면 재인덱싱으로 채운다 (T10.26).
+
+        새 스레드를 만들지 않고 기존 재인덱싱 경로를 그대로 쓴다 — 진행률
+        팝업·취소·종료 처리(T10.4/T10.7)가 이미 붙어 있고, `index_folder()`가
+        **변경 없는 파일을 전부 건너뛰어도 마지막에 `embed_missing()`은 무조건
+        부른다**(pipeline.py). 즉 재파싱 비용 없이 빠진 벡터만 채워진다.
+        """
+        if not self.state.target_folder:
+            return
+        if self._missing_vector_count() <= 0:
+            return
+        self._start_reindex(self.state.target_folder)
 
     # --- 모델 관리 --------------------------------------------------
 
@@ -722,6 +814,17 @@ class MainWindow(QMainWindow):
                 last_indexed_at = None
 
         self.status_bar_widget.set_idle(doc_count, last_indexed_at)
+
+        # T10.26: 시작 시점에는 알아서 재인덱싱을 걸지 않는다 — 앱을 켜자마자
+        # 몇 분짜리 작업이 튀어나오면 놀란다. 대신 왜 검색이 안 되는지는
+        # 반드시 알려준다(안 그러면 "관련 문서 없음"만 보인다).
+        missing = self._missing_vector_count()
+        if missing > 0:
+            label = get_profile(self.state.model_profile).label
+            self.status_bar_widget.set_warning(
+                f"'{label}' 벡터가 없는 문서가 {missing}개 있습니다. "
+                "PC 성능을 다시 선택하거나 폴더 관리에서 재인덱싱하세요."
+            )
 
     def _refresh_format_filter_options(self) -> None:
         conn = connect(self.db_path)

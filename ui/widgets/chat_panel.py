@@ -239,6 +239,16 @@ class _AnswerBubble(QFrame):
         self._summarize_button.setEnabled(True)
         self._summary_card.show_error(message)
 
+    def show_summary_cancelled(self) -> None:
+        """다음 질문이 들어와 이 턴의 답변 생성을 접었다 (T10.23).
+
+        실패가 아니므로 오류 카드로 보여주지 않는다 — 요약 자리를 도로 숨기고
+        버튼을 다시 열어, 원하면 이 턴만 따로 다시 생성할 수 있게 둔다.
+        ①(즉시 발췌)은 이미 화면에 있고 그대로 남는다.
+        """
+        self._summary_card.setVisible(False)
+        self._summarize_button.setEnabled(bool(self.results))
+
     # --- 테스트·검증용 --------------------------------------------------
 
     def excerpt_text(self) -> str:
@@ -346,6 +356,11 @@ class ChatPanel(QWidget):
         if bubble is not None:
             bubble.show_summary_error(message)
             self._scroll_to_bottom_deferred()
+
+    def show_summary_cancelled(self, request_id: int) -> None:
+        bubble = self._bubbles.get(request_id)
+        if bubble is not None:
+            bubble.show_summary_cancelled()
 
     def turn_count(self) -> int:
         """테스트·검증용 — 지금까지 오간 턴 수."""
@@ -491,7 +506,10 @@ class ChatPanel(QWidget):
             idle_timer.start(120)
 
         def _detach() -> None:
-            bar.rangeChanged.disconnect(_on_range_changed)
+            try:
+                bar.rangeChanged.disconnect(_on_range_changed)
+            except RuntimeError:
+                pass  # 패널이 이미 파괴됐다 — 끊을 대상이 없다
 
         idle_timer.timeout.connect(_detach)
         bar.rangeChanged.connect(_on_range_changed)
@@ -499,8 +517,15 @@ class ChatPanel(QWidget):
         # 레이아웃이 이미 끝나 range가 안 바뀌는 경우(예: 내용이 안 자라
         # 스크롤이 애초에 없는 상태)에는 rangeChanged가 안 와서 위 리스너가
         # 영영 안 불릴 수 있다 — 지금 값 기준으로 한 번 더 시도해 대비한다.
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        # 🔴 컨텍스트 객체(self)를 같이 넘긴다 — 이 오버로드는 self가 파괴되면
+        # 타이머를 자동으로 취소한다. 안 넘기면 패널이 사라진 뒤에도 발사돼
+        # 이미 삭제된 QScrollArea를 건드린다(실측: 자동 요약으로 스크롤
+        # 재조정이 잦아지자 테스트에서 재현됐다).
+        QTimer.singleShot(0, self, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self) -> None:
-        bar = self._scroll.verticalScrollBar()
+        try:
+            bar = self._scroll.verticalScrollBar()
+        except RuntimeError:
+            return  # 지연 스크롤이 패널 파괴 뒤에 도착한 경우
         bar.setValue(bar.maximum())

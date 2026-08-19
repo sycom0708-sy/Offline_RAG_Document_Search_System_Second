@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import http.client
 import json
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -28,6 +30,13 @@ DEFAULT_SEED = 1234
 
 class LlamaClientError(RuntimeError):
     """llama-server 호출 실패."""
+
+
+class LlamaClientAborted(LlamaClientError):
+    """진행 중이던 요청을 바깥에서 끊었다 (다음 질문이 들어온 경우 등).
+
+    실패가 아니라 의도된 중단이므로 UI가 오류 메시지로 보여주면 안 된다.
+    """
 
 
 @dataclass
@@ -55,21 +64,71 @@ class LlamaClient:
                  timeout: int = DEFAULT_TIMEOUT_SEC) -> None:
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
+        self._host = host
+        self._port = port
+        # 진행 중인 요청을 다른 스레드(UI)에서 끊기 위해 연결을 붙들어 둔다.
+        # `stream=False`라 서버는 생성이 다 끝나야 응답을 시작한다 — 즉 블로킹
+        # 구간은 "응답 대기"이고, 그 시점엔 응답 객체가 아직 없다. 끊으려면
+        # 응답이 아니라 **연결 자체**를 손에 쥐고 있어야 한다(urllib으로는
+        # 불가능해서 http.client를 직접 쓴다).
+        self._conn_lock = threading.Lock()
+        self._active_conn: http.client.HTTPConnection | None = None
+        self._abort_requested = False
+
+    def abort(self) -> None:
+        """진행 중인 요청을 끊는다. 다른 스레드에서 부르는 용도다.
+
+        llama-server는 클라이언트가 연결을 끊으면 그 요청의 생성을 중단한다 —
+        결과만 버리는 것과 달리 CPU·메모리를 실제로 돌려받는다. 챗봇이 다음
+        질문을 받았을 때 이전 답변 생성을 접는 데 쓴다.
+        """
+        with self._conn_lock:
+            self._abort_requested = True
+            conn = self._active_conn
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 — 이미 닫혔을 수 있다
+                pass
+
+    def clear_abort(self) -> None:
+        """다음 요청을 받기 전에 중단 표시를 지운다."""
+        with self._conn_lock:
+            self._abort_requested = False
 
     def _post(self, path: str, payload: dict) -> dict:
         data = json.dumps(payload).encode("utf-8")
-        request = urllib.request.Request(
-            f"{self.base_url}{path}", data=data,
-            headers={"Content-Type": "application/json"},
-        )
+        conn = http.client.HTTPConnection(self._host, self._port, timeout=self.timeout)
+        with self._conn_lock:
+            if self._abort_requested:
+                conn.close()
+                raise LlamaClientAborted(f"{path} 요청이 시작 전에 취소됐습니다")
+            self._active_conn = conn
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.load(response)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise LlamaClientError(f"{path} 실패(HTTP {exc.code}): {body}") from exc
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+            conn.request("POST", path, body=data,
+                         headers={"Content-Type": "application/json"})
+            response = conn.getresponse()
+            body = response.read()
+            if response.status >= 400:
+                detail = body.decode("utf-8", errors="replace")[:1000]
+                raise LlamaClientError(f"{path} 실패(HTTP {response.status}): {detail}")
+            return json.loads(body)
+        except LlamaClientError:
+            raise
+        except (OSError, http.client.HTTPException, TimeoutError, ValueError) as exc:
+            # abort()가 연결을 닫으면 여기로 떨어진다 — 진짜 실패와 구분한다.
+            with self._conn_lock:
+                aborted = self._abort_requested
+            if aborted:
+                raise LlamaClientAborted(f"{path} 요청을 취소했습니다") from exc
             raise LlamaClientError(f"{path} 호출 실패: {exc}") from exc
+        finally:
+            with self._conn_lock:
+                self._active_conn = None
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _get(self, path: str) -> dict:
         try:

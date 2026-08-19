@@ -29,9 +29,15 @@ from config.settings import (
 from slm import runtime
 from slm.client import LlamaClient
 
-# 앱에서 쓰는 컨텍스트 길이. Phase 6 측정과 같은 값이라 그때의 품질 수치가
-# 그대로 유효하다 — 여기서 줄이면 발췌가 잘려 회귀 비교가 성립하지 않는다.
-DEFAULT_N_CTX = 4096
+# 앱에서 쓰는 컨텍스트 길이.
+#
+# Phase 6~7 측정은 4096으로 했다. 2026-08-18에 6144로 **올렸다** — 실측에서
+# 프롬프트가 3,922토큰을 먹어 답변에 174토큰밖에 안 남았고, 답이 조금만 길면
+# 생성이 중간에 끊겼다(화면엔 "… 다릅니다. [ "처럼 반쪽 대괄호가 남는다).
+# 줄이는 것과 달리 **늘리는 것은 발췌를 자르지 않으므로** 그때의 품질 수치는
+# 그대로 유효하다 — 모델이 보는 내용이 달라지지 않고 여유만 생긴다.
+# 🔴 여기서 줄이면 발췌가 잘려 회귀 비교가 성립하지 않는다.
+DEFAULT_N_CTX = 6144
 
 # 요약 1건의 최대 길이. 프롬프트가 "3문장 이내"를 요구하므로(slm/prompt.py)
 # 넉넉하다. Phase 6은 256으로 측정했다.
@@ -102,6 +108,9 @@ class SlmService:
         """떠 있으면 즉시, 아니면 서버를 올리고 클라이언트를 돌려준다."""
         with self._lock:
             if self._client is not None and self.is_running():
+                # 직전 요청이 취소돼 중단 표시가 남아 있으면 지운다 —
+                # 안 지우면 다음 요청이 시작하자마자 취소로 처리된다.
+                self._client.clear_abort()
                 return self._client
 
             # 죽은 프로세스가 남아 있으면(크래시 등) 흔적을 지우고 새로 띄운다.
@@ -169,6 +178,22 @@ class SlmService:
             self._idle_timer = None
 
     # --- 추론 --------------------------------------------------
+
+    def abort_active_request(self) -> None:
+        """진행 중인 추론 요청을 끊는다. 서버(모델)는 내리지 않는다.
+
+        `shutdown()`과 다르다 — 챗봇에서 다음 질문이 바로 이어지는 상황이라
+        4.8GB 모델을 다시 올리는 비용을 물 이유가 없다. 요청만 접는다.
+
+        🔴 `self._lock`을 잡지 않는다. 그 락은 `chat()`이 추론이 끝날 때까지
+        (채택 모델 중앙 18.3초) 붙들고 있어서, 여기서 락을 기다리면 이 함수를
+        부르는 **UI 스레드가 그 시간만큼 얼어붙는다** — 취소 기능이 정작
+        취소하려던 멈춤을 만드는 셈이 된다. 참조 하나만 읽고 빠져나간다
+        (참조 읽기는 원자적이라 이 용도에는 락이 필요 없다).
+        """
+        client = self._client
+        if client is not None:
+            client.abort()
 
     def chat(self, messages: list[dict], *, max_tokens: int = DEFAULT_MAX_TOKENS):
         """메시지 한 번을 돌리고 `Completion`을 돌려준다. 유휴 타이머를 갱신한다."""
