@@ -450,3 +450,132 @@ class TestXlsxSheetHeading:
         """여러 칸이 차 있으면 제목이 아니라 열 머리글이고, 그건 표가 이미 보여준다."""
         assert self._heading([["번호", "이름", "비고"], ["1", "김", ""]], "Sheet1") == ""
 
+
+class TestHwpxHeadingByFontSize:
+    """HWPX는 `outlineLevel`이 없어(실측 2문서) 글꼴 크기로 판별한다.
+
+    크기는 문단이 아니라 `header.xml`의 `charPr`에 있어 두 파일을 맞물려 읽는다.
+    """
+
+    HEADER = (
+        '<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">'
+        '<hh:charPr id="0" height="1000"/><hh:charPr id="1" height="1600"/>'
+        "</hh:head>"
+    )
+
+    def _section(self, paragraphs):
+        runs = "".join(
+            f'<hp:p><hp:run charPrIDRef="{ref}"><hp:t>{text}</hp:t></hp:run></hp:p>'
+            for ref, text in paragraphs
+        )
+        return (
+            '<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"'
+            ' xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">' + runs + "</hs:sec>"
+        )
+
+    def _parse(self, tmp_path, paragraphs):
+        import zipfile
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        path = tmp_path / "sample.hwpx"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/header.xml", self.HEADER)
+            archive.writestr("Contents/section0.xml", self._section(paragraphs))
+        return HwpxParser(asset_dir=tmp_path / "assets").parse(path)
+
+    def test_char_heights_are_read_from_header_xml(self, tmp_path):
+        """크기가 본문 파일에 없다는 점이 PDF와 다르다 — header.xml을 못 읽으면 제목도 없다."""
+        import zipfile
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        path = tmp_path / "h.hwpx"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/header.xml", self.HEADER)
+        with zipfile.ZipFile(path) as archive:
+            assert HwpxParser._char_heights(archive) == {"0": 1000.0, "1": 1600.0}
+
+    def test_missing_header_xml_is_not_an_error(self, tmp_path):
+        """제목은 부가 정보다 — 없다고 본문 추출을 막으면 안 된다."""
+        import zipfile
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        path = tmp_path / "h.hwpx"
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/section0.xml", self._section([("0", "본문")]))
+        with zipfile.ZipFile(path) as archive:
+            assert HwpxParser._char_heights(archive) == {}
+
+    def test_heading_applies_to_following_text(self, tmp_path):
+        document = self._parse(
+            tmp_path,
+            [("0", "본문이 길게 이어지는 문단입니다 " * 3), ("1", "2. 설치 방법"), ("0", "설치 절차 본문")],
+        )
+        texts = [c for c in document.chunks if c.type.value == "text"]
+        assert [c.heading for c in texts] == ["", "2. 설치 방법"]
+
+    def test_uniform_font_document_has_no_heading(self, tmp_path):
+        document = self._parse(tmp_path, [("0", "첫 문단"), ("0", "둘째 문단")])
+        assert all(c.heading == "" for c in document.chunks)
+
+
+class TestHwpHeadingByFontSize:
+    """HWP는 pyhwp 중간 XML에서 `Text[charshape-id]` → `CharShape[basesize]`로 크기를 푼다."""
+
+    XML = (
+        "<HwpDoc>"
+        '<CharShape basesize="900"/><CharShape basesize="1600"/>'
+        "<BodyText>"
+        '<Paragraph><Text charshape-id="0">본문 문단</Text></Paragraph>'
+        '<Paragraph><Text charshape-id="1">2. 설치 방법</Text></Paragraph>'
+        "</BodyText></HwpDoc>"
+    )
+
+    def _root(self):
+        from xml.etree import ElementTree
+
+        return ElementTree.fromstring(self.XML)
+
+    def test_char_sizes_follow_definition_order(self):
+        from parser.formats.hwp_parser import HwpParser
+
+        assert HwpParser._char_sizes(self._root()) == [900.0, 1600.0]
+
+    def test_paragraph_size_uses_the_largest_run(self):
+        from parser.formats.hwp_parser import HwpParser
+
+        root = self._root()
+        sizes = HwpParser._char_sizes(root)
+        paragraphs = list(root.iter("Paragraph"))
+        assert HwpParser._paragraph_size(paragraphs[0], sizes) == 900.0
+        assert HwpParser._paragraph_size(paragraphs[1], sizes) == 1600.0
+
+    def test_body_size_is_weighted_by_length(self):
+        """짧은 제목이 개수로 많아도 본문 크기를 빼앗지 않는다."""
+        from parser.utils.headings import body_size_of
+
+        assert body_size_of([(1600.0, "제목"), (1600.0, "제목2"), (900.0, "본문 " * 30)]) == 900.0
+
+    def test_table_cell_text_is_not_a_heading_candidate(self):
+        """표 안 문단은 별도 청크로 빠지므로 제목 후보가 아니다 (Phase 1 결정).
+
+        실측: 리눅스마스터 기출문제(hwp)의 `1과목 : 리눅스 운영 및 관리`가 바로 이
+        경우였다 — 눈에는 절 제목이지만 표 셀 안에 들어 있다.
+        """
+        from xml.etree import ElementTree
+
+        from parser.formats.hwp_parser import HwpParser
+
+        root = ElementTree.fromstring(
+            "<HwpDoc>"
+            '<CharShape basesize="900"/><CharShape basesize="1600"/>'
+            '<Paragraph><TableControl><Paragraph>'
+            '<Text charshape-id="1">1과목 : 리눅스 운영 및 관리</Text>'
+            "</Paragraph></TableControl></Paragraph></HwpDoc>"
+        )
+        sizes = HwpParser._char_sizes(root)
+        outer = next(iter(root.iter("Paragraph")))
+        assert HwpParser._paragraph_size(outer, sizes) == 0.0
+

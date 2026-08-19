@@ -12,7 +12,20 @@ from xml.etree import ElementTree
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
+from parser.utils.headings import body_size_of, clean_heading, is_heading_size
 from parser.utils.imaging import sniff_image_extension
+
+
+class _Heading:
+    """재귀 순회 중에 "지금까지 지나온 제목"을 들고 다니는 상자 (T10.32).
+
+    `_walk()`가 재귀 호출이라 지역 변수로는 갱신이 위로 전달되지 않는다.
+    """
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str = "") -> None:
+        self.text = text
 
 
 class HwpParser(BaseParser):
@@ -22,9 +35,14 @@ class HwpParser(BaseParser):
         root = self._load_xml(path)
         asset_dir = self.asset_dir_for(path)
 
+        char_sizes = self._char_sizes(root)
+        # 본문 크기는 문서 전체를 보고 정한다 (T10.32) — hwpx와 같은 방식.
+        body_size = body_size_of(self._sized_paragraphs(root, char_sizes))
+
         text_buffer: list[str] = []
-        self._walk(root, document, text_buffer)
-        self._flush_text(document, text_buffer)
+        heading = _Heading()
+        self._walk(root, document, text_buffer, char_sizes, body_size, heading)
+        self._flush_text(document, text_buffer, heading.text)
         self._extract_images(document, path, asset_dir)
 
         first_text = next(
@@ -60,29 +78,96 @@ class HwpParser(BaseParser):
             hwp5file.close()
 
     def _walk(
-        self, element: ElementTree.Element, document: ParsedDocument, buffer: list[str]
+        self,
+        element: ElementTree.Element,
+        document: ParsedDocument,
+        buffer: list[str],
+        char_sizes: list[float],
+        body_size: float,
+        heading: _Heading,
     ) -> None:
         """본문을 문서 순서대로 훑는다. 표는 별도 청크로 분리하고 본문 텍스트에 섞지 않는다."""
         for child in element:
             if child.tag == "TableControl":
-                self._flush_text(document, buffer)
+                self._flush_text(document, buffer, heading.text)
                 table_data = self._read_table(child)
                 if table_data is not None:
-                    document.chunks.append(self.make_table_chunk(document, table_data))
+                    document.chunks.append(
+                        self.make_table_chunk(document, table_data, heading=heading.text)
+                    )
                 continue
 
             if child.tag == "Paragraph":
                 text = self._own_text(child)
                 if text:
+                    size = self._paragraph_size(child, char_sizes)
+                    if is_heading_size(size, body_size):
+                        candidate = clean_heading(text)
+                        if candidate:
+                            # 앞선 문단은 **이전** 제목으로 확정하고 나서 갈아 끼운다
+                            # (docx·hwpx와 같은 순서).
+                            self._flush_text(document, buffer, heading.text)
+                            heading.text = candidate
                     buffer.append(text)
 
-            self._walk(child, document, buffer)
+            self._walk(child, document, buffer, char_sizes, body_size, heading)
 
-    def _flush_text(self, document: ParsedDocument, buffer: list[str]) -> None:
+    def _flush_text(
+        self, document: ParsedDocument, buffer: list[str], heading: str = ""
+    ) -> None:
         body = "\n".join(buffer).strip()
         if body:
-            document.chunks.append(self.make_text_chunk(document, body))
+            document.chunks.append(self.make_text_chunk(document, body, heading=heading))
         buffer.clear()
+
+    @staticmethod
+    def _char_sizes(root: ElementTree.Element) -> list[float]:
+        """`CharShape` 정의의 `basesize`를 **정의 순서대로** 모은다 (T10.32).
+
+        pyhwp의 중간 XML에서 각 `Text`는 `charshape-id`(정수 인덱스)로 글자 모양을
+        가리키고, 실제 크기는 문서 앞쪽 `CharShape` 정의에 `basesize`(1/100 pt)로
+        들어 있다 — HWPX가 header.xml을 따로 읽어야 하는 것과 같은 구조다.
+        """
+        sizes: list[float] = []
+        for element in root.iter("CharShape"):
+            try:
+                sizes.append(float(element.get("basesize", "0")))
+            except ValueError:
+                sizes.append(0.0)
+        return sizes
+
+    @classmethod
+    def _paragraph_size(cls, element: ElementTree.Element, char_sizes: list[float]) -> float:
+        """이 문단에 쓰인 가장 큰 글꼴 크기. 중첩 표 안쪽은 세지 않는다."""
+        found: list[float] = []
+        for child in element:
+            if child.tag == "TableControl":
+                continue
+            if child.tag == "Text":
+                try:
+                    index = int(child.get("charshape-id", "-1"))
+                except ValueError:
+                    index = -1
+                if 0 <= index < len(char_sizes):
+                    found.append(char_sizes[index])
+            nested = cls._paragraph_size(child, char_sizes)
+            if nested:
+                found.append(nested)
+        return max(found) if found else 0.0
+
+    @classmethod
+    def _sized_paragraphs(
+        cls, element: ElementTree.Element, char_sizes: list[float]
+    ) -> list[tuple[float, str]]:
+        """문서 순서대로 (글꼴 크기, 문단 텍스트)를 모은다 — 본문 크기 판정용."""
+        collected: list[tuple[float, str]] = []
+        for child in element:
+            if child.tag == "Paragraph":
+                text = cls._own_text(child)
+                if text:
+                    collected.append((cls._paragraph_size(child, char_sizes), text))
+            collected.extend(cls._sized_paragraphs(child, char_sizes))
+        return collected
 
     def _read_table(self, table_element: ElementTree.Element) -> TableData | None:
         rows: list[list[str]] = []
