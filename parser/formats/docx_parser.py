@@ -12,12 +12,11 @@ from docx.text.paragraph import Paragraph
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
+from parser.utils.headings import clean_heading
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
 _IMAGE_CONTENT_PREFIX = "image/"
-# 제목 길이 상한 (T10.31) — PDF 쪽과 같은 기준으로 맞춘다.
-_MAX_HEADING_CHARS = 40
 
 
 class DocxParser(BaseParser):
@@ -38,19 +37,30 @@ class DocxParser(BaseParser):
         asset_dir = self.asset_dir_for(path)
 
         paragraph_buffer: list[str] = []
+        heading = ""
         for block in self._iter_blocks(source):
             if isinstance(block, Paragraph):
                 text = block.text.strip()
-                if text:
-                    paragraph_buffer.append(text)
+                if not text:
+                    continue
+                if self._is_heading(block):
+                    # 새 절이 시작된다 — 앞선 문단은 **이전** 절의 제목으로 확정하고
+                    # 나서 제목을 갈아 끼운다. 순서를 바꾸면 앞 절 내용이 다음 절
+                    # 제목을 달고 나온다.
+                    self._flush_text(document, paragraph_buffer, heading)
+                    heading = clean_heading(text)
+                # 제목 문단도 본문에 그대로 남긴다 — 빼면 검색에서 그 문구를 못 찾는다.
+                paragraph_buffer.append(text)
             else:
                 # 표를 만나면 앞선 문단을 먼저 확정해 텍스트/표 청크가 섞이지 않게 한다.
-                self._flush_text(document, paragraph_buffer)
+                self._flush_text(document, paragraph_buffer, heading)
                 table_data = self._read_table(block)
                 if table_data is not None:
-                    document.chunks.append(self.make_table_chunk(document, table_data))
+                    document.chunks.append(
+                        self.make_table_chunk(document, table_data, heading=heading)
+                    )
 
-        self._flush_text(document, paragraph_buffer)
+        self._flush_text(document, paragraph_buffer, heading)
         self._extract_images(document, source, asset_dir)
         self._capture_drawings(document, path, asset_dir)
 

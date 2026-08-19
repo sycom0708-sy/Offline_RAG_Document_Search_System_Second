@@ -377,3 +377,52 @@ def test_heading_column_is_added_to_an_existing_db(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1
     assert conn.execute("SELECT heading FROM chunks WHERE chunk_id='c1'").fetchone()[0] == ""
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# T10.32 — 제목 표시를 나머지 포맷으로 넓힌다 (docx 버그 수정 · xlsx · hwp · hwpx)
+# ---------------------------------------------------------------------------
+
+
+class TestDocxHeadingTracking:
+    """🔴 T10.31이 `_is_heading()`을 만들어 놓고 **어디에서도 부르지 않았다**.
+
+    그래서 docx는 Heading 스타일이 멀쩡히 있어도 제목이 늘 빈 문자열이었다
+    (실측: `결제기_기아차...프로토콜정의서.docx`는 Heading 문단 15개인데 제목 0개).
+    `.doc`·`.rtf`도 LibreOffice 변환 뒤 이 파서에 위임하므로 함께 막혀 있었다.
+    """
+
+    def _parse(self, tmp_path):
+        import docx
+
+        from parser.formats.docx_parser import DocxParser
+
+        source = docx.Document()
+        source.add_paragraph("표지 문단")              # 제목 이전 → 제목 없음
+        source.add_paragraph("통신 메시지 구조 정의", style="Heading 1")
+        source.add_paragraph("본문 첫 절")
+        source.add_paragraph("데이터형식", style="Heading 2")
+        source.add_paragraph("본문 둘째 절")
+        path = tmp_path / "sample.docx"
+        source.save(path)
+        return DocxParser(asset_dir=tmp_path / "assets").parse(path)
+
+    def test_headings_are_tracked_across_sections(self, tmp_path):
+        document = self._parse(tmp_path)
+        texts = [c for c in document.chunks if c.type.value == "text"]
+        assert [c.heading for c in texts] == ["", "통신 메시지 구조 정의", "데이터형식"]
+
+    def test_heading_paragraph_stays_in_the_body(self, tmp_path):
+        """제목 문단을 본문에서 빼면 그 문구로는 검색이 안 된다."""
+        document = self._parse(tmp_path)
+        body = "\n".join(c.content for c in document.chunks if c.type.value == "text")
+        assert "통신 메시지 구조 정의" in body
+
+    def test_preceding_text_keeps_the_previous_heading(self, tmp_path):
+        """제목을 만나면 **앞선 문단부터** 확정한다 — 순서를 바꾸면 앞 절 내용이
+        다음 절 제목을 달고 나온다."""
+        document = self._parse(tmp_path)
+        first = next(c for c in document.chunks if c.type.value == "text")
+        assert first.content.startswith("표지 문단")
+        assert first.heading == ""
+

@@ -9,11 +9,11 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
+from parser.utils.headings import MAX_HEADING_CHARS
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
 # 제목 길이 상한 (T10.31) — PDF·docx 쪽과 같은 기준.
-_MAX_HEADING_CHARS = 40
 
 
 class PptxParser(BaseParser):
@@ -85,7 +85,7 @@ class PptxParser(BaseParser):
         title = title_shape.text_frame.text.strip()
         if not title:
             return ""
-        return title.splitlines()[0][:_MAX_HEADING_CHARS]
+        return title.splitlines()[0][:MAX_HEADING_CHARS]
 
     def _iter_shapes(self, shapes):
         """그룹 도형 안쪽까지 펼쳐서 순회한다."""

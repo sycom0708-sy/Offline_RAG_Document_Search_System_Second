@@ -8,24 +8,13 @@ import pymupdf
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
+from parser.utils.headings import pick_largest_line
 
 # 렌더링 캡처 해상도. 72dpi 기준 2배 = 144dpi로 썸네일·확대 보기 모두 감당 가능한 수준.
 _RENDER_ZOOM = 2.0
 # 이보다 작은 도형 묶음은 밑줄·표 괘선 같은 장식일 가능성이 높아 다이어그램으로 보지 않는다.
 _MIN_DRAWING_CLUSTER_AREA = 10000.0
 _MIN_DRAWING_COUNT = 5
-
-# 제목으로 인정할 최소 글꼴 배율 (T10.31) — 본문 최대 크기의 이 배 이상이어야
-# 제목으로 본다. [제안] 실측 기준: AICA 안내서는 20pt/14pt = 1.43배로 뚜렷하고,
-# 글꼴이 균일한 문서는 이 문턱에 걸려 제목 없음(빈 문자열)이 된다.
-_HEADING_SIZE_RATIO = 1.2
-# 이보다 길면 제목이 아니라 본문으로 본다 (자르지 않고 **버린다**) — 글꼴이 큰
-# 본문 페이지에서 문단 전체가 제목으로 올라오는 것을 막는다.
-#
-# 40자는 실측으로 정했다: 이 코퍼스에서 뽑힌 제목 102개의 길이 중앙값은 12자,
-# 정상 제목 중 가장 긴 것이 28자("4.3.1.9 싞호 사용 유무 및 활성화 방법 설정")인
-# 반면 유일한 오탐은 54자짜리 본문 문단이었다 — 둘 사이가 넉넉히 벌어져 있다.
-_MAX_HEADING_CHARS = 40
 
 
 class PdfParser(BaseParser):
@@ -65,7 +54,7 @@ class PdfParser(BaseParser):
         구조라 훨씬 안정적이다 — 실측: AICA 안내서 3쪽에서 제목
         "1-1. AICA 취득 절차"가 20pt, 본문이 전부 14pt였다.
 
-        본문과 크기 차이가 뚜렷할 때만(`_HEADING_SIZE_RATIO`) 제목으로 본다 —
+        본문과 크기 차이가 뚜렷할 때만(`HEADING_SIZE_RATIO`) 제목으로 본다 —
         글꼴이 균일한 문서(보고서·논문 등)에서 아무 줄이나 제목으로 올리면
         노이즈만 된다. 그런 문서는 빈 문자열이 되고 카드에 제목 줄이 안 뜬다.
         """
@@ -87,28 +76,7 @@ class PdfParser(BaseParser):
                 if text:
                     sized_lines.append((size, text))
 
-        if not sized_lines:
-            return ""
-
-        largest = max(size for size, _ in sized_lines)
-        body_sizes = [size for size, _ in sized_lines if size < largest]
-        if not body_sizes:
-            return ""  # 페이지 전체가 같은 크기 — 제목을 가릴 근거가 없다
-
-        if largest < max(body_sizes) * _HEADING_SIZE_RATIO:
-            return ""  # 본문과 충분히 구분되지 않는다
-
-        # 가장 큰 글꼴의 **첫 줄만** 쓴다. 같은 크기의 줄을 전부 이어 붙였더니
-        # 목차 페이지에서 항목이 통째로 붙어 나왔다(실측: DTG 문서에서
-        # "4.3.5.1 NAK ... 31 5. 참고 ...").
-        heading = next(text for size, text in sized_lines if size == largest)
-
-        # 길면 제목이 아니라 본문이다 — 글꼴이 큰 본문 페이지에서 문단 전체가
-        # 제목으로 올라오는 것을 막는다(실측: PBV01 문서에서 200자짜리 문단이
-        # 최대 글꼴이라 제목으로 잡혔다).
-        if len(heading) > _MAX_HEADING_CHARS:
-            return ""
-        return heading
+        return pick_largest_line(sized_lines)
 
     def _extract_tables(
         self, document: ParsedDocument, page: pymupdf.Page, page_no: int, heading: str = ""
