@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     content TEXT NOT NULL,
     caption TEXT NOT NULL DEFAULT '',
     keywords TEXT NOT NULL DEFAULT '',
+    -- 이 청크가 속한 절의 제목 (T10.31). 결과 카드에 "어느 대목인지"를
+    -- 보여주기 위한 것이라 검색 색인(chunks_fts)에는 넣지 않는다 — 넣으면
+    -- 제목이 걸린 문서의 모든 청크가 결과에 끼는 T10.6과 같은 일이 생긴다.
+    heading TEXT NOT NULL DEFAULT '',
     table_json TEXT,
     image_json TEXT,
     created_at TEXT NOT NULL,
@@ -110,8 +114,29 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     _ensure_wal_mode(conn)
     conn.executescript(_DDL)
     _migrate_chunk_vectors_pk(conn)
+    _migrate_chunks_heading(conn)
     conn.commit()
     return conn
+
+
+def _migrate_chunks_heading(conn: sqlite3.Connection) -> None:
+    """구버전 `chunks`에 `heading` 컬럼을 더한다 (T10.31).
+
+    `chunk_vectors` 쪽과 달리 **테이블을 지우지 않는다** — `chunks`는 파생이
+    아니라 원문이라 날리면 재파싱 없이는 복구할 수 없다. 컬럼만 붙이고 값은
+    빈 문자열로 남겨두면, 재인덱싱 전까지는 제목 줄이 안 보일 뿐 검색은
+    그대로 동작한다.
+
+    `chunks_fts`는 건드리지 않아도 된다 — external content 테이블이라 컬럼
+    목록을 트리거가 명시적으로 나열하고, 거기에 `heading`을 넣지 않았다.
+    """
+    columns = conn.execute("PRAGMA table_info(chunks)").fetchall()
+    if not columns:
+        return  # 방금 새로 만들어진 테이블 — 이미 새 스키마다
+    if any(row["name"] == "heading" for row in columns):
+        return  # 이미 마이그레이션됨
+
+    conn.execute("ALTER TABLE chunks ADD COLUMN heading TEXT NOT NULL DEFAULT ''")
 
 
 def _migrate_chunk_vectors_pk(conn: sqlite3.Connection) -> None:

@@ -45,6 +45,7 @@ __all__ = [
     "open_source_file",
     "start_open_source_file",
     "build_card_header",
+    "build_heading_label",
     "apply_low_relevance_style",
     "SummarySection",
     "NearbySection",
@@ -153,6 +154,28 @@ def build_card_header(
     header.addWidget(open_button)
 
     return header, open_button
+
+
+def build_heading_label(hybrid_result) -> QLabel | None:
+    """이 청크가 속한 절의 제목 줄 (T10.31). 제목이 없으면 `None`.
+
+    파일명·위치 줄 **바로 아래** 별도 줄로 놓는다[사용자 확정] — 발췌 바로
+    위라 "이게 문서의 어느 대목인지"가 눈에 먼저 들어온다.
+
+    🔴 세 카드(텍스트·표·이미지)가 **전부** 불러야 한다. `build_card_header()`는
+    공통이지만 이 줄은 카드가 각자 레이아웃에 넣어야 해서, 하나라도 빠뜨리면
+    특정 카드 타입만 제목이 안 나온다 — T10.10에서 흐림 처리로 똑같은 일을
+    겪었다(라벨은 공통이라 붙었는데 흐림 효과는 텍스트 카드에만 있었다).
+    """
+    heading = getattr(hybrid_result, "heading", "")
+    if not heading:
+        return None
+
+    label = QLabel(heading)
+    label.setObjectName("ResultCardHeading")
+    label.setWordWrap(True)
+    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    return label
 
 
 def apply_low_relevance_style(card: QFrame, hybrid_result) -> None:

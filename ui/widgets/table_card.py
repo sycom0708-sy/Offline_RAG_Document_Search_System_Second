@@ -24,6 +24,7 @@ from ui.widgets.card_common import (
     SummarySection,
     apply_low_relevance_style,
     build_card_header,
+    build_heading_label,
     build_table_grid,
     fix_table_grid_height,
     parse_table_data,
@@ -56,6 +57,9 @@ class TableCard(QFrame):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
         layout.addLayout(header)
+        heading_label = build_heading_label(hybrid_result)
+        if heading_label is not None:
+            layout.addWidget(heading_label)
 
         self._grid: QTableWidget | None = None
         if self._table_data is not None:

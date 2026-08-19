@@ -25,6 +25,7 @@ from ui.widgets.card_common import (
     SummarySection,
     apply_low_relevance_style,
     build_card_header,
+    build_heading_label,
     load_image_thumbnail,
     parse_image_data,
     show_image_zoom_dialog,
@@ -83,6 +84,9 @@ class ImageCard(QFrame):
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
         layout.addLayout(header)
+        heading_label = build_heading_label(hybrid_result)
+        if heading_label is not None:
+            layout.addWidget(heading_label)
         layout.addLayout(body)
 
         self.summary_section: SummarySection | None = None

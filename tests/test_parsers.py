@@ -228,3 +228,152 @@ def test_image_chunks_point_to_existing_files(samples, sample_key):
         assert chunk.image is not None
         assert Path(chunk.image.image_path).is_file()
         assert chunk.image.origin in {"extracted", "rendered"}
+
+
+# --- T10.31: 절 제목(heading) ------------------------------------------------
+
+
+class _FakeSpan(dict):
+    pass
+
+
+def _page_stub(lines):
+    """`page.get_text("dict")` 모양의 최소 스텁. (글꼴크기, 텍스트) 목록을 받는다."""
+
+    class _Page:
+        def get_text(self, kind):
+            assert kind == "dict"
+            return {
+                "blocks": [
+                    {"lines": [{"spans": [{"size": size, "text": text}]} for size, text in lines]}
+                ]
+            }
+
+    return _Page()
+
+
+class TestPdfPageHeading:
+    """🔴 텍스트 패턴이 아니라 **글꼴 크기**로 제목을 찾는다.
+
+    이 코퍼스의 PDF는 페이지 전체가 줄바꿈 없는 한 덩어리로 추출돼(실측:
+    text 청크 972개 중 952개가 단일 줄) "짧은 줄"이라는 단서가 없다.
+    """
+
+    def _heading(self, lines):
+        from parser.formats.pdf_parser import PdfParser
+
+        return PdfParser()._page_heading(_page_stub(lines))
+
+    def test_largest_font_line_becomes_the_heading(self):
+        """실측 재현: AICA 안내서 3쪽은 제목 20pt / 본문 14pt였다."""
+        assert self._heading([
+            (12.0, "3 / 20 정도 · 혁신 · 협업"),
+            (20.0, "1-1. AICA 취득 절차"),
+            (14.0, "인증 : AICA(AIL / AIU / AIC / AIS)"),
+        ]) == "1-1. AICA 취득 절차"
+
+    def test_uniform_font_page_has_no_heading(self):
+        """글꼴이 균일하면 제목을 가릴 근거가 없다 — 아무 줄이나 올리면 노이즈다."""
+        assert self._heading([
+            (12.0, "첫 문단입니다"),
+            (12.0, "둘째 문단입니다"),
+        ]) == ""
+
+    def test_slightly_larger_font_is_not_a_heading(self):
+        """본문과 충분히 구분되지 않으면(비율 미달) 제목으로 보지 않는다."""
+        assert self._heading([
+            (12.5, "조금 큰 줄"),
+            (12.0, "본문입니다"),
+        ]) == ""
+
+    def test_long_line_is_rejected_not_truncated(self):
+        """🔴 잘라 쓰면 본문 앞부분이 제목으로 둔갑한다 — 통째로 버려야 한다.
+
+        실측: PBV01 문서에서 54자짜리 본문 문단이 그 페이지 최대 글꼴이라
+        제목으로 잡혔다.
+        """
+        assert self._heading([
+            (20.0, "개발시adb install이나 개발툴에서 설치를 하게 되면 일반앱으로 설치가 되어 기존의 방법대로"),
+            (12.0, "본문"),
+        ]) == ""
+
+    def test_only_first_line_of_largest_font_is_used(self):
+        """같은 크기 줄을 전부 이으면 목차 페이지가 통째로 붙는다(실측: DTG 문서)."""
+        assert self._heading([
+            (20.0, "1. 개요"),
+            (20.0, "2. 참고"),
+            (12.0, "본문"),
+        ]) == "1. 개요"
+
+
+def test_heading_survives_store_and_search(tmp_path):
+    """파서가 뽑은 제목이 DB를 거쳐 검색 결과까지 그대로 도달해야 한다."""
+    from indexer.fts5.schema import connect
+    from indexer.fts5.search import search as keyword_search
+    from indexer.fts5.store import store_document
+    from parser.schema import Chunk, ChunkType, ParsedDocument
+
+    conn = connect(":memory:")
+    document = ParsedDocument(doc_id="d1", file_path="x", file_name="안내서.pdf", title="t")
+    document.chunks.append(
+        Chunk(
+            chunk_id="c1", doc_id="d1", file_path="x", file_name="안내서.pdf",
+            type=ChunkType.TEXT, page_or_slide=3,
+            content="인증 절차는 다음과 같습니다",
+            heading="1-1. AICA 취득 절차",
+        )
+    )
+    store_document(conn, document)
+
+    results = keyword_search(conn, "인증")
+    assert results[0].heading == "1-1. AICA 취득 절차"
+
+
+def test_heading_is_not_searchable(tmp_path):
+    """🔴 제목은 표시 전용이다 — 색인에 넣으면 제목이 걸린 문서의 모든 청크가
+    결과에 끼는 T10.6(파일명 매치)과 같은 일이 생긴다."""
+    from indexer.fts5.schema import connect
+    from indexer.fts5.search import search as keyword_search
+    from indexer.fts5.store import store_document
+    from parser.schema import Chunk, ChunkType, ParsedDocument
+
+    conn = connect(":memory:")
+    document = ParsedDocument(doc_id="d1", file_path="x", file_name="문서.pdf", title="t")
+    document.chunks.append(
+        Chunk(
+            chunk_id="c1", doc_id="d1", file_path="x", file_name="문서.pdf",
+            type=ChunkType.TEXT, page_or_slide=1,
+            content="본문에는 그 단어가 없다",
+            heading="희귀단어제목",
+        )
+    )
+    store_document(conn, document)
+
+    assert keyword_search(conn, "희귀단어제목") == []
+
+
+def test_heading_column_is_added_to_an_existing_db(tmp_path):
+    """구버전 DB에 컬럼만 더한다 — `chunks`는 원문이라 지우면 복구할 수 없다."""
+    import sqlite3
+
+    from indexer.fts5.schema import connect
+
+    db = tmp_path / "old.sqlite3"
+    conn = connect(db)
+    conn.execute(
+        "INSERT INTO documents(doc_id, file_path, file_name, status, indexed_at)"
+        " VALUES ('d1','x','f.pdf','ok','2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO chunks(chunk_id, doc_id, file_path, file_name, type,"
+        " content, created_at) VALUES ('c1','d1','x','f.pdf','text','내용','2026-01-01')"
+    )
+    conn.commit()
+    conn.close()
+
+    # 구버전을 흉내내기 위해 컬럼을 떼어낼 수는 없으므로, 재연결이 기존 행을
+    # 보존하는지(= 테이블을 다시 만들지 않는지)를 확인한다.
+    conn = connect(db)
+    assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] == 1
+    assert conn.execute("SELECT heading FROM chunks WHERE chunk_id='c1'").fetchone()[0] == ""
+    conn.close()

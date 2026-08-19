@@ -15,6 +15,18 @@ _RENDER_ZOOM = 2.0
 _MIN_DRAWING_CLUSTER_AREA = 10000.0
 _MIN_DRAWING_COUNT = 5
 
+# 제목으로 인정할 최소 글꼴 배율 (T10.31) — 본문 최대 크기의 이 배 이상이어야
+# 제목으로 본다. [제안] 실측 기준: AICA 안내서는 20pt/14pt = 1.43배로 뚜렷하고,
+# 글꼴이 균일한 문서는 이 문턱에 걸려 제목 없음(빈 문자열)이 된다.
+_HEADING_SIZE_RATIO = 1.2
+# 이보다 길면 제목이 아니라 본문으로 본다 (자르지 않고 **버린다**) — 글꼴이 큰
+# 본문 페이지에서 문단 전체가 제목으로 올라오는 것을 막는다.
+#
+# 40자는 실측으로 정했다: 이 코퍼스에서 뽑힌 제목 102개의 길이 중앙값은 12자,
+# 정상 제목 중 가장 긴 것이 28자("4.3.1.9 싞호 사용 유무 및 활성화 방법 설정")인
+# 반면 유일한 오탐은 54자짜리 본문 문단이었다 — 둘 사이가 넉넉히 벌어져 있다.
+_MAX_HEADING_CHARS = 40
+
 
 class PdfParser(BaseParser):
     extensions = (".pdf",)
@@ -32,15 +44,74 @@ class PdfParser(BaseParser):
 
             for page_index, page in enumerate(pdf):
                 page_no = page_index + 1
-                table_bboxes = self._extract_tables(document, page, page_no)
-                self._extract_text(document, page, page_no, table_bboxes)
-                extracted_count = self._extract_images(document, pdf, page, page_no, asset_dir)
+                heading = self._page_heading(page)
+                table_bboxes = self._extract_tables(document, page, page_no, heading)
+                self._extract_text(document, page, page_no, table_bboxes, heading)
+                extracted_count = self._extract_images(
+                    document, pdf, page, page_no, asset_dir, heading
+                )
                 self._capture_vector_drawings(
-                    document, page, page_no, asset_dir, extracted_count, bool(table_bboxes)
+                    document, page, page_no, asset_dir, extracted_count,
+                    bool(table_bboxes), heading,
                 )
 
+    def _page_heading(self, page: pymupdf.Page) -> str:
+        """이 페이지의 제목을 **가장 큰 글꼴**로 판별한다 (T10.31).
+
+        🔴 텍스트 패턴(`1-1.` 같은 번호)으로 찾지 않는다. 이 코퍼스의 PDF는
+        페이지 전체가 줄바꿈 없는 한 덩어리로 추출돼(실측: text 청크 972개 중
+        952개가 단일 줄) "짧은 줄"이라는 단서가 아예 없고, 번호 패턴은 날짜
+        (`2021. 04`)를 제목으로 오인한다. 반면 글꼴 크기는 문서가 실제로 가진
+        구조라 훨씬 안정적이다 — 실측: AICA 안내서 3쪽에서 제목
+        "1-1. AICA 취득 절차"가 20pt, 본문이 전부 14pt였다.
+
+        본문과 크기 차이가 뚜렷할 때만(`_HEADING_SIZE_RATIO`) 제목으로 본다 —
+        글꼴이 균일한 문서(보고서·논문 등)에서 아무 줄이나 제목으로 올리면
+        노이즈만 된다. 그런 문서는 빈 문자열이 되고 카드에 제목 줄이 안 뜬다.
+        """
+        try:
+            blocks = page.get_text("dict")["blocks"]
+        except Exception:
+            return ""  # 제목은 부가 정보다 — 실패해도 본문 추출을 막지 않는다
+
+        # (글꼴 크기 → 그 크기로 쓰인 텍스트) 를 모은다. 같은 크기의 조각이
+        # 여러 span으로 쪼개져 있으므로(실측: "I." + "AICA 소개") 줄 단위로 잇는다.
+        sized_lines: list[tuple[float, str]] = []
+        for block in blocks:
+            for line in block.get("lines", []):
+                spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+                if not spans:
+                    continue
+                size = max(round(s["size"], 1) for s in spans)
+                text = "".join(s["text"] for s in spans).strip()
+                if text:
+                    sized_lines.append((size, text))
+
+        if not sized_lines:
+            return ""
+
+        largest = max(size for size, _ in sized_lines)
+        body_sizes = [size for size, _ in sized_lines if size < largest]
+        if not body_sizes:
+            return ""  # 페이지 전체가 같은 크기 — 제목을 가릴 근거가 없다
+
+        if largest < max(body_sizes) * _HEADING_SIZE_RATIO:
+            return ""  # 본문과 충분히 구분되지 않는다
+
+        # 가장 큰 글꼴의 **첫 줄만** 쓴다. 같은 크기의 줄을 전부 이어 붙였더니
+        # 목차 페이지에서 항목이 통째로 붙어 나왔다(실측: DTG 문서에서
+        # "4.3.5.1 NAK ... 31 5. 참고 ...").
+        heading = next(text for size, text in sized_lines if size == largest)
+
+        # 길면 제목이 아니라 본문이다 — 글꼴이 큰 본문 페이지에서 문단 전체가
+        # 제목으로 올라오는 것을 막는다(실측: PBV01 문서에서 200자짜리 문단이
+        # 최대 글꼴이라 제목으로 잡혔다).
+        if len(heading) > _MAX_HEADING_CHARS:
+            return ""
+        return heading
+
     def _extract_tables(
-        self, document: ParsedDocument, page: pymupdf.Page, page_no: int
+        self, document: ParsedDocument, page: pymupdf.Page, page_no: int, heading: str = ""
     ) -> list[pymupdf.Rect]:
         bboxes: list[pymupdf.Rect] = []
         try:
@@ -60,7 +131,9 @@ class PdfParser(BaseParser):
 
             bboxes.append(pymupdf.Rect(table.bbox))
             document.chunks.append(
-                self.make_table_chunk(document, table_data, page_or_slide=page_no)
+                self.make_table_chunk(
+                    document, table_data, page_or_slide=page_no, heading=heading
+                )
             )
         return bboxes
 
@@ -70,6 +143,7 @@ class PdfParser(BaseParser):
         page: pymupdf.Page,
         page_no: int,
         table_bboxes: list[pymupdf.Rect],
+        heading: str = "",
     ) -> None:
         # 표 영역 텍스트가 본문 청크에 섞이면 행·열 구조가 소실되므로 제외한다 (TECH 3.1절).
         lines: list[str] = []
@@ -84,7 +158,9 @@ class PdfParser(BaseParser):
 
         body = "\n".join(lines).strip()
         if body:
-            document.chunks.append(self.make_text_chunk(document, body, page_or_slide=page_no))
+            document.chunks.append(
+                self.make_text_chunk(document, body, page_or_slide=page_no, heading=heading)
+            )
 
     def _extract_images(
         self,
@@ -93,6 +169,7 @@ class PdfParser(BaseParser):
         page: pymupdf.Page,
         page_no: int,
         asset_dir: Path,
+        heading: str = "",
     ) -> int:
         count = 0
         for image_index, image_info in enumerate(page.get_images(full=True)):
@@ -116,6 +193,7 @@ class PdfParser(BaseParser):
                         origin="extracted",
                     ),
                     page_or_slide=page_no,
+                    heading=heading,
                 )
             )
             count += 1
@@ -129,6 +207,7 @@ class PdfParser(BaseParser):
         asset_dir: Path,
         extracted_count: int,
         has_table: bool,
+        heading: str = "",
     ) -> None:
         """벡터 도형 다이어그램은 이미지로 추출되지 않으므로 페이지를 렌더링해 캡처한다 (TECH 3.1절)."""
         if extracted_count or not self._has_meaningful_drawings(page, has_table):
@@ -153,6 +232,7 @@ class PdfParser(BaseParser):
                     origin="rendered",
                 ),
                 page_or_slide=page_no,
+                heading=heading,
             )
         )
 

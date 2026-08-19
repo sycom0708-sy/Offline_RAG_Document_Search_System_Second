@@ -454,3 +454,66 @@ class TestResultList:
         for _ in range(5):
             widget.show_results([_hybrid()], "계약서")
         assert widget.card_count() == 1
+
+
+# --- T10.31: 절 제목 줄 -------------------------------------------------------
+
+
+def _with_heading(heading: str) -> HybridResult:
+    result = _search_result()
+    result.heading = heading
+    return _hybrid(result)
+
+
+def test_heading_line_is_shown_when_present(qtbot):
+    card = ResultCard(_with_heading("1-1. AICA 취득 절차"), query="계약")
+    qtbot.addWidget(card)
+
+    labels = [w.text() for w in card.findChildren(QLabel)]
+    assert "1-1. AICA 취득 절차" in labels
+
+
+def test_no_heading_line_when_document_has_none(qtbot):
+    """제목을 못 찾은 문서(글꼴이 균일한 PDF 등)는 빈 줄을 만들지 않는다."""
+    card = ResultCard(_with_heading(""), query="계약")
+    qtbot.addWidget(card)
+
+    headings = [w for w in card.findChildren(QLabel) if w.objectName() == "ResultCardHeading"]
+    assert headings == []
+
+
+def test_all_three_card_types_show_the_heading(qtbot):
+    """🔴 세 카드 전부에 붙어야 한다 — T10.10에서 흐림 처리를 텍스트 카드에만
+    넣어 표·이미지 카드가 빠졌던 것과 같은 함정이다."""
+    from parser.schema import ImageData
+    from ui.widgets.image_card import ImageCard
+    from ui.widgets.table_card import TableCard
+
+    heading = "2-1. 목표 관리"
+
+    table_result = _search_result(content="a | b")
+    table_result.type = ChunkType.TABLE
+    table_result.table_json = json.dumps(
+        {"caption": "", "header_row": ["a", "b"], "rows": [["1", "2"]]}
+    )
+    table_result.heading = heading
+
+    image_result = _search_result(content="img.png")
+    image_result.type = ChunkType.IMAGE
+    image_result.image_json = json.dumps(
+        {"image_path": "없는파일.png", "caption": "", "width": 0, "height": 0,
+         "origin": "extracted"}
+    )
+    image_result.heading = heading
+
+    for card in (
+        ResultCard(_with_heading(heading), query="계약"),
+        TableCard(_hybrid(table_result)),
+        ImageCard(_hybrid(image_result)),
+    ):
+        qtbot.addWidget(card)
+        texts = [
+            w.text() for w in card.findChildren(QLabel)
+            if w.objectName() == "ResultCardHeading"
+        ]
+        assert texts == [heading], f"{type(card).__name__}에 제목 줄이 없다"

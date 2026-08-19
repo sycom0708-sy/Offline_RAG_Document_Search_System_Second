@@ -57,6 +57,9 @@ class SearchResult:
     score: float
     table_json: str | None = None
     image_json: str | None = None
+    # 이 청크가 속한 절의 제목 (T10.31). 결과 카드에 보여주기만 하고 검색·정렬에는
+    # 쓰지 않는다 — 순위에 끼워 넣으면 T10.6(파일명 매치)과 같은 일이 생긴다.
+    heading: str = ""
 
 
 def _split_terms(query: str) -> list[str]:
@@ -181,7 +184,7 @@ def _run_search(
     sql = """
         SELECT chunks.chunk_id, chunks.doc_id, chunks.file_path, chunks.file_name,
                chunks.type, chunks.page_or_slide, chunks.content, chunks.caption,
-               chunks.table_json, chunks.image_json,
+               chunks.table_json, chunks.image_json, chunks.heading,
                bm25(chunks_fts, ?, ?, ?, ?) AS score
         FROM chunks
         JOIN chunks_fts ON chunks.id = chunks_fts.rowid
@@ -220,6 +223,7 @@ def _run_search(
                 score=row["score"],
                 table_json=row["table_json"],
                 image_json=row["image_json"],
+                heading=row["heading"],
             )
         )
         if len(results) >= limit:

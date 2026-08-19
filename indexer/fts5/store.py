@@ -104,9 +104,9 @@ def _store_chunk(
             """
             INSERT INTO chunks(chunk_id, doc_id, file_path, file_name, type,
                                 page_or_slide, content, caption, keywords,
-                                table_json, image_json, created_at,
+                                heading, table_json, image_json, created_at,
                                 source_mtime, source_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 sub_chunk_id,
@@ -118,6 +118,7 @@ def _store_chunk(
                 piece,
                 caption_text,
                 keywords_text,
+                chunk.heading,
                 table_json,
                 image_json,
                 chunk.created_at,

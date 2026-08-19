@@ -76,6 +76,10 @@ class Chunk:
     type: ChunkType
     page_or_slide: int | None
     content: str
+    # 이 청크가 속한 절의 제목 (T10.31) — PDF는 페이지 최대 글꼴, docx는
+    # Heading 스타일, pptx는 제목 플레이스홀더에서 가져온다. 찾지 못하면 빈
+    # 문자열이고, 그때는 결과 카드에 제목 줄이 안 나올 뿐이다.
+    heading: str = ""
     keywords: list[str] = field(default_factory=list)
     embedding_vector: list[float] | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

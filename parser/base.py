@@ -87,6 +87,7 @@ class BaseParser(ABC):
         content: str,
         page_or_slide: int | None = None,
         keywords: list[str] | None = None,
+        heading: str = "",
     ) -> Chunk:
         return Chunk(
             chunk_id=make_chunk_id(document.doc_id, "text", self._next_ordinal(ChunkType.TEXT)),
@@ -96,6 +97,7 @@ class BaseParser(ABC):
             type=ChunkType.TEXT,
             page_or_slide=page_or_slide,
             content=content,
+            heading=heading,
             keywords=keywords or [],
         )
 
@@ -104,6 +106,7 @@ class BaseParser(ABC):
         document: ParsedDocument,
         table: TableData,
         page_or_slide: int | None = None,
+        heading: str = "",
     ) -> Chunk:
         # 캡션·헤더는 벡터 유사도만으로 잡히기 어려워 키워드로도 함께 남긴다 (TECH 4.3절).
         keywords = [kw for kw in ([table.caption] + table.header_row) if kw]
@@ -115,6 +118,7 @@ class BaseParser(ABC):
             type=ChunkType.TABLE,
             page_or_slide=page_or_slide,
             content=table.to_text(),
+            heading=heading,
             keywords=keywords,
             table=table,
         )
@@ -124,6 +128,7 @@ class BaseParser(ABC):
         document: ParsedDocument,
         image: ImageData,
         page_or_slide: int | None = None,
+        heading: str = "",
     ) -> Chunk:
         keywords = [kw for kw in [image.caption, image.origin] if kw]
         return Chunk(
@@ -134,6 +139,7 @@ class BaseParser(ABC):
             type=ChunkType.IMAGE,
             page_or_slide=page_or_slide,
             content=image.caption or Path(image.image_path).name,
+            heading=heading,
             keywords=keywords,
             image=image,
         )

@@ -78,6 +78,11 @@ class HybridResult:
         return self.result.content
 
     @property
+    def heading(self) -> str:
+        """이 청크가 속한 절의 제목 (T10.31). 없으면 빈 문자열."""
+        return self.result.heading
+
+    @property
     def type(self):
         return self.result.type
 

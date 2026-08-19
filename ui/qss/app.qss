@@ -377,6 +377,14 @@ QMainWindow, #CentralWidget {
     font-size: 12px;
 }
 
+/* 이 청크가 속한 절의 제목 (T10.31) — 파일명·위치 줄 아래, 발췌 바로 위.
+   본문(#ResultCardBody)보다 진하고 굵게 둬서 "제목"으로 읽히게 한다. */
+#ResultCardHeading {
+    color: #374151;
+    font-size: 13px;
+    font-weight: 700;
+}
+
 #ResultCardRelevanceLabel {
     color: #9CA3AF;
     font-size: 12px;

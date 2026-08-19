@@ -12,6 +12,9 @@ from parser.schema import ImageData, ParsedDocument, TableData
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
+# 제목 길이 상한 (T10.31) — PDF·docx 쪽과 같은 기준.
+_MAX_HEADING_CHARS = 40
+
 
 class PptxParser(BaseParser):
     extensions = (".pptx",)
@@ -31,15 +34,21 @@ class PptxParser(BaseParser):
 
         for slide_index, slide in enumerate(presentation.slides, start=1):
             texts: list[str] = []
+            # 슬라이드 제목은 표·이미지보다 뒤에 나올 수도 있어 먼저 읽어 둔다
+            # (T10.31) — 도형 순회 중에 채우면 앞쪽 청크가 제목을 못 받는다.
+            slide_heading = self._slide_title(slide)
             for shape in self._iter_shapes(slide.shapes):
                 if shape.has_table:
                     table_data = self._read_table(shape.table)
                     if table_data is not None:
                         document.chunks.append(
-                            self.make_table_chunk(document, table_data, page_or_slide=slide_index)
+                            self.make_table_chunk(
+                                document, table_data, page_or_slide=slide_index,
+                                heading=slide_heading,
+                            )
                         )
                 elif shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                    self._extract_image(document, shape, slide_index, asset_dir)
+                    self._extract_image(document, shape, slide_index, asset_dir, slide_heading)
                 elif shape.has_text_frame:
                     text = shape.text_frame.text.strip()
                     if text:
@@ -50,11 +59,33 @@ class PptxParser(BaseParser):
             body = "\n".join(texts).strip()
             if body:
                 document.chunks.append(
-                    self.make_text_chunk(document, body, page_or_slide=slide_index)
+                    self.make_text_chunk(
+                        document, body, page_or_slide=slide_index, heading=slide_heading
+                    )
                 )
 
         document.title = (presentation.core_properties.title or "").strip() or first_title or path.stem
         self._capture_drawings(document, path, asset_dir)
+
+    @staticmethod
+    def _slide_title(slide) -> str:
+        """슬라이드의 제목 플레이스홀더 텍스트 (T10.31).
+
+        pptx는 제목을 별도 플레이스홀더로 들고 있어 추측이 필요 없다 —
+        PDF가 글꼴 크기로, docx가 스타일 이름으로 푸는 것을 여기서는 정확히
+        알 수 있다. 제목 플레이스홀더가 없는 슬라이드(그림만 있는 장 등)는
+        빈 문자열이다.
+        """
+        try:
+            title_shape = slide.shapes.title
+        except Exception:
+            return ""
+        if title_shape is None or not title_shape.has_text_frame:
+            return ""
+        title = title_shape.text_frame.text.strip()
+        if not title:
+            return ""
+        return title.splitlines()[0][:_MAX_HEADING_CHARS]
 
     def _iter_shapes(self, shapes):
         """그룹 도형 안쪽까지 펼쳐서 순회한다."""
@@ -69,7 +100,10 @@ class PptxParser(BaseParser):
         rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
         return TableData.from_rows(rows)
 
-    def _extract_image(self, document: ParsedDocument, shape, slide_index: int, asset_dir: Path) -> None:
+    def _extract_image(
+        self, document: ParsedDocument, shape, slide_index: int, asset_dir: Path,
+        heading: str = "",
+    ) -> None:
         try:
             image = shape.image
             blob = image.blob
@@ -89,6 +123,7 @@ class PptxParser(BaseParser):
                     origin="extracted",
                 ),
                 page_or_slide=slide_index,
+                heading=heading,
             )
         )
 

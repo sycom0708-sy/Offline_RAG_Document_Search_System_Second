@@ -21,6 +21,7 @@ from ui.widgets.card_common import (
     SummarySection,
     apply_low_relevance_style,
     build_card_header,
+    build_heading_label,
     start_open_source_file,
 )
 
@@ -63,6 +64,9 @@ class ResultCard(QFrame):
         layout.setContentsMargins(16, 12, 16, 12)  # DESIGN §10.5 카드 내부 여백
         layout.setSpacing(8)
         layout.addLayout(header)
+        heading_label = build_heading_label(hybrid_result)
+        if heading_label is not None:
+            layout.addWidget(heading_label)
         layout.addWidget(body_label)
 
         self.summary_section: SummarySection | None = None

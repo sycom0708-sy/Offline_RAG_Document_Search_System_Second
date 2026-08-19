@@ -16,6 +16,8 @@ from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
 _IMAGE_CONTENT_PREFIX = "image/"
+# 제목 길이 상한 (T10.31) — PDF 쪽과 같은 기준으로 맞춘다.
+_MAX_HEADING_CHARS = 40
 
 
 class DocxParser(BaseParser):
@@ -62,11 +64,24 @@ class DocxParser(BaseParser):
             elif child.tag == qn("w:tbl"):
                 yield Table(child, source)
 
-    def _flush_text(self, document: ParsedDocument, buffer: list[str]) -> None:
+    def _flush_text(
+        self, document: ParsedDocument, buffer: list[str], heading: str = ""
+    ) -> None:
         body = "\n".join(buffer).strip()
         if body:
-            document.chunks.append(self.make_text_chunk(document, body))
+            document.chunks.append(self.make_text_chunk(document, body, heading=heading))
         buffer.clear()
+
+    @staticmethod
+    def _is_heading(paragraph: Paragraph) -> bool:
+        """Heading/Title 스타일 문단인가 (T10.31).
+
+        `_extract_title()`이 문서 제목을 찾을 때 쓰는 것과 같은 판정이지만,
+        이쪽은 **문서 전체가 아니라 지금 지나온 절**을 추적한다.
+        """
+        style = getattr(paragraph, "style", None)
+        name = getattr(style, "name", "") or ""
+        return name.startswith("Heading") or name.startswith("Title")
 
     @staticmethod
     def _read_table(table: Table) -> TableData | None:
