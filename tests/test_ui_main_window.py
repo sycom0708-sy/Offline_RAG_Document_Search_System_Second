@@ -1528,7 +1528,7 @@ class TestProfileSwitchBackfillsVectors:
 
         warning = win.status_bar_widget._warning_label
         assert warning.isVisibleTo(win.status_bar_widget)
-        assert "벡터가 없는 문서" in warning.text()
+        assert "벡터가 없는 청크" in warning.text()
 
 
 class TestPhase11Shell:

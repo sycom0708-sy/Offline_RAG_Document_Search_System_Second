@@ -1072,7 +1072,7 @@ class MainWindow(QMainWindow):
         if missing > 0:
             label = get_profile(self.state.model_profile).label
             self.status_bar_widget.set_warning(
-                f"'{label}' 벡터가 없는 문서가 {missing}개 있습니다. "
+                f"'{label}' 벡터가 없는 청크가 {missing}개 있습니다. "
                 "PC 성능을 다시 선택하거나 폴더 관리에서 재인덱싱하세요."
             )
 
