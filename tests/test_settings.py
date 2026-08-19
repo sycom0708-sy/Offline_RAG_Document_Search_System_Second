@@ -67,3 +67,38 @@ def test_is_installed_false_when_files_missing(tmp_path, monkeypatch):
     profile = replace(LIGHT)
     monkeypatch.setattr(type(profile), "local_dir", property(lambda self: tmp_path / self.key))
     assert profile.is_installed() is False
+
+
+# --- Phase 11-C: AI CPU 사용 모드 (DESIGN §14.5) -----------------------------
+
+
+def test_auto_cpu_mode_leaves_the_decision_to_llama_cpp():
+    """`auto`는 숫자를 계산하지 않고 `None`을 준다.
+
+    Phase 6~7의 실측치가 전부 인자를 안 넘긴 상태에서 나온 값이라, 기본값이
+    그 조건과 같아야 한다.
+    """
+    from config.settings import resolve_n_threads
+
+    assert resolve_n_threads("auto") is None
+
+
+def test_cpu_modes_scale_with_this_pc_core_count():
+    from config.settings import resolve_n_threads
+
+    assert resolve_n_threads("half", cpu_count=8) == 4
+    assert resolve_n_threads("max", cpu_count=8) == 8
+
+
+def test_cpu_modes_never_return_zero_threads():
+    """1코어 PC에서 `half`가 0이 되면 llama-server가 못 뜬다."""
+    from config.settings import resolve_n_threads
+
+    assert resolve_n_threads("half", cpu_count=1) == 1
+
+
+def test_unknown_cpu_mode_falls_back_to_auto():
+    """옛 설정 파일이나 손으로 고친 값이 들어와도 앱이 멈추면 안 된다."""
+    from config.settings import resolve_n_threads
+
+    assert resolve_n_threads("무엇이든", cpu_count=8) is None

@@ -251,6 +251,35 @@ SLM_IDLE_TIMEOUT_SEC = 300
 # [제안] 실제 답변으로 조정 여지가 있는 값이다.
 SLM_OVERLAP_THRESHOLD = 0.6
 
+# AI가 쓸 CPU 스레드 수 선택지 (Phase 11-C, DESIGN §14.5).
+#
+# 숫자를 그대로 저장하지 않고 **모드**로 저장한다 — 폴더째 다른 PC로 옮기는
+# 것이 이 제품의 전제인데(TECH 9.1), 저장된 "8스레드"가 4코어 PC에서는 전혀
+# 다른 의미가 된다. 실제 숫자는 그 PC의 코어 수에서 그때그때 뽑는다.
+SLM_CPU_MODES: tuple[tuple[str, str], ...] = (
+    ("auto", "자동 (llama.cpp에 맡김)"),
+    ("half", "절반만 사용 (다른 작업과 함께 쓸 때)"),
+    ("max", "최대한 사용 (답변을 빨리 받고 싶을 때)"),
+)
+DEFAULT_SLM_CPU_MODE = "auto"
+
+
+def resolve_n_threads(mode: str, cpu_count: int | None = None) -> int | None:
+    """CPU 모드를 이 PC의 실제 스레드 수로 바꾼다. `None`이면 llama.cpp 기본값.
+
+    `auto`에서 `None`을 돌려주는 것이 핵심이다 — 직접 계산한 숫자를 넣는
+    것보다 llama.cpp 자신의 판정을 쓰는 편이 낫고, Phase 6~7의 실측치도
+    전부 인자를 안 넘긴 상태에서 나온 값이다.
+    """
+    if mode == "auto":
+        return None
+    count = cpu_count if cpu_count is not None else (os.cpu_count() or 1)
+    if mode == "half":
+        return max(1, count // 2)
+    if mode == "max":
+        return max(1, count)
+    return None  # 알 수 없는 값은 자동으로 취급한다(옛 설정 파일 대비)
+
 
 def get_slm_profile(key: str) -> SlmProfile:
     if key not in SLM_PROFILES:

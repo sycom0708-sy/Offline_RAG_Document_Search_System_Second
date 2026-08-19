@@ -288,3 +288,112 @@ def test_end_to_end_summary():
     assert summary.status in (SummaryStatus.OK, SummaryStatus.ABSTAINED)
     if summary.status is SummaryStatus.OK:
         assert "16GB" in summary.text
+
+
+class TestRuntimeOptions:
+    """Phase 11-C: 설정 페이지가 바꾸는 값의 반영 방식 (DESIGN §14.5.2)."""
+
+    def test_idle_timeout_applies_without_a_restart(self, fake_server):
+        """🔴 DESIGN §14.5.2의 "생성자 인자라 반영 안 된다"는 전제가 이 값에는
+        해당하지 않는다 — `touch()`가 요청마다 값을 다시 읽는다."""
+        service = SlmService(SLM_RECOMMENDED)
+        service.ensure_ready()
+        assert fake_server["starts"] == 1
+
+        service.set_idle_timeout(60)
+
+        assert service._idle_timeout_sec == 60
+        assert fake_server["stops"] == 0  # 서버를 내리지 않았다
+        service.ensure_ready()
+        assert fake_server["starts"] == 1  # 재기동도 없었다
+        service.shutdown()
+
+    def test_zero_idle_timeout_keeps_the_model_resident(self, fake_server):
+        """`모델 상주`는 유휴 타이머를 아예 안 거는 것으로 구현된다."""
+        service = SlmService(SLM_RECOMMENDED)
+        service.ensure_ready()
+
+        service.set_idle_timeout(0)
+        service.touch()
+
+        assert service._idle_timer is None
+        assert service.is_running()
+        service.shutdown()
+
+    def test_changing_cpu_threads_brings_the_server_down(self, fake_server):
+        """[사용자 확정] 즉시 내리고 다음 요청에 새 값으로 올린다."""
+        service = SlmService(SLM_RECOMMENDED)
+        service.ensure_ready()
+        assert fake_server["starts"] == 1
+
+        service.set_n_threads(4)
+
+        assert fake_server["stops"] == 1
+        assert not service.is_running()
+
+        service.ensure_ready()
+        assert fake_server["starts"] == 2
+        assert fake_server["last_kwargs"]["n_threads"] == 4
+        service.shutdown()
+
+    def test_same_cpu_value_does_not_bounce_the_server(self, fake_server):
+        """값이 그대로면 아무 일도 하지 않는다 — 설정 화면을 열기만 해도
+        모델이 내려가면 곤란하다."""
+        service = SlmService(SLM_RECOMMENDED, n_threads=4)
+        service.ensure_ready()
+
+        service.set_n_threads(4)
+
+        assert fake_server["stops"] == 0
+        assert service.is_running()
+        service.shutdown()
+
+    def test_ensure_ready_restarts_when_the_change_could_not_be_applied(self, fake_server):
+        """🔴 즉시 못 내렸어도 새 값이 누락되지는 않는다.
+
+        추론 중이면 `set_n_threads()`가 락을 못 잡아 서버를 그 자리에서
+        내리지 못한다. 그때 `ensure_ready()`가 기동 당시 값과 비교해 다시
+        올리는 것이 마지막 관문이다.
+        """
+        service = SlmService(SLM_RECOMMENDED)
+        service.ensure_ready()
+        assert fake_server["starts"] == 1
+
+        # 락이 잡혀 즉시 종료가 건너뛰어진 상황을 그대로 재현한다.
+        holder_done = threading.Event()
+
+        def hold_lock():
+            with service._lock:
+                holder_done.wait(timeout=5)
+
+        holder = threading.Thread(target=hold_lock, daemon=True)
+        holder.start()
+        time.sleep(0.05)  # 다른 스레드가 락을 실제로 쥘 틈을 준다
+
+        service.set_n_threads(2)
+        assert fake_server["stops"] == 0  # 즉시 내리지 못했다
+        holder_done.set()
+        holder.join(timeout=5)
+
+        service.ensure_ready()
+        assert fake_server["starts"] == 2  # 그래도 새 값으로 다시 올라왔다
+        assert fake_server["last_kwargs"]["n_threads"] == 2
+        service.shutdown()
+
+    def test_setters_do_not_block_while_inference_holds_the_lock(self, fake_server):
+        """🔴 설정 화면에서 부르는 함수가 락을 기다리면 UI가 얼어붙는다
+        (T10.23에서 취소 함수로 같은 함정을 겪었다)."""
+        service = SlmService(SLM_RECOMMENDED)
+        done = threading.Event()
+
+        with service._lock:
+            def call():
+                service.set_idle_timeout(120)
+                service.set_n_threads(8)
+                done.set()
+
+            threading.Thread(target=call, daemon=True).start()
+            assert done.wait(timeout=2), "락이 잡힌 동안 설정 함수가 멈췄다"
+
+        assert service._idle_timeout_sec == 120
+        assert service._n_threads == 8

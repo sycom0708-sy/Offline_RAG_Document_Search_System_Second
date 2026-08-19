@@ -13,7 +13,12 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from config.settings import DEFAULT_SLM_PROFILE, LIGHT, PROJECT_ROOT
+from config.settings import (
+    DEFAULT_SLM_PROFILE,
+    LIGHT,
+    PROJECT_ROOT,
+    SLM_IDLE_TIMEOUT_SEC,
+)
 
 DATA_DIR = PROJECT_ROOT / "data"
 STATE_PATH = DATA_DIR / "app_state.json"
@@ -48,6 +53,17 @@ class AppState:
     # 기본값은 둘 다 꺼짐으로, UI가 있던 시절의 기본 상태와 같다.
     case_sensitive: bool = False
     exact_word: bool = False
+    # Phase 11-C: 설정 페이지의 sLM 실행 옵션 (DESIGN §14.5).
+    #
+    # 기본값은 Phase 7이 실물로 검증한 동작 그대로다 — 유휴 5분 자동 종료.
+    # 안드로이드 스튜디오와 동시 작업하는 전제에서 4.8GB를 놀 때도 물고
+    # 있으면 안 된다는 이유로 정해진 값이라, 상주는 명시적으로 켜야 한다.
+    slm_keep_resident: bool = False
+    slm_idle_timeout_sec: int = SLM_IDLE_TIMEOUT_SEC
+    # "auto" | "half" | "max" — 실제 스레드 수는 이 PC의 코어 수에서 뽑는다
+    # (`config.settings.resolve_n_threads`). 숫자를 그대로 저장하면 코어 수가
+    # 다른 PC로 폴더를 옮겼을 때 의미가 달라진다(TECH 9.1 포터블 원칙).
+    slm_cpu_mode: str = "auto"
 
     def __post_init__(self) -> None:
         # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자

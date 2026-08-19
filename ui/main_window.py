@@ -21,7 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import get_profile
+from config.settings import get_profile, get_slm_profile, resolve_n_threads
+from slm import runtime as slm_runtime
 from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
 from indexer.pipeline import (
@@ -46,7 +47,7 @@ from ui.widgets.model_manager_dialog import ModelManagerDialog
 from ui.widgets.result_header import ResultHeader
 from ui.widgets.result_list import ResultList
 from ui.widgets.search_bar import InputBar
-from ui.widgets.settings_page import SettingsPage
+from ui.widgets.settings_page import RUNTIME_MISSING_TEXT, SettingsPage
 from ui.widgets.sidebar import PAGE_DOCUMENTS, PAGE_SEARCH, PAGE_SETTINGS, Sidebar
 from ui.widgets.status_bar import StatusBar
 
@@ -139,6 +140,11 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire_signals()
+        # Phase 11-C: 저장된 sLM 실행 옵션을 화면에 복원하고 실제로도 건다 —
+        # 화면만 맞추면 "설정에는 상주로 돼 있는데 5분이면 내려가는" 어긋난
+        # 상태가 된다(11-A에서 PC 성능 콤보로 똑같은 것을 겪었다).
+        self._refresh_settings_page()
+        self._apply_slm_runtime_options()
         self._refresh_format_filter_options()
         self._refresh_status_bar()
         self._refresh_ai_chat_availability()
@@ -220,6 +226,10 @@ class MainWindow(QMainWindow):
             self._open_model_manager
         )
         self.settings_page.model_manager_requested.connect(self._open_model_manager)
+        # Phase 11-C: sLM 실행 옵션 (DESIGN §14.5).
+        self.settings_page.keep_resident_changed.connect(self._on_keep_resident_changed)
+        self.settings_page.idle_timeout_changed.connect(self._on_idle_timeout_changed)
+        self.settings_page.cpu_mode_changed.connect(self._on_cpu_mode_changed)
         # Phase 11: 사이드바 "폴더 관리" → 문서 관리 페이지의 "폴더 선택".
         self.document_page.folder_requested.connect(self._open_folder_dialog)
         # Phase 11-B: 인덱스 작업 버튼 3개 (DESIGN §14.4.2).
@@ -729,6 +739,63 @@ class MainWindow(QMainWindow):
         if self._missing_vector_count() <= 0:
             return
         self._start_reindex(self.state.target_folder)
+
+    # --- sLM 실행 옵션 (Phase 11-C, DESIGN §14.5) ------------------------
+
+    def _apply_slm_runtime_options(self) -> None:
+        """저장된 값을 `SlmService`에 실제로 건다.
+
+        `모델 상주`는 유휴 종료를 끄는 것과 같다 — 타이머 자체를 안 걸도록
+        `0`을 넘긴다. 두 옵션이 하나의 값으로 합쳐지는 지점이라 여기서만
+        계산하고, 위젯은 각자의 값만 알고 있게 둔다.
+        """
+        idle = 0 if self.state.slm_keep_resident else self.state.slm_idle_timeout_sec
+        self._slm_service.set_idle_timeout(idle)
+        self._slm_service.set_n_threads(resolve_n_threads(self.state.slm_cpu_mode))
+
+    def _on_keep_resident_changed(self, resident: bool) -> None:
+        self.state.slm_keep_resident = resident
+        self.state.save()
+        self._apply_slm_runtime_options()
+
+    def _on_idle_timeout_changed(self, seconds: int) -> None:
+        self.state.slm_idle_timeout_sec = seconds
+        self.state.save()
+        self._apply_slm_runtime_options()
+
+    def _on_cpu_mode_changed(self, mode: str) -> None:
+        """[사용자 확정] 떠 있는 서버를 즉시 내리고 다음 요청에 새 값으로 올린다."""
+        self.state.slm_cpu_mode = mode
+        self.state.save()
+        self._apply_slm_runtime_options()
+        self.status_bar_widget.set_warning(
+            "AI CPU 사용 설정을 바꿨습니다. 다음 질문부터 새 값으로 적용됩니다."
+        )
+
+    def _refresh_settings_page(self) -> None:
+        """설정 페이지의 저장값 복원 + 실행 정보 표시 (Phase 11-C)."""
+        self.settings_page.set_slm_options(
+            keep_resident=self.state.slm_keep_resident,
+            idle_timeout_sec=self.state.slm_idle_timeout_sec,
+            cpu_mode=self.state.slm_cpu_mode,
+        )
+        self.settings_page.set_runtime_info(self._runtime_info())
+
+    def _runtime_info(self) -> dict[str, str]:
+        """실행 정보 4줄. 없는 것은 "설치되지 않음"으로 분명히 말한다 —
+        경로만 보여주면 파일이 실제로 있는지 알 수 없다."""
+        embedding = get_profile(self.state.model_profile)
+        slm = get_slm_profile(self.state.slm_profile)
+
+        def described(path: Path, installed: bool) -> str:
+            return str(path) if installed else f"{path} ({RUNTIME_MISSING_TEXT})"
+
+        return {
+            "embedding": described(embedding.onnx_path, embedding.is_installed()),
+            "llm": described(slm.local_path, slm.is_installed()),
+            "llama": "사용 가능" if slm_runtime.is_available() else RUNTIME_MISSING_TEXT,
+            "data": str(self.db_path.parent),
+        }
 
     # --- 모델 관리 --------------------------------------------------
 

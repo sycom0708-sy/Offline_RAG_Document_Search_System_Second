@@ -1842,3 +1842,133 @@ class TestSidebarExpansionScope:
 
         assert window.state.search_expanded is True
 
+
+class TestSettingsPageOptions:
+    """Phase 11-C: 설정 페이지의 sLM 실행 옵션 (DESIGN §14.5)."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    # --- 저장 --------------------------------------------------------
+
+    def test_keep_resident_is_saved(self, qtbot, window):
+        window.settings_page.keep_resident.setChecked(True)
+
+        assert window.state.slm_keep_resident is True
+
+    def test_idle_timeout_is_saved(self, qtbot, window):
+        combo = window.settings_page.idle_combo
+        combo.setCurrentIndex(combo.findData(600))
+
+        assert window.state.slm_idle_timeout_sec == 600
+
+    def test_cpu_mode_is_saved(self, qtbot, window):
+        combo = window.settings_page.cpu_combo
+        combo.setCurrentIndex(combo.findData("half"))
+
+        assert window.state.slm_cpu_mode == "half"
+
+    def test_saved_options_are_restored_on_startup(self, qtbot, indexed_db, tmp_path):
+        state = AppState.load(path=tmp_path / "state.json")
+        state.slm_keep_resident = True
+        state.slm_idle_timeout_sec = 1800
+        state.slm_cpu_mode = "max"
+
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        page = win.settings_page
+        assert page.keep_resident.isChecked() is True
+        assert page.current_idle_timeout() == 1800
+        assert page.current_cpu_mode() == "max"
+
+    def test_restoring_does_not_look_like_a_user_change(self, qtbot, window):
+        """복원이 신호를 쏘면 저장·적용이 도로 돌고, CPU 모드는 모델까지 내린다.
+
+        복원이 값을 **실제로 바꾸는** 상황이어야 의미가 있다 — 같은 값을 다시
+        넣으면 Qt가 애초에 신호를 안 쏴서 무엇을 검증했는지 알 수 없다.
+        """
+        page = window.settings_page
+        page.set_slm_options(keep_resident=False, idle_timeout_sec=300, cpu_mode="auto")
+
+        cpu_changes, idle_changes, resident_changes = [], [], []
+        page.cpu_mode_changed.connect(cpu_changes.append)
+        page.idle_timeout_changed.connect(idle_changes.append)
+        page.keep_resident_changed.connect(resident_changes.append)
+
+        # 세 값이 전부 달라지는 복원.
+        page.set_slm_options(keep_resident=True, idle_timeout_sec=1800, cpu_mode="max")
+
+        assert page.keep_resident.isChecked() is True
+        assert page.current_idle_timeout() == 1800
+        assert page.current_cpu_mode() == "max"
+        assert (cpu_changes, idle_changes, resident_changes) == ([], [], [])
+
+    # --- 실제 반영 ---------------------------------------------------
+
+    def test_keep_resident_turns_the_idle_timer_off(self, qtbot, window):
+        """`모델 상주`는 유휴 종료를 끄는 것과 같다 — 0초를 넘긴다."""
+        window.settings_page.keep_resident.setChecked(True)
+
+        assert window._slm_service._idle_timeout_sec == 0
+
+    def test_idle_timeout_reaches_the_service(self, qtbot, window):
+        combo = window.settings_page.idle_combo
+        combo.setCurrentIndex(combo.findData(60))
+
+        assert window._slm_service._idle_timeout_sec == 60
+
+    def test_idle_choice_is_ignored_while_resident(self, qtbot, window):
+        """상주 중에는 고른 값이 아니라 0이 걸려야 한다 — 상주가 이긴다."""
+        window.settings_page.keep_resident.setChecked(True)
+        combo = window.settings_page.idle_combo
+        combo.setCurrentIndex(combo.findData(60))
+
+        assert window._slm_service._idle_timeout_sec == 0
+
+    def test_idle_combo_is_disabled_while_resident(self, qtbot, window):
+        """효과가 없는 콤보를 열어두면 "골랐는데 안 먹는다"가 된다."""
+        window.settings_page.keep_resident.setChecked(True)
+        assert window.settings_page.idle_combo.isEnabled() is False
+
+        window.settings_page.keep_resident.setChecked(False)
+        assert window.settings_page.idle_combo.isEnabled() is True
+
+    def test_cpu_mode_reaches_the_service_as_a_thread_count(self, qtbot, window):
+        from config.settings import resolve_n_threads
+
+        combo = window.settings_page.cpu_combo
+        combo.setCurrentIndex(combo.findData("half"))
+
+        assert window._slm_service._n_threads == resolve_n_threads("half")
+
+    def test_startup_applies_saved_options_to_the_service(self, qtbot, indexed_db, tmp_path):
+        """화면만 맞추면 "설정은 상주인데 5분이면 내려가는" 어긋난 상태가 된다."""
+        state = AppState.load(path=tmp_path / "state.json")
+        state.slm_keep_resident = True
+
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win._slm_service._idle_timeout_sec == 0
+
+    # --- 실행 정보 ---------------------------------------------------
+
+    def test_runtime_card_shows_this_pc_paths(self, qtbot, window):
+        page = window.settings_page
+
+        assert "data" in page.runtime_text("data").lower() or page.runtime_text("data")
+        assert page.runtime_text("embedding") != "—"
+        assert page.runtime_text("llm") != "—"
+        assert page.runtime_text("llama") != "—"
+
+    def test_runtime_card_says_when_something_is_missing(self, qtbot, window, monkeypatch):
+        """경로만 보여주면 파일이 실제로 있는지 알 수 없다."""
+        import ui.main_window as main_window_module
+        from ui.widgets.settings_page import RUNTIME_MISSING_TEXT
+
+        monkeypatch.setattr(main_window_module.slm_runtime, "is_available", lambda: False)
+        window._refresh_settings_page()
+
+        assert window.settings_page.runtime_text("llama") == RUNTIME_MISSING_TEXT

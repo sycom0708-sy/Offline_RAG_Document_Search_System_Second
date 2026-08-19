@@ -75,6 +75,10 @@ class SlmService:
         self._handle: runtime.ServerHandle | None = None
         self._client: LlamaClient | None = None
         self._idle_timer: threading.Timer | None = None
+        # 지금 떠 있는 서버가 **어떤 값으로** 기동됐는지 (Phase 11-C).
+        # `_n_threads`는 설정에서 바뀔 수 있고, 그 차이를 `ensure_ready()`가
+        # 보고 재기동을 판단한다.
+        self._active_n_threads: int | None = None
 
     # --- 상태 조회 --------------------------------------------------
 
@@ -102,12 +106,68 @@ class SlmService:
             self._profile = get_slm_profile(profile_key)
             self.shutdown()
 
+    # --- 설정 반영 (Phase 11-C, DESIGN §14.5.2) ------------------------
+
+    def set_idle_timeout(self, idle_timeout_sec: float) -> None:
+        """유휴 종료 시간을 바꾼다. `0` 이하면 자동 종료를 끈다(= 모델 상주).
+
+        **재기동이 필요 없다.** `touch()`가 요청이 오갈 때마다 이 값을 다시
+        읽어 타이머를 걸기 때문에, 값만 갈아 끼우면 다음 요청부터 새 값이
+        적용된다 — DESIGN §14.5.2가 "생성자 인자라 반영되지 않는다"고 본 것은
+        `n_threads`에만 해당한다.
+
+        🔴 `self._lock`을 기다리지 않는다. 그 락은 `chat()`이 추론이 끝날
+        때까지(채택 모델 중앙 18.3초) 붙들고 있어서, 설정 화면에서 부르는 이
+        함수가 락을 기다리면 **UI가 그만큼 얼어붙는다**(T10.23에서 취소
+        함수로 같은 함정을 겪었다). 값만 바꾸고 타이머 재장전은 락을 즉시
+        얻을 수 있을 때만 한다 — 못 얻었다는 것은 추론이 도는 중이라는
+        뜻이고, 그 `chat()`이 끝나면서 부르는 `touch()`가 어차피 새 값으로
+        타이머를 건다.
+        """
+        self._idle_timeout_sec = idle_timeout_sec
+        if self._lock.acquire(blocking=False):
+            try:
+                if self.is_running():
+                    self.touch()
+                else:
+                    self._cancel_timer_locked()
+            finally:
+                self._lock.release()
+
+    def set_n_threads(self, n_threads: int | None) -> None:
+        """AI가 쓸 CPU 스레드 수를 바꾼다 [사용자 확정: 즉시 내리고 다음 요청에 새 값으로].
+
+        `n_threads`는 `runtime.start_server()`에만 전달되는 **기동 인자**라
+        떠 있는 서버에는 반영되지 않는다. `set_profile()`이 모델 교체 때 쓰는
+        방식과 같게 — 떠 있으면 내리고, 다음 요청에서 새 값으로 올린다
+        (메모리 4.8GB도 그 자리에서 함께 돌려준다).
+
+        여기서도 락을 기다리지 않는다(위와 같은 이유). 추론 중이라 즉시 못
+        내려도 `ensure_ready()`가 기동 당시 값과 비교해 다시 올리므로 **새
+        값이 누락되지는 않는다** — 즉시성만 한 요청 늦어진다.
+        """
+        if n_threads == self._n_threads:
+            return
+        self._n_threads = n_threads
+        if self._lock.acquire(blocking=False):
+            try:
+                self.shutdown()
+            finally:
+                self._lock.release()
+
     # --- 수명주기 --------------------------------------------------
 
     def ensure_ready(self) -> LlamaClient:
         """떠 있으면 즉시, 아니면 서버를 올리고 클라이언트를 돌려준다."""
         with self._lock:
-            if self._client is not None and self.is_running():
+            if (
+                self._client is not None
+                and self.is_running()
+                # 설정에서 CPU 스레드 수가 바뀌었는데 즉시 못 내렸다면(추론
+                # 중이었다) 여기서 재기동한다 — 새 값이 누락되지 않게 하는
+                # 마지막 관문이다 (Phase 11-C).
+                and self._active_n_threads == self._n_threads
+            ):
                 # 직전 요청이 취소돼 중단 표시가 남아 있으면 지운다 —
                 # 안 지우면 다음 요청이 시작하자마자 취소로 처리된다.
                 self._client.clear_abort()
@@ -139,6 +199,7 @@ class SlmService:
             self._handle = handle
             self._process = process
             self._client = LlamaClient(handle.port)
+            self._active_n_threads = self._n_threads
             return self._client
 
     def touch(self) -> None:
@@ -171,6 +232,7 @@ class SlmService:
         self._process = None
         self._handle = None
         self._client = None
+        self._active_n_threads = None
 
     def _cancel_timer_locked(self) -> None:
         if self._idle_timer is not None:
