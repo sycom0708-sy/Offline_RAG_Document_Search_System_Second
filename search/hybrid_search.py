@@ -211,10 +211,11 @@ def _rerank(
     term_variants: list[tuple[str, ...]],
     case_sensitive: bool,
 ) -> list[HybridResult]:
-    """벡터가 있는 후보는 재순위하고, 없는 후보는 뒤에 붙인다.
+    """모든 후보를 **하나의** 순서로 재순위한다 — 벡터 유무로 그룹을 나누지 않는다.
 
     정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 본문 길이 ↓, 유사도 ↓)**
-    순이다 [2026-08-11, 본문 길이는 2026-08-14 추가].
+    순이다 [2026-08-11, 본문 길이는 2026-08-14 추가, 벡터 없는 청크의 취급은
+    2026-08-19 수정].
 
     - **일치 개수가 유사도보다 우선한다**: 사용자가 입력한 단어를 다 담은 청크가
       먼저 보여야 한다. 실측으로 `rpm 패키지 삭제 옵션` 질의에서 4개를 전부
@@ -228,33 +229,43 @@ def _rerank(
 
     벡터가 없다고 결과에서 빼지는 않는다 — 키워드로 걸린 문서를 임베딩 누락
     때문에 잃으면 사용자는 "분명 있는데 안 나온다"를 겪게 된다.
+
+    🔴 **벡터 없는 청크를 "관련성 낮음"으로 단정하지 않는다.** 예전엔 벡터
+    유무로 두 그룹을 따로 정렬해 이어 붙였는데("있음" 그룹 전체 → "없음" 그룹
+    전체), 이러면 벡터가 없을 뿐 검색어를 전부 담은 청크가 벡터는 있지만
+    실제로 흐림 처리된("관련성 낮음") 청크보다도 아래로 밀린다 — 실사용에서
+    실제로 겪었다("AICA 취득 절차" 질의에서 3단어를 모두 담은 청크가, 1단어만
+    우연히 걸린 흐림 카드보다 아래에 나왔다. 원인은 그 청크가 아직 권장 모드
+    벡터를 못 받은 것뿐이었다). 벡터가 없으면 `is_low_relevance=False`로 두고
+    (판단할 근거가 없으니 불리하게 취급하지 않는다) 나머지 후보와 **하나의
+    정렬**로 섞는다 — 판단이 확실한 "관련성 낮음"만 항상 맨 아래로 간다.
     """
-    with_vector: list[HybridResult] = []
-    without_vector: list[HybridResult] = []
+    ranked: list[HybridResult] = []
 
     for result in candidates:
         vector = vectors.get(result.chunk_id)
         if vector is None or vector.shape[0] != query_vector.shape[0]:
             # 차원이 다르면 다른 모델로 만든 벡터다 — 비교 자체가 성립하지 않는다.
-            without_vector.append(
-                _to_result(result, None, False, term_variants, case_sensitive)
-            )
+            ranked.append(_to_result(result, None, False, term_variants, case_sensitive))
             continue
 
         # 양쪽 다 L2 정규화되어 있으므로 내적이 곧 코사인 유사도다.
         similarity = float(np.dot(query_vector, vector))
-        with_vector.append(
+        ranked.append(
             _to_result(
                 result, similarity, similarity < threshold, term_variants, case_sensitive
             )
         )
 
-    with_vector.sort(
-        key=lambda h: (h.is_low_relevance, -h.matched_terms, -len(h.content), -h.similarity)
+    ranked.sort(
+        key=lambda h: (
+            h.is_low_relevance,
+            -h.matched_terms,
+            -len(h.content),
+            -(h.similarity if h.similarity is not None else 0.0),
+        )
     )
-    # 벡터 없는 쪽은 유사도가 없으니 일치 개수·본문 길이로 정렬한다(동점은 BM25 순서).
-    without_vector.sort(key=lambda h: (-h.matched_terms, -len(h.content)))
-    return [*with_vector, *without_vector]
+    return ranked
 
 
 def compare_with_keyword_only(

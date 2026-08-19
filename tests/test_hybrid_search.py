@@ -318,7 +318,15 @@ def test_low_relevance_flagged_below_threshold(embedded_db, embedder):
 
 
 def test_chunks_without_vectors_are_kept_not_dropped(embedded_db, embedder):
-    """키워드로 걸린 결과를 임베딩 누락 때문에 잃으면 안 된다."""
+    """키워드로 걸린 결과를 임베딩 누락 때문에 잃으면 안 된다.
+
+    🔴 "항상 맨 뒤로 밀린다"는 예전엔 맞았지만 이젠 아니다(2026-08-19) —
+    벡터가 없다는 이유만으로 최하위 취급하면, 검색어를 전부 담은 청크가
+    (벡터는 있지만) 흐림 처리된 청크보다도 아래로 밀리는 실사용 버그가 났다
+    (`test_missing_vector_does_not_rank_below_a_low_relevance_match` 참고).
+    이 테스트는 "관련성 낮음으로 단정하지 않는다"만 확인한다 — 순서 자체는
+    다른 후보들과 똑같이 일치 개수·본문 길이로 매겨진다.
+    """
     embedded_db.execute("DELETE FROM chunk_vectors WHERE chunk_id = 'c1'")
     embedded_db.commit()
 
@@ -328,7 +336,34 @@ def test_chunks_without_vectors_are_kept_not_dropped(embedded_db, embedder):
     assert "c1" in ids
     missing = next(r for r in results if r.chunk_id == "c1")
     assert missing.similarity is None
-    assert ids[-1] == "c1"  # 유사도 있는 결과 뒤로 밀린다
+    assert missing.is_low_relevance is False  # 판단 근거가 없을 뿐 "낮다"고 단정하지 않는다
+
+
+def test_missing_vector_does_not_rank_below_a_low_relevance_match():
+    """🔴 실사용에서 재현된 버그 — 벡터가 없다는 이유만으로 확실히 관련성
+    낮은(흐림 처리된) 결과보다도 아래로 밀리면 안 된다.
+
+    "AICA 취득 절차" 질의에서, 세 단어를 전부 담은 청크가 KURE-v1 벡터를
+    아직 못 받아 유사도를 못 재는 사이, 딱 한 단어("절차")만 우연히 걸리고
+    유사도도 낮아 흐림 처리된 다른 문서가 그 위에 나왔다 — 벡터 유무로
+    그룹을 나눠 이어 붙이던 예전 정렬(있음 그룹 전부 → 없음 그룹 전부)의
+    부작용이었다.
+    """
+    query_vector = np.array([1.0, 0.0], dtype=np.float32)
+    full_match_no_vector = _result("c_no_vector", "패키지 삭제 옵션을 설명한다")
+    weak_match_low_relevance = _result("c_low", "패키지 이야기만 한다")
+
+    ranked = _rerank(
+        [weak_match_low_relevance, full_match_no_vector],  # BM25 순서상 약한 쪽이 앞
+        {"c_low": _unit_vector_with_dot(0.3)},  # c_no_vector는 벡터 자체가 없다
+        query_vector,
+        SIMILARITY_THRESHOLD,
+        query_term_variants("패키지 삭제 옵션"),
+        case_sensitive=False,
+    )
+
+    assert [h.chunk_id for h in ranked] == ["c_no_vector", "c_low"]
+    assert ranked[1].is_low_relevance is True
 
 
 def test_dimension_mismatch_is_handled_safely(embedded_db, embedder):
