@@ -4,6 +4,70 @@
 
 ---
 
+<!-- 출처: serene-strolling-garden.md · DESKTOP-V42GJBP · 작성 2026-08-14 14:42 · 아카이브 2026-08-19 13:13 -->
+
+# 검색·챗봇 결과를 상위 5개로 통일 + "더 있음" 안내
+
+## Context
+
+지금 일반 검색(카드 목록)은 `SearchWorker`가 가져온 최대 20개를 전부 카드로 렌더링하고, 챗봇 즉시 발췌는 top-1 하나만 보여준다 — 개수 기준이 서로 다르다. 사용자 요청: 둘 다 **상위 5개**로 맞추고, 더 있으면 알려준다. 검색은 "더보기" 버튼으로 나머지를 펼치고, 챗봇은 5개 각각 자기 "원문 열기" 버튼을 가진 채로 보여주고 그 아래 "N개 더 있음" 안내만 덧붙인다(사용자 확정 — 챗봇은 버튼 없이 정보성 안내만).
+
+DESIGN 문서에 결과 개수 상한이나 더보기 UI에 대한 명세가 없다 — 이번에 `[제안]`으로 직접 정의한다.
+
+## 설계 결정
+
+**챗봇의 2~5순위 결과도 "원문 열기" 버튼을 갖는다(사용자 확정)** — 이 결정이 설계를 크게 단순화한다. 챗봇 발췌 항목 하나하나가 검색 카드와 완전히 같은 것(출처 표시, 타입별 렌더링, 원문 열기, 표는 복사 버튼, 이미지는 확대 버튼)을 가지므로, **직접 새로 만들지 않고 검색 결과 카드(`ResultCard`/`TableCard`/`ImageCard`)를 챗봇 말풍선 안에 그대로 재사용한다.** T10.12에서 챗봇 전용으로 손으로 짠 렌더링(`_render_table_body`/`_render_image_body`/`_current_table_*`/`_copy_button`/`_zoom_button`/`showEvent`의 높이 재계산)이 전부 필요 없어진다 — 각 카드가 자기 몫(높이 재계산 포함)을 이미 알아서 하기 때문이다. 결과적으로 T10.12보다 코드가 더 단순해진다.
+
+**카드 분기 로직(`result_list.py`의 `_make_card`)을 새 모듈로 뺀다.** `chat_panel.py`가 이 분기 함수를 재사용하려는데, `result_list.py`가 이미 `chat_panel.py`를 import하고 있어 그대로 가져다 쓰면 순환 임포트가 생긴다. `ui/widgets/card_dispatch.py`(신규, `TableCard`/`ImageCard`/`ResultCard`만 알고 `result_list`/`chat_panel` 어느 쪽도 모름)로 옮겨 양쪽이 공유한다.
+
+**검색 결과는 5개 + "더보기" 버튼(클릭 시 나머지 전부 펼침, 재클릭 없음).** 백엔드(`SearchWorker`, 최대 20개 유지)는 손대지 않고 `ResultList` 표시 단계에서만 자른다 — `ResultList`가 전체 결과·질의·옵션을 들고 있다가 버튼 클릭 시 나머지를 이어붙인다.
+
+**챗봇은 상위 5개를 카드로 렌더링하고, 5개를 넘으면 카드 아래에 "N개 결과가 더 있습니다" 안내 텍스트만 붙인다(버튼 없음, 사용자 확정).** "AI 요약 보기"는 지금처럼 top-1 컨텍스트 기준으로 하나만 유지한다(카드마다 요약이 있는 게 아니다). 챗봇 카드에는 하이라이트를 위한 질의어를 넘기지 않는다(빈 문자열) — 이번 요청의 핵심은 "개수·버튼 통일"이지 하이라이트가 아니고, 질의어를 결과 도착 시점까지 들고 오려면 `MainWindow`↔`ChatPanel` 신호까지 넓혀야 해서 범위가 커진다. 필요해지면 별도로 다룬다.
+
+**챗봇의 옛 단일 "원문 열기"/"파일 열기 ↗" 버튼·`open_requested` 시그널·`ChatPanel._open_top_result()`는 제거한다** — 이제 카드마다 자기 열기 버튼이 있어 중복이자 죽은 코드가 된다.
+
+## 변경 파일
+
+### 1. `ui/widgets/card_dispatch.py` (신규)
+`make_result_card(result: HybridResult, query: str, case_sensitive=False, exact_word=False) -> QWidget` — `result_list.py`의 `_make_card()` 그대로 이동(로직 변경 없음).
+
+### 2. `ui/widgets/result_list.py`
+- `_make_card()` 삭제, `card_dispatch.make_result_card` import해서 사용.
+- `PAGE_SIZE = 5` 상수 추가.
+- `show_results()`: 결과·질의·옵션을 인스턴스 변수로 저장, 처음 5개만 카드로 그리고 나머지가 있으면 "더보기 (N개 더)" `QPushButton`(objectName `ResultListMoreButton`)을 목록 끝에 추가.
+- 버튼 클릭 시 버튼을 지우고 나머지 카드를 이어붙인다.
+
+### 3. `ui/widgets/chat_panel.py`
+- `_AnswerBubble`에서 T10.12가 추가했던 `_render_table_body`/`_render_image_body`/`_current_table_data`/`_current_table_grid`/`_current_image_data`/`_copy_button`/`_zoom_button`/`_copy_table`/`_zoom_image`/`showEvent`를 전부 제거.
+- 옛 `_open_button`("파일 열기 ↗")·`open_requested` 시그널·`ChatPanel._open_top_result()` 제거.
+- `_render_text_body()`는 검색중/결과없음/오류 3가지 안내 문구 전용으로만 남긴다.
+- 새 `_render_result_cards(results)`: `_clear_body()` → 상위 5개를 `card_dispatch.make_result_card(result, "", False, False)`로 만들어 `_body_layout`에 추가, 각 카드의 `open_failed`를 `self.open_failed`로 연결 → 5개 초과분이 있으면 "N개 결과가 더 있습니다" `QLabel`(objectName `ChatMoreResultsNotice`) 추가.
+- `show_excerpt(results)`: 비어 있으면 `_render_text_body(NO_RESULTS_TEXT)`, 있으면 `_render_result_cards(results)` — `_source_label`은 이제 카드들이 각자 출처를 보여주므로 제거(위젯 자체를 없앤다).
+- `_summarize_button`은 그대로 유지(top-1 기준 AI 요약).
+
+### 4. `ui/qss/app.qss`
+`#ResultListMoreButton`, `#ChatMoreResultsNotice`에 대한 최소 스타일 추가(기존 톤과 일관되게 회색 보조 텍스트/버튼 — `[제안]`, 명세 없음).
+
+### 5. `DESIGN_오프라인RAG시스템.md`
+§5.x 또는 §5.8 근처에 "결과 개수 상한 5 + 더 있음 안내"를 `[제안]`으로 신설.
+
+## 테스트
+
+- `tests/test_ui_result_card.py::TestResultList`: 6개 이상 결과를 줬을 때 `card_count() == 5`와 더보기 버튼 존재 확인, 버튼 클릭 후 `card_count()`가 전체 개수로 늘고 버튼이 사라지는지, 5개 이하일 땐 버튼이 아예 없는지.
+- `tests/test_ui_chat.py`: T10.12에서 추가한 표/이미지 테스트(`TestChatExcerptTableAndImage`)를 새 구조(실제 `TableCard`/`ImageCard`가 말풍선 안에 그대로 들어있는지, 각 카드의 원문 열기·표복사·확대가 정상 동작하는지)로 다시 쓴다. 6개 이상 결과를 줬을 때 카드 5개 + "N개 더" 안내, 5개 이하면 안내 없음. 각 카드의 `open_failed`가 `panel.open_failed`까지 도달하는지(T10.3과 같은 종단 확인 습관).
+- 기존 `test_show_excerpt_renders_top_result_and_enables_buttons` 등 `_source_label`/구 버튼을 참조하던 테스트는 새 구조에 맞춰 갱신.
+
+## 검증 (실사용)
+
+앱을 띄워 결과가 5개를 넘는 질의로 검색 → 더보기 버튼 동작 확인. 같은 질의를 챗봇 모드로 → 카드 5개 + "N개 더" 안내, 각 카드의 원문 열기가 개별로 동작하는지 확인.
+
+## 완료 후 문서화
+- `TASK_오프라인RAG시스템.md`에 항목 추가(T10.13)
+- `PLAN_오프라인RAG시스템.md`/`CLAUDE.md` 반영
+- 커밋(로컬만)
+
+---
+
 <!-- 출처: serene-strolling-garden.md · DESKTOP-V42GJBP · 작성 2026-08-13 15:52 · 아카이브 2026-08-13 16:40 -->
 
 # T8.5: watchdog 실시간 폴더 감시 (Phase 8 마무리)
