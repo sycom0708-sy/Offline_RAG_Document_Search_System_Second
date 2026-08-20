@@ -234,8 +234,8 @@ def start_server(
     started = time.perf_counter()
     process = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         text=True,
         errors="replace",
     )
@@ -244,10 +244,8 @@ def start_server(
         deadline = started + startup_timeout
         while True:
             if process.poll() is not None:
-                output = (process.stdout.read() if process.stdout else "") or ""
                 raise LlamaServerStartupError(
-                    f"llama-server가 즉시 종료했습니다(exit={process.returncode}).\n"
-                    f"{output[-2000:]}"
+                    f"llama-server가 즉시 종료했습니다(exit={process.returncode})."
                 )
             if _health_ok(port):
                 break
