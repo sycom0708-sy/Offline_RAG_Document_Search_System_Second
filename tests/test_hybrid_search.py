@@ -109,7 +109,7 @@ def test_and_precision_kept_when_it_matches(db):
 # 직접 지정해 정렬 규칙만 분리 검증한다 — Phase 7에서 쓴 것과 같은 방식.
 
 
-def _result(chunk_id: str, content: str, caption: str = "") -> SearchResult:
+def _result(chunk_id: str, content: str, caption: str = "", heading: str = "") -> SearchResult:
     return SearchResult(
         chunk_id=chunk_id,
         doc_id="d1",
@@ -120,6 +120,7 @@ def _result(chunk_id: str, content: str, caption: str = "") -> SearchResult:
         content=content,
         caption=caption,
         score=-1.0,
+        heading=heading,
     )
 
 
@@ -151,8 +152,15 @@ def test_more_matched_terms_beats_higher_similarity():
     assert ranked[0].similarity < ranked[1].similarity  # 유사도는 오히려 낮다
 
 
-def test_low_relevance_full_match_stays_below_normal_partial_match():
-    """전체 일치라도 흐림 처리된 카드가 정상 카드 위로 오면 고장처럼 보인다."""
+def test_low_relevance_full_match_is_exempt_from_the_low_relevance_flag():
+    """🔴 완전 일치는 유사도가 낮아도 "관련성 낮음"으로 흐리지 않는다(T10.32 후속).
+
+    표 내부 분할(T10.32) 이후 표 청크가 자기 절 제목만 좁게 담게 됐는데,
+    표 본문 자체는 순수 데이터라 제목 문구와 의미적으로 안 닮아 유사도가
+    낮다("업무개시 수신 응답" 질의에서 그 절의 표가 매치 6/6인데도 유사도
+    0.36으로 흐림 처리돼 순위 밖으로 밀렸다). "일치 개수가 유사도보다
+    우선한다"는 원칙을 관철해 완전 일치는 흐림 판정 자체에서 제외한다.
+    """
     query_vector = np.array([1.0, 0.0], dtype=np.float32)
     dim_full = _result("c_dim", "패키지 삭제 옵션을 설명한다")
     normal_partial = _result("c_normal", "패키지 이야기만 한다")
@@ -160,7 +168,7 @@ def test_low_relevance_full_match_stays_below_normal_partial_match():
     ranked = _rerank(
         [dim_full, normal_partial],
         {
-            "c_dim": _unit_vector_with_dot(0.3),  # 임계값 0.5 미만 → 흐림
+            "c_dim": _unit_vector_with_dot(0.3),  # 임계값 0.5 미만이지만 완전 일치라 예외
             "c_normal": _unit_vector_with_dot(0.8),
         },
         query_vector,
@@ -169,8 +177,8 @@ def test_low_relevance_full_match_stays_below_normal_partial_match():
         case_sensitive=False,
     )
 
-    assert [h.chunk_id for h in ranked] == ["c_normal", "c_dim"]
-    assert ranked[1].is_full_match and ranked[1].is_low_relevance
+    assert [h.chunk_id for h in ranked] == ["c_dim", "c_normal"]
+    assert ranked[0].is_full_match and not ranked[0].is_low_relevance
 
 
 def test_korean_particle_variant_counts_as_a_match():
@@ -187,6 +195,46 @@ def test_match_counting_respects_case_sensitivity():
 
     assert count_matched_terms(result, query_term_variants("api")) == 1
     assert count_matched_terms(result, query_term_variants("api"), case_sensitive=True) == 0
+
+
+def test_heading_only_match_still_counts():
+    """🔴 본문·캡션엔 없고 heading에만 있는 검색어도 일치로 센다 (T10.32 후속).
+
+    실측: 표 내부 분할(T10.32) 이후 표 청크는 자기 절 제목만 heading으로
+    갖는데, 표 본문은 순수 데이터라 제목 문구를 담고 있지 않다("업무개시
+    수신 응답" 질의에서 그 절의 표 본문엔 STX/OP CODE 같은 필드값뿐).
+    heading을 안 세면 그 표가 검색어를 하나도 안 담은 것으로 오판된다.
+    """
+    result = _result("c1", "STX OP CODE LEN SEQ", heading="4.2 업무개시 수신 응답")
+
+    matched = count_matched_terms(result, query_term_variants("업무개시 수신 응답"))
+
+    assert matched == 3
+
+
+def test_heading_only_full_match_escapes_low_relevance():
+    """실사용 재현 — 표 본문은 의미적으로 안 닮아 유사도가 낮지만, heading
+    덕분에 완전 일치가 되어 흐림 판정에서 예외 처리된다."""
+    query_vector = np.array([1.0, 0.0], dtype=np.float32)
+    table_body_only = _result(
+        "c_table", "STX OP CODE LEN SEQ", heading="4.2 업무개시 수신 응답"
+    )
+    weak_partial = _result("c_weak", "업무개시라는 단어만 언급한다")
+
+    ranked = _rerank(
+        [table_body_only, weak_partial],
+        {
+            "c_table": _unit_vector_with_dot(0.36),  # 임계값 미만이지만 완전 일치
+            "c_weak": _unit_vector_with_dot(0.6),
+        },
+        query_vector,
+        SIMILARITY_THRESHOLD,
+        query_term_variants("업무개시 수신 응답"),
+        case_sensitive=False,
+    )
+
+    assert ranked[0].chunk_id == "c_table"
+    assert ranked[0].is_full_match and not ranked[0].is_low_relevance
 
 
 # --- 하이브리드 (모델 필요) -------------------------------------------
@@ -311,9 +359,10 @@ def test_table_caption_counts_toward_match_score(embedded_db, embedder):
 
 
 def test_low_relevance_flagged_below_threshold(embedded_db, embedder):
+    """완전 일치는 유사도가 낮아도 예외이므로 등식에서 그 경우만 뺀다."""
     results = hybrid_search(embedded_db, "계약", embedder=embedder)
     for r in results:
-        if r.similarity is not None:
+        if r.similarity is not None and not r.is_full_match:
             assert r.is_low_relevance == (r.similarity < SIMILARITY_THRESHOLD)
 
 

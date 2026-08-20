@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pymupdf
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
-from parser.utils.headings import pick_largest_line
+from parser.utils.headings import clean_heading, pick_largest_line
 
 # 렌더링 캡처 해상도. 72dpi 기준 2배 = 144dpi로 썸네일·확대 보기 모두 감당 가능한 수준.
 _RENDER_ZOOM = 2.0
 # 이보다 작은 도형 묶음은 밑줄·표 괘선 같은 장식일 가능성이 높아 다이어그램으로 보지 않는다.
 _MIN_DRAWING_CLUSTER_AREA = 10000.0
 _MIN_DRAWING_COUNT = 5
+
+# 표 안에 섞인 절 제목 행 패턴 — "4.2 업무개시 수신 응답 ..." 같은 번호+텍스트.
+# `headings.py`가 페이지 단위 제목에는 번호 패턴을 일부러 안 쓰는 것과 달리
+# (날짜 오탐), 여기서는 "표의 고립된 행"이라는 구조적 조건과 함께 써 오탐
+# 위험을 좁힌다 — 실측: 기아차 앱미터기 결제 프로토콜정의서(PDF)가 여러 절의
+# 표를 하나의 연속된 표로 그리면서 절 제목을 표 행으로 끼워 넣었다.
+_TABLE_HEADING_PATTERN = re.compile(r"^\d+(\.\d+)+\s+\S.*$")
 
 
 class PdfParser(BaseParser):
@@ -93,17 +101,66 @@ class PdfParser(BaseParser):
                 [(cell or "").strip() for cell in row]
                 for row in table.extract()
             ]
-            table_data = TableData.from_rows(rows)
-            if table_data is None:
+            segments = self._split_table_rows_on_heading(rows)
+            if not segments:
                 continue
 
             bboxes.append(pymupdf.Rect(table.bbox))
-            document.chunks.append(
-                self.make_table_chunk(
-                    document, table_data, page_or_slide=page_no, heading=heading
+            current_heading = heading
+            for heading_override, segment_rows in segments:
+                if heading_override:
+                    current_heading = heading_override
+                table_data = TableData.from_rows(segment_rows)
+                if table_data is None:
+                    continue
+                document.chunks.append(
+                    self.make_table_chunk(
+                        document, table_data, page_or_slide=page_no, heading=current_heading
+                    )
                 )
-            )
         return bboxes
+
+    @staticmethod
+    def _split_table_rows_on_heading(
+        rows: list[list[str]],
+    ) -> list[tuple[str, list[list[str]]]]:
+        """표 안에 섞인 절 제목 행을 기준으로 표를 여러 구간으로 쪼갠다.
+
+        첫 칸만 채워지고 나머지 칸은 전부 빈, 구조적으로 고립된 행만 후보로
+        보고, 그 첫 칸이 `_TABLE_HEADING_PATTERN`에 맞을 때만 제목으로
+        인정한다. 그런 행이 없으면 전체가 구간 하나로 그대로 돌아온다
+        (기존 동작과 동일).
+        """
+        segments: list[tuple[str, list[list[str]]]] = []
+        current: list[list[str]] = []
+        pending_heading = ""
+
+        for row in rows:
+            candidate = PdfParser._table_heading_candidate(row)
+            if candidate:
+                if current:
+                    segments.append((pending_heading, current))
+                current = []
+                pending_heading = candidate
+                continue
+            current.append(row)
+
+        if current:
+            segments.append((pending_heading, current))
+
+        return segments
+
+    @staticmethod
+    def _table_heading_candidate(row: list[str]) -> str:
+        if not row:
+            return ""
+        first, *rest = row
+        first = (first or "").strip()
+        if not first or any((cell or "").strip() for cell in rest):
+            return ""
+        if not _TABLE_HEADING_PATTERN.match(first):
+            return ""
+        return clean_heading(first)
 
     def _extract_text(
         self,

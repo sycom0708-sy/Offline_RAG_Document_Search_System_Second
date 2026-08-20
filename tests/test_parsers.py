@@ -306,6 +306,78 @@ class TestPdfPageHeading:
         ]) == "1. 개요"
 
 
+class TestPdfTableHeadingSplit:
+    """표 안에 섞인 절 제목 행으로 표를 쪼갠다.
+
+    실측: 기아차 앱미터기 결제 프로토콜정의서(PDF)는 4.1~4.6 여러 절의 표를
+    하나의 연속된 표로 그리면서, 절 제목("4.2 업무개시 수신 응답 ...")을
+    표의 한 행(첫 칸만 채움)으로 끼워 넣는다. 검색어가 그 제목에 매치되면
+    앞 절의 표까지 결과에 함께 나오던 문제(사용자 보고)의 원인이다.
+    """
+
+    def _split(self, rows):
+        from parser.formats.pdf_parser import PdfParser
+
+        return PdfParser._split_table_rows_on_heading(rows)
+
+    def test_no_heading_row_stays_a_single_segment(self):
+        """제목 행이 없으면 기존과 동일하게 표 전체가 구간 하나다."""
+        rows = [["Header", "1", "STX"], ["", "", "OP CODE"]]
+        segments = self._split(rows)
+        assert len(segments) == 1
+        assert segments[0] == ("", rows)
+
+    def test_embedded_heading_row_splits_the_table(self):
+        """실측 재현: 4.1 표 꼬리 뒤에 '4.2 ...' 행이 오면 그 지점에서 쪼갠다."""
+        tail_of_4_1 = ["", "총 Byte 길이", "", "", "", ""]
+        heading_row = ["4.2 업무개시 수신 응답 (결제기 → 앱미터기)", "", "", "", "", ""]
+        head_of_4_2 = ["Header", "1", "STX", "", "", ""]
+
+        segments = self._split([tail_of_4_1, heading_row, head_of_4_2])
+
+        assert len(segments) == 2
+        assert segments[0] == ("", [tail_of_4_1])
+        assert segments[1] == ("4.2 업무개시 수신 응답 (결제기 → 앱미터기)", [head_of_4_2])
+
+    def test_multiple_heading_rows_split_into_multiple_segments(self):
+        rows = [
+            ["Header", "1", "STX"],
+            ["4.2 업무개시 수신 응답 (결제기 → 앱미터기)", "", "", "", "", ""],
+            ["Header", "1", "STX"],
+            ["4.4 결제 결과 응답 (앱미터기 → 결제기)", "", "", "", "", ""],
+            ["Header", "1", "STX"],
+        ]
+        segments = self._split(rows)
+        assert [heading for heading, _ in segments] == [
+            "",
+            "4.2 업무개시 수신 응답 (결제기 → 앱미터기)",
+            "4.4 결제 결과 응답 (앱미터기 → 결제기)",
+        ]
+        assert [len(rows) for _, rows in segments] == [1, 1, 1]
+
+    def test_row_with_other_filled_cells_is_not_a_heading(self):
+        """첫 칸이 번호 패턴이어도 다른 칸이 채워져 있으면 데이터 행이다."""
+        rows = [["4.2", "업무개시", "수신 응답"], ["Header", "1", "STX"]]
+        segments = self._split(rows)
+        assert len(segments) == 1
+        assert segments[0] == ("", rows)
+
+    def test_number_without_following_text_is_not_a_heading(self):
+        """번호만 있고 뒤에 텍스트가 없으면(예: 순번 칸) 제목으로 보지 않는다."""
+        rows = [["4.2", "", "", "", "", ""], ["Header", "1", "STX"]]
+        segments = self._split(rows)
+        assert len(segments) == 1
+        assert segments[0] == ("", rows)
+
+    def test_overlong_first_cell_is_dropped_not_split(self):
+        """`clean_heading()`의 길이 상한을 그대로 따른다 — 너무 길면 제목 후보가 아니다."""
+        long_text = "4.9 " + "가" * 40
+        rows = [[long_text, "", "", "", "", ""], ["Header", "1", "STX"]]
+        segments = self._split(rows)
+        assert len(segments) == 1
+        assert segments[0] == ("", rows)
+
+
 def test_heading_survives_store_and_search(tmp_path):
     """파서가 뽑은 제목이 DB를 거쳐 검색 결과까지 그대로 도달해야 한다."""
     from indexer.fts5.schema import connect

@@ -55,7 +55,7 @@ class HybridResult:
 
     @property
     def is_filename_only_match(self) -> bool:
-        """검색어가 파일명에만 걸리고 본문·캡션엔 하나도 없는 경우 (T10.6).
+        """검색어가 파일명에만 걸리고 본문·캡션·heading엔 하나도 없는 경우 (T10.6).
 
         `chunks_fts`가 file_name도 함께 색인해 FTS5가 행 단위로 매치하다 보니,
         파일명에만 있는 단어를 검색해도 그 파일의 모든 청크가 결과에 낀다.
@@ -178,8 +178,17 @@ def count_matched_terms(
     반대로 **표의 `caption`은 센다.** 캡션은 `content`에 들어있지 않은데(실측
     확인) 파일 경로가 아니라 엄연한 문서 내용이라, 빼면 표 청크가 부당하게
     낮게 매겨진다.
+
+    **`heading`(절 제목)도 센다** — T10.32의 표 내부 분할 이후 표 청크가
+    자기 자신만의 좁은 절 제목을 갖게 됐는데, 그 표의 본문은 순수 데이터라
+    제목 단어를 담고 있지 않은 경우가 많다(실측: "업무개시 수신 응답"으로
+    찾는 절의 표 본문엔 STX/OP CODE 같은 필드값뿐이라 그 문구가 전혀 없다).
+    heading을 안 세면 정작 그 절의 표가 순위에서 완전히 밀려난다. FTS5
+    색인에는 넣지 않으므로(T10.31 유지, 1단계 후보 선정에는 영향 없음)
+    T10.6 같은 광범위한 오탐 재발 위험은 없다 — 이미 선정된 후보 안에서
+    정렬 순서에만 쓰인다.
     """
-    haystack = f"{result.content}\n{result.caption}"
+    haystack = f"{result.content}\n{result.caption}\n{result.heading}"
     if not case_sensitive:
         haystack = haystack.lower()
 
@@ -231,6 +240,14 @@ def _rerank(
     - **다만 "관련성 낮음"은 그보다 앞선다**: 흐림 처리된 카드가 1위에 오면
       고장처럼 보인다(DESIGN §5.6의 흐림은 "이건 약한 결과"라는 신호다).
       정상 결과를 먼저 보여주고, 흐림 그룹 안에서 다시 같은 규칙을 적용한다.
+    - 🔴 **완전 일치(`is_full_match`)는 "관련성 낮음" 판정에서 예외다.**
+      검색어를 하나도 빠짐없이 담은 청크가 유사도만으로 흐림 처리되며 순위
+      밖으로 밀리는 실사용 사례가 있었다 — T10.32(표 내부 분할)로 표
+      청크가 자기 절 제목만 좁게 담게 됐는데, 표 본문 자체는 순수 데이터라
+      제목 문구와 의미적으로 안 닮아 유사도가 낮다("업무개시 수신 응답"
+      질의에서 그 절의 표가 매치 6/6인데도 유사도 0.36 < 임계값 0.5로
+      흐림 처리됨). "일치 개수가 유사도보다 우선한다"는 원칙을 정렬 키
+      순서만이 아니라 "관련성 낮음" 판정 자체에도 관철한다.
 
     벡터가 없다고 결과에서 빼지는 않는다 — 키워드로 걸린 문서를 임베딩 누락
     때문에 잃으면 사용자는 "분명 있는데 안 나온다"를 겪게 된다.
@@ -248,18 +265,20 @@ def _rerank(
     ranked: list[HybridResult] = []
 
     for result in candidates:
+        matched = count_matched_terms(result, term_variants, case_sensitive=case_sensitive)
+        is_full_match = len(term_variants) > 0 and matched == len(term_variants)
+
         vector = vectors.get(result.chunk_id)
         if vector is None or vector.shape[0] != query_vector.shape[0]:
             # 차원이 다르면 다른 모델로 만든 벡터다 — 비교 자체가 성립하지 않는다.
-            ranked.append(_to_result(result, None, False, term_variants, case_sensitive))
+            ranked.append(HybridResult(result, None, False, matched, len(term_variants)))
             continue
 
         # 양쪽 다 L2 정규화되어 있으므로 내적이 곧 코사인 유사도다.
         similarity = float(np.dot(query_vector, vector))
+        is_low_relevance = similarity < threshold and not is_full_match
         ranked.append(
-            _to_result(
-                result, similarity, similarity < threshold, term_variants, case_sensitive
-            )
+            HybridResult(result, similarity, is_low_relevance, matched, len(term_variants))
         )
 
     ranked.sort(
