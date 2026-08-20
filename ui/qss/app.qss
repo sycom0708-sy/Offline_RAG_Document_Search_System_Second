@@ -57,36 +57,49 @@ QMainWindow, #CentralWidget {
 
 #SidebarNavButton {
     border: none;
-    background: transparent;
-    color: #94A3B8;
+    background: #2A4F75;
+    color: #FFFFFF;
     font-size: 14px;
+    font-weight: 700;
     text-align: left;
     padding: 8px 10px;
     border-radius: 6px;
 }
 
 #SidebarNavButton:hover {
-    background: #27364B;
+    background: #3A6FA5;
+    color: #FFFFFF;
+}
+
+#SidebarNavButton:pressed {
+    background: #3A6FA5;
     color: #FFFFFF;
 }
 
 #SidebarNavButton[active="true"] {
-    background: #27364B;
+    background: #2A4F75;
     color: #FFFFFF;
     font-weight: 700;
+    border: 2px solid #4A9FFF;
 }
 
 #SidebarExpandButton {
     border: none;
-    background: transparent;
-    color: #94A3B8;
+    background: #2A4F75;
+    color: #FFFFFF;
     font-size: 14px;
+    font-weight: 700;
     padding: 8px 0;
     border-radius: 6px;
 }
 
 #SidebarExpandButton:hover {
-    background: #27364B;
+    background: #3A6FA5;
+    color: #FFFFFF;
+}
+
+#SidebarExpandButton:pressed {
+    background: #3A6FA5;
     color: #FFFFFF;
 }
 
@@ -239,6 +252,7 @@ QMainWindow, #CentralWidget {
 #ToggleSwitchLabel {
     color: #1F2937;
     font-size: 14px;
+    font-weight: 700;
 }
 
 #ToggleSwitchLabel:disabled {

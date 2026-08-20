@@ -35,14 +35,14 @@ from ui.widgets.toggle_switch import ToggleSwitch
 
 MODEL_MANAGER_BUTTON_LABEL = "모델 관리"
 KEEP_RESIDENT_LABEL = "모델 상주"
-KEEP_RESIDENT_TOOLTIP = (
+KEEP_RESIDENT_DESCRIPTION = (
     "켜면 AI 모델을 메모리에 계속 올려 둡니다. 답변은 빨라지지만 "
     "쓰지 않는 동안에도 메모리를 차지합니다."
 )
 IDLE_LABEL = "유휴 종료 시간"
-IDLE_TOOLTIP = "이 시간 동안 요청이 없으면 AI 모델을 내려 메모리를 돌려줍니다."
+IDLE_DESCRIPTION = "이 시간 동안 요청이 없으면 AI 모델을 내려 메모리를 돌려줍니다."
 CPU_LABEL = "AI CPU 사용"
-CPU_TOOLTIP = (
+CPU_DESCRIPTION = (
     "AI가 쓸 CPU 스레드 수입니다. 바꾸면 떠 있던 모델을 내리고 "
     "다음 질문에서 새 값으로 다시 올립니다."
 )
@@ -88,20 +88,30 @@ def _body(text: str = "") -> QLabel:
     return label
 
 
-def _option_row(layout: QVBoxLayout, label_text: str, widget: QWidget, tooltip: str) -> None:
-    """`라벨 ─ 위젯` 한 줄. 툴팁은 라벨·위젯 양쪽에 건다."""
+def _option_row(layout: QVBoxLayout, label_text: str, widget: QWidget) -> None:
+    """`라벨 ─ 위젯` 한 줄. 라벨은 `ToggleSwitch`(모델 상주)와 같은 톤을 쓴다
+    (`ToggleSwitchLabel` 재사용 — `PageCardBody`를 쓰면 14px/#1F2937 대
+    13px/#6B7280로 옆 항목과 폰트가 달라진다)."""
     row = QHBoxLayout()
     row.setContentsMargins(0, 0, 0, 0)
     row.setSpacing(12)
 
-    label = _body(label_text)
-    label.setToolTip(tooltip)
+    label = QLabel(label_text)
+    label.setObjectName("ToggleSwitchLabel")
     row.addWidget(label)
     row.addStretch()
 
-    widget.setToolTip(tooltip)
     row.addWidget(widget)
     layout.addLayout(row)
+
+
+def _description(layout: QVBoxLayout, text: str) -> QLabel:
+    """타이틀 아래 상시 노출 설명. 타이틀(14px/#1F2937)보다 작고 연한 톤으로
+    `PageCardBody`(13px/#6B7280)를 재사용한다."""
+    label = _body(text)
+    label.setWordWrap(True)
+    layout.addWidget(label)
+    return label
 
 
 class SettingsPage(QWidget):
@@ -154,6 +164,7 @@ class SettingsPage(QWidget):
         self.keep_resident = ToggleSwitch(KEEP_RESIDENT_LABEL)
         self.keep_resident.toggled.connect(self._on_keep_resident_toggled)
         options.addWidget(self.keep_resident)
+        _description(options, KEEP_RESIDENT_DESCRIPTION)
 
         self.idle_combo = QComboBox()
         for seconds, label in IDLE_CHOICES:
@@ -161,7 +172,8 @@ class SettingsPage(QWidget):
         self.idle_combo.currentIndexChanged.connect(
             lambda: self.idle_timeout_changed.emit(self.current_idle_timeout())
         )
-        _option_row(options, IDLE_LABEL, self.idle_combo, IDLE_TOOLTIP)
+        _option_row(options, IDLE_LABEL, self.idle_combo)
+        _description(options, IDLE_DESCRIPTION)
 
         self.cpu_combo = QComboBox()
         for key, label in SLM_CPU_MODES:
@@ -169,7 +181,8 @@ class SettingsPage(QWidget):
         self.cpu_combo.currentIndexChanged.connect(
             lambda: self.cpu_mode_changed.emit(self.current_cpu_mode())
         )
-        _option_row(options, CPU_LABEL, self.cpu_combo, CPU_TOOLTIP)
+        _option_row(options, CPU_LABEL, self.cpu_combo)
+        _description(options, CPU_DESCRIPTION)
 
     def _build_runtime_card(self, root: QVBoxLayout) -> None:
         runtime = _card(root)

@@ -86,26 +86,21 @@ class Sidebar(QFrame):
         self._title.setObjectName("SidebarTitle")
         self._layout.addWidget(self._title)
 
-        # --- 검색/대화 + 확장 버튼 (한 행) ---
-        search_row = QHBoxLayout()
-        search_row.setContentsMargins(0, 0, 0, 0)
-        search_row.setSpacing(4)
-
+        # --- 검색/대화 버튼 ---
         self._nav_buttons: dict[str, _NavButton] = {}
         search_button = _NavButton(PAGE_SEARCH)
         search_button.clicked.connect(lambda: self.page_requested.emit(PAGE_SEARCH))
         self._nav_buttons[PAGE_SEARCH] = search_button
-        search_row.addWidget(search_button, 1)
+        self._layout.addWidget(search_button)
 
+        # 확장 버튼은 숨김 (UI 제거, 기능은 유지하지 않음)
         self.expand_button = QPushButton(EXPAND_COLLAPSED_TEXT)
         self.expand_button.setObjectName("SidebarExpandButton")
         self.expand_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.expand_button.setFixedWidth(28)
         self.expand_button.setToolTip("검색 옵션 펼치기/접기")
         self.expand_button.clicked.connect(self._on_expand_clicked)
-        search_row.addWidget(self.expand_button, 0)
-
-        self._layout.addLayout(search_row)
+        self.expand_button.setVisible(False)
 
         # --- 확장 영역 ---
         self._expansion = QWidget()
