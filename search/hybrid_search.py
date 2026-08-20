@@ -140,7 +140,11 @@ def hybrid_search(
             _to_result(r, None, False, term_variants, case_sensitive)
             for r in candidates
         ]
-        ranked.sort(key=lambda h: (-h.matched_terms, -len(h.content)))  # 안정 정렬 — 동점은 BM25 순서 유지
+        def _sort_key(h: HybridResult):
+            rank, gap = _sequence_match(h.result, term_variants, case_sensitive=case_sensitive)
+            return (-h.matched_terms, -rank, gap, -len(h.content))
+
+        ranked.sort(key=_sort_key)  # 안정 정렬 — 동점은 BM25 순서 유지
         return ranked[:limit]
 
     vectors = fetch_vectors(conn, [r.chunk_id for r in candidates], profile.key)
@@ -201,6 +205,82 @@ def count_matched_terms(
     return matched
 
 
+def _sequence_match(
+    result: SearchResult,
+    term_variants: list[tuple[str, ...]],
+    *,
+    case_sensitive: bool = False,
+) -> tuple[int, int]:
+    """검색어들이 등장 순서대로(원문 순서와 같은 순서로) 나타나는 정도.
+
+    "KAC 준수서약서" 같은 다단어 질의에서, 두 단어가 딱 붙어 있는 결과가
+    "준수서약서 ... KAC"처럼 순서가 뒤바뀐 결과보다 먼저 나와야 한다는
+    요청으로 추가됐다(2026-08-20). `matched_terms`(포함 개수)만으로는 이
+    둘을 구분하지 못한다 — 둘 다 2/2다.
+
+    Returns `(rank, gap)`:
+        rank 2, gap 0   : 정확한 구문 일치 ("KAC 준수서약서")
+        rank 1, gap N   : 순서만 일치 — 첫 검색어 시작부터 마지막 검색어
+                          끝까지의 글자 수(N)가 간격. 작을수록 두 단어가
+                          가깝다는 뜻이라 우선한다.
+        rank 0, gap 0   : 순서가 없거나(뒤바뀜) 검색어가 하나뿐임
+
+    🔴 **간격을 안 보면 표 청크가 부당하게 이긴다.** 순서만 보고 있었을 때,
+    "KAC 교육 준수서약서"(간격 몇 글자)가 수백~천 자짜리 표 안에서 "KAC"와
+    "준수서약서"가 우연히 멀리 떨어져 순서만 맞는 경우(예: "⑥ 코치 추천서 |
+    KAC이상 … ⑦ 교육준수서약서 | …")와 똑같이 "순서 일치"로 묶여, 그다음
+    기준인 본문 길이(T10.11)에서 표가 길다는 이유로 이겼다(실측: "KAC
+    준수서약서" 질의에서 실제로 발생). 간격을 순서 일치도와 본문 길이 사이에
+    끼워 넣어 두 단어가 실제로 가까운 결과가 먼저 오도록 한다.
+
+    🔴 **검색어 중 문서에 없는 단어가 하나라도 있으면 통째로 판정을 포기하지
+    않는다.** "KAC 준수서약서 찾아줘"처럼 사용자가 동사("찾아줘")를 붙여
+    입력하는 게 실사용에서 흔한데, 그 단어는 어느 문서에도 없다. 모든
+    검색어의 위치를 다 요구했다면 "찾아줘"가 없다는 이유만으로 KAC·준수서약서
+    가 실제로 붙어 있는 결과조차 순서 정보를 잃는다(실사용에서 실제로 겪음
+    — 붙어 있는 결과가 그대로였다). **실제로 매치된 검색어만 추려 그 안에서만
+    순서를 본다** — `count_matched_terms`가 "몇 개나 포함하는가"를 셀 때와
+    같은 존재 판정(위치 무관, `haystack`에 한 번이라도 나오는가)을 먼저 하고,
+    거기서 살아남은 항목끼리만 순서·간격을 계산한다.
+    """
+    haystack = f"{result.content}\n{result.caption}\n{result.heading}"
+    if not case_sensitive:
+        haystack = haystack.lower()
+
+    def _forms(variants: tuple[str, ...]) -> tuple[str, ...]:
+        return variants if case_sensitive else tuple(v.lower() for v in variants)
+
+    # 문서에 실제로 없는 검색어(예: "찾아줘")는 순서 판정에서 아예 제외한다 —
+    # matched_terms와 같은 "존재하는가"만 보는 기준으로 먼저 거른다.
+    present = [v for v in term_variants if any(f in haystack for f in _forms(v))]
+    if len(present) < 2:
+        return 0, 0
+
+    phrase = " ".join(_forms(v)[0] for v in present)
+    if phrase in haystack:
+        return 2, 0
+
+    pos = 0
+    first_start: int | None = None
+    last_end = 0
+    for variants in present:
+        best_idx: int | None = None
+        best_len = 0
+        for form in _forms(variants):
+            idx = haystack.find(form, pos)
+            if idx != -1 and (best_idx is None or idx < best_idx):
+                best_idx = idx
+                best_len = len(form)
+        if best_idx is None:
+            # 존재는 하지만 이전에 매치된 위치 이후로는 없다 — 순서가 깨진 것.
+            return 0, 0
+        if first_start is None:
+            first_start = best_idx
+        last_end = best_idx + best_len
+        pos = last_end
+    return 1, last_end - first_start
+
+
 def _to_result(
     result: SearchResult,
     similarity: float | None,
@@ -227,9 +307,21 @@ def _rerank(
 ) -> list[HybridResult]:
     """모든 후보를 **하나의** 순서로 재순위한다 — 벡터 유무로 그룹을 나누지 않는다.
 
-    정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 본문 길이 ↓, 유사도 ↓)**
-    순이다 [2026-08-11, 본문 길이는 2026-08-14 추가, 벡터 없는 청크의 취급은
-    2026-08-19 수정].
+    정렬 키는 **(관련성 낮음 여부, 일치 개수 ↓, 순서 일치도 ↓, 순서 간격 ↑,
+    본문 길이 ↓, 유사도 ↓)** 순이다 [2026-08-11, 본문 길이는 2026-08-14 추가,
+    벡터 없는 청크의 취급은 2026-08-19 수정, 순서 일치도·간격은 2026-08-20
+    추가].
+
+    - **순서 일치도**: "KAC 준수서약서"처럼 여러 단어를 검색하면, 두 단어가
+      검색어 순서 그대로(붙어 있으면 더 좋고, 중간에 다른 단어가 껴도 순서만
+      맞으면) 나타나는 결과를 "준수서약서 ... KAC"처럼 순서가 뒤바뀐 결과보다
+      먼저 보여준다(`_sequence_match` 참고). 일치 개수가 같을 때만 갈리는
+      기준이라 "일치 개수가 유사도보다 우선한다"는 기존 원칙을 안 건드린다.
+    - **순서 간격**: 순서 일치 단계(rank 1)가 동점일 때, 두 단어가 원문에서
+      실제로 가까이 있는 결과를 우선한다. 간격만 안 보면 수백~천 자짜리 표
+      안에서 두 단어가 우연히 멀리 떨어져 순서만 맞는 결과가, 진짜로 근접해서
+      일치하는 결과보다 본문 길이 기준으로 먼저 올라오는 문제가 있었다(실측:
+      "KAC 준수서약서" 질의).
 
     - **일치 개수가 유사도보다 우선한다**: 사용자가 입력한 단어를 다 담은 청크가
       먼저 보여야 한다. 실측으로 `rpm 패키지 삭제 옵션` 질의에서 4개를 전부
@@ -281,14 +373,18 @@ def _rerank(
             HybridResult(result, similarity, is_low_relevance, matched, len(term_variants))
         )
 
-    ranked.sort(
-        key=lambda h: (
+    def _sort_key(h: HybridResult):
+        rank, gap = _sequence_match(h.result, term_variants, case_sensitive=case_sensitive)
+        return (
             h.is_low_relevance,
             -h.matched_terms,
+            -rank,
+            gap,
             -len(h.content),
             -(h.similarity if h.similarity is not None else 0.0),
         )
-    )
+
+    ranked.sort(key=_sort_key)
     return ranked
 
 
