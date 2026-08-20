@@ -38,24 +38,24 @@
 | 영역 | 선택 기술 | 비고 |
 |---|---|---|
 | 문서 파싱 | python-docx, openpyxl, python-pptx, PyMuPDF, pyhwp | 형식별 상세는 3장 참고 |
-| 구버전 포맷 변환 | LibreOffice 포터블 헤드리스 | doc/xls/ppt → 순정 라이브러리보다 안정적 |
-| OCR | Tesseract + 한글 학습 데이터 | 스캔본 전용, 선택 적용 |
+| 구버전 포맷 변환 | LibreOffice 포터블 헤드리스 | doc/xls/ppt → 순정 라이브러리보다 안정적 — Phase 3 Office COM 실측 검토 후 확정 (9.1절 참고) |
+| OCR | — (미구현) | PRD·TASK 어느 문서에도 포함된 적 없는 항목이었다 — 초기 구상 표에만 있었고 실행 계획에 오른 적이 없다. 스캔 PDF는 텍스트를 추출하지 못한다. 필요해지면 별도 Phase로 새로 계획할 것 [2026-08-20 정정] |
 | 인코딩 감지 | chardet | 한글 txt는 CP949/EUC-KR 대응 필수 |
 | 한국어 문장 분리 | **정규식** (kss는 옵션) | kss는 품질이 낫지만 53자/초로 실사용 불가 — Phase 3 실측 후 변경 (7장 참고) |
 | 키워드 검색 | SQLite FTS5 | BM25 기반 즉시 필터링 |
 | 벡터 저장/검색 | **SQLite BLOB** (기존 인덱스 DB에 통합) | ANN 미사용·ID 기반 조회 방식이라 별도 벡터DB가 불필요 — Phase 3 실측 후 ChromaDB에서 변경 (5.1절 참고) |
-| 임베딩 모델 | KURE-v1 / ko-sroberta-multitask / ko-sbert-nli | 사양별 차등 적용 (8장 참고) |
-| 임베딩 추론 최적화 | ONNX + int8 양자화 | PyTorch 대비 체감 2~4배 향상 |
-| sLM (옵션) | Qwen2.5-1.5B/7B, EXAONE, Phi-3.5-mini (GGUF Q4) | llama.cpp 기반 추론 |
-| 패키징 | PyInstaller + Inno Setup | exe 인스톨러, 압축 옵션 적용 |
-| 폴더 감시(옵션) | watchdog | 실시간 증분 갱신용, 리소스 부담 고려해 옵션 처리 |
+| 임베딩 모델 | ko-sroberta-multitask(경량, 최소 사양) / KURE-v1(권장, 권장 사양) | int8 ONNX, 사양별 차등 적용 (8장 참고). ko-sbert-nli는 초기 구상 단계에서 빠지고 채택되지 않았다 |
+| 임베딩 추론 최적화 | ONNX + int8 양자화 | PyTorch 대비 체감 2~4배 향상. CPU별 양자화 편차 실측됨 — 인덱스는 만든 PC에서만 써야 한다(Phase 3) |
+| sLM (옵션) | Qwen3.5-4B(권장 사양 채택) / EXAONE-4.0-1.2B(최소 사양 채택) — GGUF Q4_K_M | llama.cpp 기반 추론. Phase 6~7 실측 후 채택 — 초기 구상이던 Qwen2.5/EXAONE-3.5/Phi-3.5-mini는 2024년 기준이라 전부 교체됐고, 후속 측정에서 Phi-4-mini(준수율 문제)·EXAONE-3.5-7.8B(메모리 2배)는 제외됐다 [2026-08-20 정정] |
+| 패키징 | PyInstaller + Inno Setup | exe 인스톨러, 압축 옵션 적용 — Phase 9 미착수(계획만 존재) |
+| 폴더 감시(옵션) | watchdog | 실시간 증분 갱신용, 리소스 부담 고려해 옵션 처리 — Phase 8 T8.5에서 구현 완료 |
 
 ## 3. 문서 형식별 파싱 전략
 
 | 형식 | 처리 방식 | 비고 |
 |---|---|---|
 | docx, xlsx, pptx | `python-docx`, `openpyxl`, `python-pptx` | 순정 라이브러리 |
-| pdf | `PyMuPDF` | 스캔본은 OCR(Tesseract 한글팩) 별도 처리 |
+| pdf | `PyMuPDF` | 스캔본(이미지만 있는 PDF)은 텍스트 추출이 안 된다 — OCR 미구현 (2장 참고) |
 | txt | `chardet`로 인코딩 자동 감지 후 파싱 | CP949/EUC-KR 대응 |
 | hwp | `pyhwp`(hwp5txt) | 한/글 프로그램 미설치 환경에서도 파싱 가능 |
 | hwpx | 자체 XML 파싱 | zip+XML 구조, docx와 유사하게 처리 |
