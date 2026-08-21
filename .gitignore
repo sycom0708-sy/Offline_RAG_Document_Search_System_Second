@@ -10,6 +10,9 @@ venv/
 .venv-convert/
 # 변환 중간 산출물 (fp32 ONNX, --clean 없이 실행하면 남는다. 최대 2.3GB)
 build/
+# PyInstaller 빌드 결과물 (T9.1) — 수 GB, `python -m deploy.build`로 다시 만들 수 있다.
+dist/
+deploy/output/
 *.egg-info/
 .pytest_cache/
 tests/samples/generated/

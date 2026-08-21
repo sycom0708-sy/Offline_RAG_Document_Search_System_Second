@@ -59,6 +59,30 @@ def test_profile_order_covers_all_profiles():
     assert set(PROFILE_ORDER) == set(PROFILES)
 
 
+class TestProjectRootUnderPyInstaller:
+    """`sys.frozen`일 때 exe 위치를 기준으로 잡는다 (T9.2).
+
+    PyInstaller onedir 빌드는 `config/settings.py`를 exe와 다른 위치
+    (`_internal/`)에 번들한다 — `__file__` 기준으로 계산하면 `models/`·
+    `vendor/`를 exe 옆이 아니라 `_internal/` 안에서 찾게 돼 배포 폴더
+    구조(exe와 같은 레벨)와 어긋난다.
+    """
+
+    def test_dev_mode_uses_file_location(self):
+        assert not hasattr(settings.sys, "frozen") or not settings.sys.frozen
+        assert settings._project_root() == settings.PROJECT_ROOT
+
+    def test_frozen_mode_uses_executable_location(self, tmp_path, monkeypatch):
+        fake_exe = tmp_path / "OfflineRAGSearch" / "OfflineRAGSearch.exe"
+        fake_exe.parent.mkdir(parents=True)
+        fake_exe.touch()
+
+        monkeypatch.setattr(settings.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(settings.sys, "executable", str(fake_exe))
+
+        assert settings._project_root() == fake_exe.parent
+
+
 def test_is_installed_false_when_files_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "MODELS_DIR", tmp_path)
     # local_dir은 MODELS_DIR을 참조하므로 새 프로파일을 만들어 확인한다.

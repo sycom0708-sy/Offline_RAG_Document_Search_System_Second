@@ -13,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from config.settings import PROJECT_ROOT
 from indexer.index_log import count_soffice_processes, get_logger
 from parser.base import ParserError
 
@@ -24,11 +25,14 @@ DEFAULT_TIMEOUT_SEC = 120
 INSTALL_HINT = "LibreOffice 포터블을 내려받아 vendor/LibreOfficePortable/ 폴더에 넣으세요."
 
 # PATH에 없을 때 확인할 Windows 기본 설치 경로 + 포터블 배포 시의 상대 경로 (TECH 9.1절).
+#
+# `PROJECT_ROOT`는 `config.settings`가 계산한다 — 여기서 `__file__` 기준으로
+# 다시 계산하면 PyInstaller로 얼린 exe에서 `vendor/`를 exe 옆이 아니라
+# 번들 내부(`_internal/`) 기준으로 잘못 찾는다 (T9.2).
 _CANDIDATE_PATHS = (
     Path(r"C:\Program Files\LibreOffice\program\soffice.exe"),
     Path(r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"),
-    Path(__file__).resolve().parents[2] / "vendor" / "LibreOfficePortable" / "App"
-    / "libreoffice" / "program" / "soffice.exe",
+    PROJECT_ROOT / "vendor" / "LibreOfficePortable" / "App" / "libreoffice" / "program" / "soffice.exe",
 )
 
 

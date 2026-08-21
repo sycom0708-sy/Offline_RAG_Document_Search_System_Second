@@ -30,3 +30,6 @@ pytest>=7.4.0
 pytest-qt>=4.4.0
 reportlab>=4.0.0
 Pillow>=10.0.0
+
+# Phase 9: 패키징 의존성 (빌드 전용 — 배포본에는 포함되지 않는다)
+pyinstaller>=6.10.0

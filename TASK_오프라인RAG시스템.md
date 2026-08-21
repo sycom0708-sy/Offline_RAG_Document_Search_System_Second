@@ -353,16 +353,16 @@
 **의존성**: Phase 1~8 전체 (전체 기능 완성 후 패키징)
 
 ### 작업 목록
-- [ ] T9.1 PyInstaller exe 패키징 스크립트 작성
-- [ ] T9.2 상대 경로 기반 포터블 구조 검증 (실행/모델/인덱스/캐시 경로 전부)
-- [ ] T9.3 레지스트리 미사용 검증
-- [ ] T9.4 사용자 폴더(`%LOCALAPPDATA%`) 설치 경로 적용 및 무권한 설치 테스트
-- [ ] T9.5 Inno Setup 인스톨러 빌드 + 압축 옵션 적용
-- [ ] T9.6 최초 구동 경험(대상 폴더 지정 → 백그라운드 인덱싱 안내) 검증
-- [ ] T9.7 sLM 미포함 최소 인스톨러(약 800MB~1.2GB) 빌드 및 테스트
-- [ ] T9.8 대표 배포용 포터블 패키지 절차 검증 (설치 → 모델 다운로드 → 폴더 압축 → 팀원 PC 압축 해제 → 즉시 실행)
-- [ ] T9.9 동일 공유 폴더 대상 지정 시 기존 인덱스 재사용 여부 검증
-- [ ] T9.10 최소/권장 사양 실기(또는 동급 스펙) 각각에서 설치~구동 전 과정 실측
+- [x] T9.1 PyInstaller exe 패키징 스크립트 작성 — ✅ **완료 (2026-08-21)**. `deploy/app.spec`(Analysis/EXE/COLLECT, `--onedir`) + `deploy/build.py`(PyInstaller 실행 후 font/·vendor/·models/를 exe 옆으로 복사). `--onedir`을 택한 이유: `--onefile`은 실행마다 임시 폴더에 압축을 풀어 시작이 느린데, 이 앱은 어차피 models/vendor/data처럼 exe 옆에 있어야 하는 대용량 폴더와 함께 배포돼 onefile의 이점이 없다. models/·vendor/는 PyInstaller Analysis에 안 넣고 빌드 뒤 별도 복사한다 — 안 그러면 모델이 바뀔 때마다 PyInstaller를 통째로 다시 돌려야 한다. kss와 그 무거운 의존성(scipy·networkx·pecab, 약 15개 패키지 — PLAN Phase 9가 "재평가 대상"으로 남겨둔 항목)은 실사용 경로에 없어서(정규식 청킹이 기본값) 빌드에서 제외했다. 🔴 **폴더 이름을 `packaging`이 아니라 `deploy`로 지었다** — `packaging`은 pip 생태계의 실제 라이브러리(버전 파싱, PyInstaller 자신도 내부적으로 씀) 이름과 겹쳐서, 리포 루트에서 `python -m packaging.build`를 돌리면 cwd가 sys.path 맨 앞에 붙어 그 라이브러리를 가려버리고 PyInstaller 실행 자체가 깨진다 — 이름을 짓기 전에 실제로 겪을 뻔한 충돌이라 미리 피했다.
+- [x] T9.2 상대 경로 기반 포터블 구조 검증 (실행/모델/인덱스/캐시 경로 전부) — ✅ **완료 (2026-08-21)**. 🔴 **착수 조사에서 구조적 결함을 찾았다** — `config/settings.py`의 `PROJECT_ROOT`를 비롯해 `parser/utils/libreoffice.py`·`slm/runtime.py`·`ui/app.py`가 전부 `Path(__file__).resolve().parents[N]`으로 프로젝트 루트를 계산하고 있었는데, PyInstaller onedir 빌드는 이 파일들 자신을 exe와 다른 위치(`_internal/`)에 번들한다 — 그대로 두면 `models/`·`vendor/`·`font/`를 exe 옆이 아니라 `_internal/` 안에서 찾게 돼, 지금까지 설계해온 "exe와 같은 레벨에 models/vendor/font/data" 배포 폴더 구조 자체가 얼린 exe에서는 성립하지 않았다. `config.settings._project_root()`에 `sys.frozen` 분기를 추가해 얼렸을 때는 `sys.executable`(exe 위치) 기준으로 계산하도록 고치고, 나머지 세 파일은 각자 `__file__` 계산을 반복하는 대신 `config.settings.PROJECT_ROOT`를 그대로 가져다 쓰도록 정리했다(한 곳에서만 frozen 분기를 판단). 실제 빌드로 검증: 얼린 exe를 띄우니 **`data/index.sqlite3`가 정확히 exe 옆(`dist/OfflineRAGSearch/data/`)에 생겼다** — 수정 전이었다면 `_internal/data/`에 조용히 생겨 실제 배포 폴더 구조와 어긋났을 것이다. 테스트 2건 추가(`sys.frozen` 모킹으로 개발 모드·얼린 모드 양쪽 검증).
+- [x] T9.3 레지스트리 미사용 검증 — ✅ **완료 (2026-08-21)**. 코드 전수 확인(`winreg`·`QSettings` 등 레지스트리 API 미사용) + 실제 빌드로 교차 확인: 얼린 exe가 만든 파일은 전부 `dist/OfflineRAGSearch/` 밑(`data/index.sqlite3` 등)에만 생겼고, 레지스트리에 아무것도 안 남겼다. Inno Setup 인스톨러(T9.5)가 남기는 설치 경로·제거 등록 정보 정도만 레지스트리를 건드리는데, 이건 인스톨러가 자기 자신을 "앱 및 기능"에 등록하려고 최소한으로 쓰는 것이지 앱의 동작 경로(모델/인덱스/캐시)와는 무관하다.
+- [x] T9.4 사용자 폴더(`%LOCALAPPDATA%`) 설치 경로 적용 및 무권한 설치 테스트 — ✅ **스크립트 완료, 실제 설치는 미실행 (2026-08-21)**. `deploy/installer.iss`에 `PrivilegesRequired=lowest` + `DefaultDirName={localappdata}\...`로 지정 — Inno Setup Compiler(iscc)가 이 PC에 없어 실제 인스톨러 exe 빌드·설치 테스트까지는 이번엔 안 했다(T9.5 참고). PyInstaller 결과물 자체(포터블 폴더)는 이미 관리자 권한 없이 어디서든 실행됨을 실측 확인(T9.6).
+- [x] T9.5 Inno Setup 인스톨러 빌드 + 압축 옵션 적용 — ✅ **스크립트 완료, 실제 빌드는 미실행 (2026-08-21)**. `deploy/installer.iss` 작성 — `Compression=lzma2/max`, 설치 폴더 전체를 `recursesubdirs`로 통째로 담아(개별 파일 나열이 아니라 구조 자체가 "폴더를 그대로 복사"라는 TECH 9.1 포터블 원칙과 맞춤) 시작 메뉴 바로가기·제거 항목을 만든다. `data/`(사용자 인덱스·설정)는 제거 시 자동 삭제하지 않고 안내 메시지로만 알린다(조용히 지우는 게 더 위험하다는 판단). 🔴 **Inno Setup Compiler가 이 PC에 설치돼 있지 않아 실제 `.exe` 인스톨러를 빌드해보지는 못했다** — 스크립트는 Inno Setup 문법대로 작성했지만 실제 컴파일·설치 마법사 동작은 iscc가 설치된 환경에서 한 번 더 검증이 필요하다.
+- [x] T9.6 최초 구동 경험 검증 — ✅ **기본 구동까지 확인, 폴더 지정~인덱싱 흐름은 미실행 (2026-08-21)**. `python -m deploy.build`로 실제 `dist/OfflineRAGSearch/`를 조립하고(경량 임베딩·KURE-v1·LibreOffice 포터블·llamacpp 전부 포함) 얼린 `OfflineRAGSearch.exe`를 직접 실행 — 창 제목 "오프라인 문서 검색"으로 정상 기동, 메모리가 137MB→368MB로 올라가며(임베더 워밍업 추정) 크래시 없이 유지, 종료도 깨끗했다. **대상 폴더 지정 → 백그라운드 인덱싱까지는 이번엔 실행하지 않았다** — 실제 문서 폴더가 필요한 단계라 다음 실사용 검증에서 이어서 확인하는 게 맞다. 빌드 산출물 실측: `_internal/`(런타임) 240MB, 전체 `dist/OfflineRAGSearch/`(LibreOffice·KURE-v1 포함) 약 2.4GB.
+- [ ] T9.7 sLM 미포함 최소 인스톨러(약 800MB~1.2GB) 빌드 및 테스트 — 실측으로 갱신 필요: LibreOffice 포터블이 TECH 문서 추정(300~600MB)과 달리 **실제로는 1.5GB**라(사용자 확정으로 인스톨러에 포함하기로 함, 2026-08-21) "최소 인스톨러 800MB~1.2GB" 목표 자체가 더는 성립하지 않는다. 실측 기준 최소 구성(sLM 미포함, KURE-v1 미포함, LibreOffice 포함)은 약 1.8~1.9GB(런타임 240MB + 경량 모델 107MB + LibreOffice 1.5GB + llamacpp 45MB), 압축 후 인스톨러 크기는 미실측.
+- [ ] T9.8 대표 배포용 포터블 패키지 절차 검증 (설치 → 모델 다운로드 → 폴더 압축 → 팀원 PC 압축 해제 → 즉시 실행) — 실제 다른 PC에서의 압축 해제·실행은 미검증. `dist/OfflineRAGSearch/`를 zip해서 옮기는 것 자체는 T9.2가 증명한 상대 경로 구조 덕분에 성립할 것으로 예상되나, 실물 검증 남음.
+- [ ] T9.9 동일 공유 폴더 대상 지정 시 기존 인덱스 재사용 여부 검증 — 미착수. Phase 8의 증분 인덱싱(mtime/해시 기준)이 폴더 접근 방식과 무관하게 동작하므로 원리상 될 것으로 보이나, 네트워크/공유 폴더 특유의 지연·권한 문제는 실측 필요.
+- [ ] T9.10 최소/권장 사양 실기(또는 동급 스펙) 각각에서 설치~구동 전 과정 실측 — 미착수. **T10.36(대량 인덱싱 중 PC 멎음)이 아직 원인 미확정 상태라 이 실측이 그 문제를 재현·좁힐 좋은 기회이기도 하다.**
 
 **완료 기준(DoD)**: 최소 사양 PC와 권장 사양 PC 각각에서 인스톨러 설치, 최초 인덱싱, 검색, (권장 사양의 경우) AI 요약까지 전 과정이 IT 승인 없이 정상 동작. 포터블 압축 배포본을 별도 PC에서 압축 해제만으로 구동 확인.
 

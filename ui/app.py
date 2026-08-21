@@ -11,9 +11,12 @@ from pathlib import Path
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
+from config.settings import PROJECT_ROOT
 from ui.main_window import MainWindow
 
-FONT_DIR = Path(__file__).resolve().parents[1] / "font"
+# `PROJECT_ROOT`(config.settings)를 쓴다 — `__file__` 기준이면 PyInstaller로
+# 얼린 exe에서 `font/`를 exe 옆이 아니라 번들 내부 기준으로 잘못 찾는다 (T9.2).
+FONT_DIR = PROJECT_ROOT / "font"
 QSS_PATH = Path(__file__).resolve().parent / "qss" / "app.qss"
 
 

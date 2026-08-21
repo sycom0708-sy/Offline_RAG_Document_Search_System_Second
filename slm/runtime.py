@@ -23,7 +23,11 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# `__file__` 기준이 아니라 `config.settings.PROJECT_ROOT`를 쓴다 — PyInstaller로
+# 얼린 exe에서는 이 파일이 exe와 다른 위치(`_internal/`)에 번들되므로,
+# `__file__` 기준으로 다시 계산하면 `vendor/`를 잘못 찾는다 (T9.2).
+from config.settings import PROJECT_ROOT
+
 VENDOR_DIR = PROJECT_ROOT / "vendor" / "llamacpp"
 
 _ENV_PATH = "LLAMA_SERVER_PATH"

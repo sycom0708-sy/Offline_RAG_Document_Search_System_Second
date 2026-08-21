@@ -8,11 +8,29 @@ TECH 8장의 "설정 파일로 경량/권장 모드를 토글하는 단일 코�
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+
+def _project_root() -> Path:
+    """models/vendor/font/data가 실제로 놓이는 최상위 폴더 (T9.2).
+
+    개발 환경에서는 이 파일 기준 상위 폴더가 곧 프로젝트 루트다. 하지만
+    PyInstaller로 얼린 exe에서는 이 파일 자체가 `_internal/config/
+    settings.py`처럼 exe와 다른 위치에 번들되므로, `__file__` 기준
+    부모 폴더를 쓰면 `models/`·`vendor/`가 exe 옆이 아니라 `_internal/`
+    안에 있다고 잘못 계산된다 — 배포 폴더 구조(exe와 models/vendor/font/
+    data가 같은 레벨)와 어긋난다. `sys.frozen`이면 실행 파일(exe) 위치를
+    기준으로 삼는다.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
 # 이 파일 기준으로 프로젝트 루트를 잡는다 (절대 경로를 코드에 박지 않는다).
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = _project_root()
 MODELS_DIR = PROJECT_ROOT / "models"
 
 # 파서가 추출·캡처한 이미지를 모아두는 곳 (Phase 11-D).
