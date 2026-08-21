@@ -10,8 +10,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
+from indexer.index_log import count_soffice_processes, get_logger
 from parser.base import ParserError
 
 DEFAULT_TIMEOUT_SEC = 120
@@ -117,6 +119,7 @@ def convert(
             str(out_dir),
             str(source_path),
         ]
+        started = time.monotonic()
         try:
             # 한국어 Windows에서 soffice는 CP949로 메시지를 출력한다.
             # text=True(UTF-8 고정)로 받으면 디코딩이 깨져 진단 정보를 잃으므로 바이트로 받는다.
@@ -127,6 +130,12 @@ def convert(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            # T10.36 — 대량 인덱싱 중 PC가 멎는 원인을 다음번엔 로그로 좁힐 수
+            # 있도록, timeout에 걸린 파일과 그 시점의 잔존 soffice.bin 수를 남긴다.
+            get_logger().warning(
+                "LibreOffice 변환 timeout(%s초): %s | soffice.bin 잔존 %s개",
+                timeout, source_path.name, count_soffice_processes(),
+            )
             raise ConversionTimeoutError(
                 f"LibreOffice 변환 시간 초과({timeout}초): {source_path.name}"
             ) from exc
@@ -134,6 +143,12 @@ def convert(
             raise ConversionFailedError(
                 f"LibreOffice 실행에 실패했습니다: {source_path.name} ({exc})"
             ) from exc
+        else:
+            elapsed = time.monotonic() - started
+            if elapsed > 10:  # 대부분은 2~3초 안팎이다 — 오래 걸린 것만 남긴다
+                get_logger().info(
+                    "LibreOffice 변환 %.1f초 소요: %s", elapsed, source_path.name
+                )
 
     # target_ext에 필터 지정이 붙는 경우("pdf:writer_pdf_Export")를 고려해 확장자만 취한다.
     suffix = target_ext.split(":")[0]

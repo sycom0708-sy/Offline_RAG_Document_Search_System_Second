@@ -25,6 +25,9 @@ MODELS_DIR = PROJECT_ROOT / "models"
 # 같은 운명이 되게 한다 — 지우려면 폴더 하나만 지우면 된다.
 ASSETS_DIR = PROJECT_ROOT / "data" / "assets"
 
+# 대규모 인덱싱 진단 로그 (T10.36) — data/와 같은 운명(.gitignore 대상).
+LOGS_DIR = PROJECT_ROOT / "data" / "logs"
+
 # 유사도 임계값 — 여러 곳에서 쓰이므로 여기 한 곳에서만 정의한다.
 #   · DESIGN §5.6: 이 값 미만이면 결과 카드를 흐리게 + "관련성 낮음" 표시
 #   · TECH 5.3 1단계 안전장치: Phase 7에서 이 값 미만이면 sLM을 호출하지 않음

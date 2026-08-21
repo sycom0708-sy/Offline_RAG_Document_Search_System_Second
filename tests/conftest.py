@@ -35,6 +35,27 @@ def _isolate_assets_dir(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(pipeline_module, "ASSETS_DIR", tmp_path_factory.mktemp("assets_isolated"))
 
 
+@pytest.fixture(autouse=True)
+def _isolate_indexing_log(monkeypatch, tmp_path_factory):
+    """`index_folder()`를 부르는 테스트를 실제 `data/logs/`에서 격리한다 (T10.36).
+
+    `_isolate_assets_dir`와 같은 함정 — `get_logger()`는 `logging.getLogger()`가
+    이름으로 전역 싱글턴을 돌려주는 데다 핸들러를 한 번만 붙이므로, 격리 없이
+    두면 스위트에서 가장 먼저 로거를 만든 테스트가 실제 `data/logs/` 경로를
+    영구히 고정해버린다. 매 테스트마다 핸들러를 지워 다음 `get_logger()`
+    호출이 격리된 경로로 다시 만들게 한다.
+    """
+    import logging
+
+    import indexer.index_log as index_log_module
+
+    monkeypatch.setattr(index_log_module, "LOGS_DIR", tmp_path_factory.mktemp("logs_isolated"))
+    logger = logging.getLogger(index_log_module._LOGGER_NAME)
+    logger.handlers.clear()
+    yield
+    logger.handlers.clear()
+
+
 def find_hwp_sample() -> Path | None:
     """.hwp는 코드로 생성할 수 없어 실제 파일에 의존한다.
 

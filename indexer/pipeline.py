@@ -13,6 +13,7 @@ from typing import Callable
 from config.settings import ASSETS_DIR
 from indexer.fts5.store import store_document
 from indexer.incremental import FileChange, classify_file
+from indexer.index_log import count_soffice_processes, get_logger
 from indexer.scanner import scan_folder
 from indexer.vector.store import embed_missing
 from parser import ParseStatus, parse_file
@@ -243,9 +244,18 @@ def _run_index(
     if on_stage is not None:
         on_stage(STAGE_PARSING, 0, total)
 
+    # T10.36 — 대량 인덱싱(문서 1만 개 이상) 도중 PC가 멎는 사고를 겪었는데
+    # 콘솔에도 UI에도 기록이 안 남아 어느 파일이 문제였는지 알 수 없었다.
+    # 지금 원인을 고치는 게 아니라, 다음번엔 로그 마지막 줄만 봐도 범인
+    # 파일을 알 수 있도록 파일마다 시작·종료를 남긴다.
+    log = get_logger()
+    log.info("인덱싱 시작: 대상 %d개 파일", total)
+
     for done, path in enumerate(files, start=1):
         if stop_event is not None and stop_event.is_set():
+            log.info("인덱싱 중단 요청 (%d/%d까지 처리)", done - 1, total)
             break
+        log.info("파싱 시작 (%d/%d): %s", done, total, path)
         try:
             change = FileChange.CHANGED if force else classify_file(conn, path)
             if not change.needs_parse:
@@ -271,28 +281,48 @@ def _run_index(
                 report.failures.append(
                     (path, "; ".join(document.errors) or "알 수 없는 오류")
                 )
+                log.warning("파싱 실패: %s (%s)", path, "; ".join(document.errors))
         except ParserError as exc:
             report.failures.append((path, str(exc)))
+            log.warning("파싱 실패: %s (%s)", path, exc)
         except Exception as exc:  # 예상 못한 오류도 인덱싱 전체를 죽이지 않는다
             report.failures.append((path, f"예상치 못한 오류: {exc}"))
+            log.exception("파싱 중 예상치 못한 오류: %s", path)
         finally:
             if on_progress is not None:
                 on_progress(done, total, path)
 
+        # 50개마다 soffice.bin 잔존 개수를 남긴다 — 정상이면 매 파일 처리
+        # 후 곧 0으로 떨어져야 한다. 계속 쌓인다면 좀비 프로세스 누적이
+        # 유력한 원인이라는 근거가 된다. (매 파일마다 재면 tasklist 호출
+        # 자체가 비용이라 주기적으로만 잰다.)
+        if done % 50 == 0:
+            soffice_count = count_soffice_processes()
+            if soffice_count is not None:
+                log.info("진행 체크포인트 %d/%d — soffice.bin 잔존 %d개", done, total, soffice_count)
+
+    log.info("파싱 단계 종료: 색인 %d · 스킵 %d · 실패 %d", report.indexed, report.skipped, len(report.failures))
+
     if embedder is not None and not (stop_event is not None and stop_event.is_set()):
+        log.info("임베딩 단계 시작")
         try:
             def _embed_progress(done: int, pending_total: int) -> None:
                 if on_stage is not None:
                     on_stage(STAGE_EMBEDDING, done, pending_total)
+                if done % 500 == 0:
+                    log.info("임베딩 진행 %d/%d", done, pending_total)
 
             if on_stage is not None:
                 on_stage(STAGE_EMBEDDING, 0, 0)
             report.embedded = embed_missing(conn, embedder, on_progress=_embed_progress)
+            log.info("임베딩 단계 종료: %d개 청크", report.embedded)
         except Exception as exc:
             report.warnings.append(f"임베딩 계산 실패 (키워드 검색은 정상): {exc}")
+            log.exception("임베딩 단계 실패")
 
     if on_stage is not None:
         on_stage(STAGE_DONE, total, total)
+    log.info("인덱싱 종료")
     return report
 
 
