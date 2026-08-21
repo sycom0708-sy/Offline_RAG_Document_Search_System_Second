@@ -214,7 +214,10 @@ class MainWindow(QMainWindow):
 
         self.sidebar.format_filter.selection_changed.connect(self._on_filters_changed)
         self.sidebar.search_options.ai_summary_changed.connect(self._on_ai_chat_toggled)
-        self.sidebar.recent_search_selected.connect(self.input_bar.submit_text)
+        # 2026-08-21, 사용자 요청: 최근 검색을 클릭하면 입력창에 채우기만
+        # 하고, 검색은 사용자가 직접 Enter·검색 버튼을 눌러야 시작된다
+        # (이전엔 submit_text로 클릭 즉시 검색이 실행됐다).
+        self.sidebar.recent_search_selected.connect(self.input_bar.set_text)
         self.sidebar.page_requested.connect(self.show_page)
         self.sidebar.expand_toggled.connect(self._on_expand_toggled)
 

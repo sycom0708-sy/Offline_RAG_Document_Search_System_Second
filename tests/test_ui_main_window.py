@@ -325,7 +325,10 @@ class TestRecentSearchWiring:
 
         assert reloaded.recent_searches == ["계약서 검토 기준이 뭐였지"]
 
-    def test_clicking_a_recent_search_item_reruns_it(self, qtbot, window):
+    def test_clicking_a_recent_search_item_fills_the_input_without_searching(self, qtbot, window):
+        """2026-08-21, 사용자 요청: 최근 검색 클릭은 입력창을 채우기만 하고
+        검색은 사용자가 Enter·검색 버튼을 직접 눌러야 시작된다 — 이전에는
+        클릭 즉시 재검색됐다."""
         window.input_bar.submit_text("계약서")
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
         window.input_bar.submit_text("리눅스")
@@ -339,6 +342,10 @@ class TestRecentSearchWiring:
         )
         button.click()
 
+        assert window.input_bar.text() == "계약서"
+        assert window._last_query == "리눅스"  # 검색은 아직 실행되지 않았다
+
+        window.input_bar.submit_text(window.input_bar.text())  # Enter·검색 버튼을 흉내
         assert window._last_query == "계약서"
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
 
