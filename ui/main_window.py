@@ -282,7 +282,7 @@ class MainWindow(QMainWindow):
             self.sidebar.set_recent_searches(self.state.recent_searches)
 
         if self._chat_panel is not None:
-            self._chat_panel.send_message(text)
+            self._chat_panel.send_message(text, self.state.case_sensitive, self.state.exact_word)
             return
 
         self._on_search_requested(text)

@@ -104,7 +104,7 @@ class TestResultCard:
         card = ResultCard(_hybrid(), "계약서")
         qtbot.addWidget(card)
         body = card.findChild(QLabel, "ResultCardBody")
-        assert "background-color:#FDE68A" in body.text()
+        assert "background-color:#FEEEAD" in body.text()
 
     def test_body_and_header_text_is_selectable(self, qtbot):
         """T10.20(사용자 보고): 카드 텍스트가 드래그·복사(Ctrl+C)가 안 됐다 —

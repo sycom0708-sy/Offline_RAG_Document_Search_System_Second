@@ -86,7 +86,7 @@ class TestBuildExcerpt:
 class TestToRichText:
     def test_wraps_match_in_highlight_span(self):
         html_out = to_rich_text("계약서 검토", ["계약서"])
-        assert '<span style="background-color:#FDE68A; font-weight:700;">계약서</span>' in html_out
+        assert '<span style="background-color:#FEEEAD; font-weight:700;">계약서</span>' in html_out
         assert html_out.endswith(" 검토")
 
     def test_escapes_html_special_characters_in_content(self):
@@ -104,13 +104,13 @@ class TestToRichText:
 
     def test_multiple_non_overlapping_matches_all_highlighted(self):
         html_out = to_rich_text("계약 해지 후 계약 갱신", ["계약"])
-        assert html_out.count('background-color:#FDE68A') == 2
+        assert html_out.count('background-color:#FEEEAD') == 2
 
 
 def test_highlighted_excerpt_end_to_end():
     content = "계약서 검토 시 기준이 되는 조항은 손해배상, 계약 해지, 지급 조건 세 가지다"
     result = highlighted_excerpt(content, "계약서 검토", case_sensitive=False, exact_word=False)
-    assert "background-color:#FDE68A" in result
+    assert "background-color:#FEEEAD" in result
     assert "계약서" in result
 
 

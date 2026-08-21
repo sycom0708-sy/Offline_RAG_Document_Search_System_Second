@@ -292,11 +292,43 @@ class TestChatPanel:
 
         body = bubble.findChild(QLabel, "ResultCardBody")
         assert body is not None
-        assert "계약서 검토 시 기준 조항" in body.text()
+        # 2026-08-21부터 챗봇 카드도 검색어를 강조해 원문이 <span>으로
+        # 감싸인다(아래 test_show_excerpt_highlights_the_matched_query_term
+        # 참고) — 여기서는 발췌 텍스트가 그대로 담겨 있는지만 본다.
+        assert "검토 시 기준 조항" in body.text()
+        assert "계약서" in body.text()
         name_label = bubble.findChild(QLabel, "ResultCardFileName")
         assert name_label is not None
         assert name_label.text() == "사규.docx"
         assert bubble._summarize_button.isEnabled() is True
+
+    def test_show_excerpt_highlights_the_matched_query_term(self, qtbot):
+        """2026-08-21, 사용자 요청: 챗봇 카드도 검색 카드처럼 검색어를
+        강조해야 한다 — 이전에는 하이라이트용 질의어를 빈 문자열로 넘겨
+        일부러 꺼져 있었다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("계약서")
+
+        panel.show_excerpt(1, [_hybrid("계약서 검토 시 기준 조항")])
+
+        body = panel.bubble_for(1).findChild(QLabel, "ResultCardBody")
+        assert "background-color:#FEEEAD" in body.text()
+        assert "계약서" in body.text()
+
+    def test_send_message_passes_case_sensitive_and_exact_word_to_cards(self, qtbot):
+        """대/소문자 구분·일치되는 단어 옵션이 검색 화면과 어긋나면 안 된다
+        (DESIGN §5.3) — 챗봇도 같은 옵션으로 하이라이트해야 한다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.send_message("Case", case_sensitive=True, exact_word=True)
+
+        panel.show_excerpt(1, [_hybrid("여기 Case 있고 case도 있고 CASE도 있다")])
+
+        body = panel.bubble_for(1).findChild(QLabel, "ResultCardBody")
+        # case_sensitive=True라 대소문자가 다른 "case"/"CASE"는 강조되지 않고
+        # 정확히 일치하는 "Case"만 강조된다.
+        assert body.text().count("background-color:#FEEEAD") == 1
 
     def test_show_excerpt_with_no_results_shows_guidance_text(self, qtbot):
         panel = ChatPanel()
@@ -686,7 +718,9 @@ class TestChatExcerptTableAndImage:
         assert panel.bubble_for(1).findChild(QTableWidget, "TableCardGrid") is not None
         assert panel.bubble_for(2).findChild(QTableWidget, "TableCardGrid") is None
         body2 = panel.bubble_for(2).findChild(QLabel, "ResultCardBody")
-        assert "계약서 내용" in body2.text()
+        # "계약서"가 검색어라 하이라이트 <span>으로 감싸인다(2026-08-21).
+        assert "내용" in body2.text()
+        assert "계약서" in body2.text()
 
     def test_searching_state_always_shows_text_even_after_table_turn(self, qtbot):
         """검색 중 상태는 항상 텍스트 본문이어야 한다(표 그리드가 남아있으면 안 됨)."""

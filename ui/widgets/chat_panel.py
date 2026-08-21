@@ -98,6 +98,10 @@ class _AnswerBubble(QFrame):
         # T10.17: 이 턴의 질문·완성된 답변 — ChatPanel.history_before()가
         # 다음 턴 프롬프트의 대화 이력을 만들 때 읽어간다.
         self.question: str = ""
+        # 2026-08-21: 카드 하이라이트에 쓴다 — 검색 화면과 같은 옵션으로
+        # 강조해야 어긋나 보이지 않는다(DESIGN §5.3과 같은 요구).
+        self.case_sensitive: bool = False
+        self.exact_word: bool = False
         self.summary: Summary | None = None
 
         layout = QVBoxLayout(self)
@@ -167,8 +171,9 @@ class _AnswerBubble(QFrame):
         표는 그리드+복사 버튼, 이미지는 썸네일+확대 버튼을 카드가 알아서
         그린다 — T10.12가 챗봇 전용으로 손으로 짰던 렌더링(표/이미지 갈아
         끼우기, 높이 재계산 등)을 전부 대체한다. 하이라이트용 질의어는
-        넘기지 않는다(빈 문자열) — 이번 변경의 핵심은 "카드 재사용으로
-        개수·버튼을 검색과 맞추는 것"이지 하이라이트가 아니다.
+        이 턴의 질문(`self.question`)을 그대로 넘긴다(2026-08-21, 사용자
+        요청) — 검색 화면과 같은 카드를 재사용하므로 하이라이트도 자연히
+        같은 방식으로 켜진다.
         """
         self._clear_body()
         shown = results[:EXCERPT_LIMIT]
@@ -180,7 +185,7 @@ class _AnswerBubble(QFrame):
             self._add_more_button(len(self._remaining_results))
 
     def _add_result_card(self, result: HybridResult) -> None:
-        card = make_result_card(result, "", False, False)
+        card = make_result_card(result, self.question, self.case_sensitive, self.exact_word)
         card.open_failed.connect(self.open_failed)
         card.nearby_requested.connect(self.nearby_requested)
         self._body_layout.addWidget(card)
@@ -313,15 +318,21 @@ class ChatPanel(QWidget):
 
     # --- 공개 API -------------------------------------------------------
 
-    def send_message(self, text: str) -> None:
+    def send_message(
+        self, text: str, case_sensitive: bool = False, exact_word: bool = False
+    ) -> None:
         """메시지를 보낸다 — 이 패널의 유일한 입력 경로다.
 
         `MainWindow`의 공용 입력창(`InputBar`)이 챗봇 모드일 때 이 메서드를
-        호출한다. 빈 문자열(공백만 포함)은 조용히 무시한다."""
+        호출한다. 빈 문자열(공백만 포함)은 조용히 무시한다.
+
+        `case_sensitive`/`exact_word`(2026-08-21)는 검색 화면과 같은 사이드바
+        옵션이다 — 카드 하이라이트에만 쓴다(검색 자체는 여전히 stateless로
+        `hybrid_search()`가 처리)."""
         text = text.strip()
         if not text:
             return
-        self._send(text)
+        self._send(text, case_sensitive, exact_word)
 
     def show_excerpt(self, request_id: int, results: list) -> None:
         bubble = self._bubbles.get(request_id)
@@ -388,7 +399,7 @@ class ChatPanel(QWidget):
 
     # --- 내부 -----------------------------------------------------------
 
-    def _send(self, text: str) -> None:
+    def _send(self, text: str, case_sensitive: bool = False, exact_word: bool = False) -> None:
         self._next_id += 1
         request_id = self._next_id
 
@@ -399,6 +410,8 @@ class ChatPanel(QWidget):
 
         bubble = _AnswerBubble()
         bubble.question = text
+        bubble.case_sensitive = case_sensitive
+        bubble.exact_word = exact_word
         bubble.show_searching()
         bubble.summarize_requested.connect(
             lambda rid=request_id, b=bubble: self.summarize_requested.emit(rid, b.results)

@@ -14,7 +14,7 @@ import html
 import re
 from typing import Sequence
 
-HIGHLIGHT_COLOR = "#FDE68A"  # DESIGN §10.1
+HIGHLIGHT_COLOR = "#FEEEAD"  # DESIGN §10.1 — 기존 #FDE68A를 흰색 쪽으로 30% 연하게(2026-08-21, 사용자 요청)
 DEFAULT_WINDOW = 140  # DESIGN §5.3 "2줄 기준" 근사치
 
 
