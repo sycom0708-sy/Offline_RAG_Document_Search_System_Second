@@ -493,6 +493,92 @@ class TestChatPanel:
         assert "리눅스" in body2.text()
 
 
+class TestChatRetentionLimit:
+    """2026-08-21, 사용자 요청 — 실측(1000턴 시뮬레이션, 턴당 약 1.1MB)으로
+    무제한 누적이 GB 단위까지 갈 수 있음을 확인해, 오래된 턴을 화면·메모리
+    에서 지우는 슬라이딩 윈도우를 뒀다."""
+
+    def test_default_retention_is_100_turns(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+
+        for i in range(1, 106):
+            panel.send_message(f"질문 {i}")
+
+        assert panel.turn_count() == 100
+        assert panel.bubble_for(1) is None  # 가장 오래된 5턴이 지워졌다
+        assert panel.bubble_for(5) is None
+        assert panel.bubble_for(6) is not None  # 그 다음부터는 남아 있다
+        assert panel.bubble_for(105) is not None
+
+    def test_set_max_retained_turns_evicts_immediately_when_lowered(self, qtbot):
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        for i in range(1, 11):
+            panel.send_message(f"질문 {i}")
+        assert panel.turn_count() == 10
+
+        panel.set_max_retained_turns(3)
+
+        assert panel.turn_count() == 3
+        assert panel.bubble_for(7) is None
+        assert panel.bubble_for(8) is not None
+        assert panel.bubble_for(10) is not None
+
+    def test_evicted_turn_widgets_are_removed_from_transcript_layout(self, qtbot):
+        """위젯이 딕셔너리에서만 빠지는 게 아니라 화면(레이아웃)에서도
+        실제로 없어져야 메모리가 돌아온다."""
+        panel = ChatPanel()
+        qtbot.addWidget(panel)
+        panel.set_max_retained_turns(2)
+
+        panel.send_message("첫 질문")
+        panel.send_message("둘째 질문")
+        panel.send_message("셋째 질문")  # 첫 질문 턴이 지워진다
+
+        # addStretch()까지 포함해 (사용자 행 + 답변 행) × 2턴 + 1 이어야 한다.
+        assert panel._transcript_layout.count() == 5
+        assert panel.turn_count() == 2
+
+    def test_settings_page_shows_memory_estimate_for_each_choice(self, qtbot):
+        from ui.widgets.settings_page import SettingsPage
+
+        page = SettingsPage()
+        qtbot.addWidget(page)
+
+        page.chat_retention_combo.setCurrentIndex(0)  # 100턴(기본)
+        assert "100턴" in page._chat_retention_description.text()
+        assert "110MB" in page._chat_retention_description.text()
+
+        page.chat_retention_combo.setCurrentIndex(2)  # 500턴
+        assert "500턴" in page._chat_retention_description.text()
+        assert "550MB" in page._chat_retention_description.text()
+
+    def test_settings_page_default_is_100_turns(self, qtbot):
+        from ui.widgets.settings_page import SettingsPage
+
+        page = SettingsPage()
+        qtbot.addWidget(page)
+        page.set_chat_retain_turns(100)
+
+        assert page.current_chat_retain_turns() == 100
+        assert "110MB" in page._chat_retention_description.text()
+
+    def test_changing_settings_combo_emits_signal_without_double_firing_on_restore(self, qtbot):
+        from ui.widgets.settings_page import SettingsPage
+
+        page = SettingsPage()
+        qtbot.addWidget(page)
+        received = []
+        page.chat_retain_turns_changed.connect(received.append)
+
+        page.set_chat_retain_turns(500)  # 복원 — 신호가 나가면 안 된다
+        assert received == []
+
+        page.chat_retention_combo.setCurrentIndex(0)  # 사용자가 실제로 바꿈
+        assert received == [100]
+
+
 class TestChatScrollBehavior:
     """T10.19(2026-08-15, 사용자 보고): 검색 결과 도착·AI 요약 진행 단계
     전환이 말풍선 높이를 바꾸는데, 그때마다 다시 스크롤하지 않으면 그

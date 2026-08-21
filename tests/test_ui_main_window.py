@@ -1979,3 +1979,34 @@ class TestSettingsPageOptions:
         window._refresh_settings_page()
 
         assert window.settings_page.runtime_text("llama") == RUNTIME_MISSING_TEXT
+
+    # --- 챗봇 대화 보관 (2026-08-21) -----------------------------------
+
+    def test_chat_retain_turns_is_saved(self, qtbot, window):
+        combo = window.settings_page.chat_retention_combo
+        combo.setCurrentIndex(combo.findData(300))
+
+        assert window.state.chat_retain_turns == 300
+
+    def test_saved_chat_retain_turns_is_restored_on_startup(self, qtbot, indexed_db, tmp_path):
+        state = AppState.load(path=tmp_path / "state.json")
+        state.chat_retain_turns = 500
+
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win.settings_page.current_chat_retain_turns() == 500
+
+    def test_changing_the_setting_applies_to_an_already_open_chat_panel(self, qtbot, window):
+        """챗봇을 이미 켜서 패널이 만들어진 뒤 설정을 바꾸면, 새로 켤 때까지
+        기다리지 않고 그 자리에서 적용돼야 한다(ChatPanel.set_max_retained_turns
+        자체의 즉시 정리 동작은 test_ui_chat.py::TestChatRetentionLimit이
+        이미 검증한다 — 여기서는 배선만 본다)."""
+        window.sidebar.search_options.ai_summary_changed.emit(True)  # 챗봇 모드 진입
+        panel = window._chat_panel_cache
+        assert panel._max_retained_turns == 100  # 기본값
+
+        combo = window.settings_page.chat_retention_combo
+        combo.setCurrentIndex(combo.findData(500))
+
+        assert panel._max_retained_turns == 500

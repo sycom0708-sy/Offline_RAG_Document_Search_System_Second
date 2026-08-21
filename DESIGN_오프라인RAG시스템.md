@@ -796,6 +796,7 @@ NanumGothic → Malgun Gothic → sans-serif
 | OPTIONS | 모델 상주 | `SlmService.set_idle_timeout(0)` | ✅ **완료** [11-C] |
 | OPTIONS | 유휴 종료 시간 | `SLM_IDLE_TIMEOUT_SEC`(Phase 7 결정: 5분)이 기본 | ✅ **완료** [11-C] |
 | OPTIONS | AI CPU 사용 | `SlmService.set_n_threads()` ← `resolve_n_threads(모드)` | ✅ **완료** [11-C] |
+| OPTIONS | 챗봇 대화 보관 | `ChatPanel.set_max_retained_turns()` — 3단계(100/300/500턴), 기본 100 | ✅ **완료** [2026-08-21] |
 | LOCAL AI & RUNTIME | Embedding 모델 경로 | `config/settings.py` 프로파일 | ✅ **완료** [11-C] |
 | LOCAL AI & RUNTIME | 로컬 LLM 모델 경로 | sLM 프로파일 `local_path` | ✅ **완료** [11-C] |
 | LOCAL AI & RUNTIME | llama.cpp runtime | `slm/runtime.is_available()` | ✅ **완료** [11-C] |
@@ -809,6 +810,24 @@ NanumGothic → Malgun Gothic → sans-serif
 - **모델 상주는 이 프로젝트에서 실제로 동작한다.** 목업 원본에는 *"현재 runtime에서는
   상주가 아직 적용되지 않지만 선택값은 저장됩니다"*라고 적혀 있지만, 이쪽은 Phase 7에서
   유휴 5분 자동 종료를 실제로 구현했고 실물로 검증했다(안드로이드 스튜디오 동시 작업 전제).
+
+#### 14.5.0 챗봇 대화 보관 **[2026-08-21, 사용자 요청]**
+
+챗봇은 T10.16(꺼도 대화 유지)부터 대화를 무제한 보존했다. 실측(1000턴 시뮬레이션 —
+실제 인덱스 청크로 매 턴 5개 결과 구성, 143.6MB → 1213.8MB)으로 **턴당 약 1.1MB**가
+쌓이는 것을 확인해(카드가 위젯·QPixmap을 영구 보존하는 구조라 이미지가 섞일수록 큼),
+오래된 턴을 화면·메모리에서 지우는 슬라이딩 윈도우 상한을 3단계로 뒀다.
+
+| 선택지 | 턴 수 | 설명 문구(선택마다 갱신) |
+|---|---|---|
+| 기본 | 100 | "최근 100턴만 화면에 남기고 이전 대화는 지웁니다. 약 110MB의 메모리를 사용할 수 있습니다." |
+| 보통 | 300 | "…약 330MB…" |
+| 많이 보관 | 500 | "…약 550MB…" |
+
+`ChatPanel`에 실제로 전달되는 LLM 대화 맥락(`history_before()`)은 이 상한과 무관하게
+이미 최근 3턴뿐이라(`slm/prompt.py DEFAULT_MAX_HISTORY_TURNS`), 화면 보관 턴 수를
+줄여도 답변 품질에는 영향이 없다. 값을 줄이면 그 자리에서 초과분(오래된 턴부터)을
+바로 지운다.
 
 #### 14.5.1 PC 성능 전환의 부작용 **[주의]**
 

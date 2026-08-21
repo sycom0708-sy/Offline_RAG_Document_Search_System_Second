@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from config.settings import DEFAULT_CHAT_RETAIN_TURNS
 from search.hybrid_search import HybridResult
 from slm.prompt import HistoryTurn
 from slm.summarize import Summary, SummaryStatus
@@ -283,6 +284,15 @@ class ChatPanel(QWidget):
 
     입력창을 갖지 않는다 — `MainWindow`가 소유한 공용 `InputBar`가
     `send_message()`를 호출해 메시지를 넣는다(Phase 7.7).
+
+    **대화는 무제한 누적되지 않는다(2026-08-21, 사용자 요청)** — T10.16이
+    "꺼도 대화 유지"를 만든 뒤 실측(1000턴 시뮬레이션)해보니 턴당 약
+    1.1MB씩 쌓여(챗봇 카드가 위젯·QPixmap을 영구 보존하는 구조라서) 극단적
+    세션에서 GB 단위까지 늘어날 수 있었다. `set_max_retained_turns()`로
+    정한 개수를 넘으면 가장 오래된 턴부터 위젯을 지운다 — LLM에 실제로
+    전달되는 맥락(`history_before()`)은 어차피 최근 3턴뿐이라
+    (`slm/prompt.py DEFAULT_MAX_HISTORY_TURNS`) 이 상한을 걸어도 답변
+    품질에는 영향이 없다.
     """
 
     message_sent = Signal(int, str)  # (request_id, question)
@@ -298,6 +308,11 @@ class ChatPanel(QWidget):
         # 좌/우 정렬 행에 들어간 위젯들(사용자 라벨 + AI 말풍선) — 창 크기가
         # 바뀔 때마다 최대 폭을 다시 계산해야 해서 전부 기억해 둔다.
         self._bubble_widgets: list[QWidget] = []
+        # 턴별 정리용(2026-08-21) — 오래된 턴을 지울 때 화면에서 뗄 행
+        # 래퍼(row)와 _bubble_widgets에서 빼야 할 내부 위젯을 찾는다.
+        self._turn_rows: dict[int, tuple[QWidget, QWidget]] = {}
+        self._turn_widgets: dict[int, tuple[QWidget, QWidget]] = {}
+        self._max_retained_turns = DEFAULT_CHAT_RETAIN_TURNS
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -406,7 +421,7 @@ class ChatPanel(QWidget):
         user_label = QLabel(text)
         user_label.setObjectName("ChatUserMessage")
         user_label.setWordWrap(True)
-        self._add_row(user_label, align_right=True)
+        user_row = self._add_row(user_label, align_right=True)
 
         bubble = _AnswerBubble()
         bubble.question = text
@@ -419,12 +434,45 @@ class ChatPanel(QWidget):
         bubble.open_failed.connect(self.open_failed)
         bubble.nearby_requested.connect(self.nearby_requested)
         self._bubbles[request_id] = bubble
-        self._add_row(bubble, align_right=False, expand=True)
+        bubble_row = self._add_row(bubble, align_right=False, expand=True)
+
+        self._turn_rows[request_id] = (user_row, bubble_row)
+        self._turn_widgets[request_id] = (user_label, bubble)
+        self._evict_old_turns()
 
         self._scroll_to_bottom_deferred()
         self.message_sent.emit(request_id, text)
 
-    def _add_row(self, widget: QWidget, *, align_right: bool, expand: bool = False) -> None:
+    def set_max_retained_turns(self, turns: int) -> None:
+        """화면·메모리에 보관할 최대 턴 수를 바꾼다(설정 페이지, 2026-08-21).
+
+        값을 줄이면 그 자리에서 초과분(오래된 턴부터)을 바로 지운다."""
+        self._max_retained_turns = max(1, turns)
+        self._evict_old_turns()
+
+    def _evict_old_turns(self) -> None:
+        while len(self._bubbles) > self._max_retained_turns:
+            oldest_id = min(self._bubbles)
+            self._remove_turn(oldest_id)
+
+    def _remove_turn(self, request_id: int) -> None:
+        """오래된 턴 하나를 화면·`_bubbles`·`_bubble_widgets`에서 전부 지운다.
+
+        `row.setParent(None)`이 `_transcript_layout`에서도 자동으로 빠지게
+        한다(`_AnswerBubble._clear_body()`와 같은 패턴) — 자식 위젯(사용자
+        라벨/말풍선, 그 안의 카드·QPixmap)도 함께 파괴돼 메모리가 실제로
+        돌아온다."""
+        self._bubbles.pop(request_id, None)
+        rows = self._turn_rows.pop(request_id, ())
+        widgets = self._turn_widgets.pop(request_id, ())
+        for widget in widgets:
+            if widget in self._bubble_widgets:
+                self._bubble_widgets.remove(widget)
+        for row in rows:
+            row.setParent(None)
+            row.deleteLater()
+
+    def _add_row(self, widget: QWidget, *, align_right: bool, expand: bool = False) -> QWidget:
         """`widget`을 좌/우 정렬 행으로 감싸 대화창 맨 끝(stretch 앞)에 넣는다.
 
         QSS는 margin-left:auto나 max-width를 지원하지 않으므로, 정렬은
@@ -462,6 +510,7 @@ class ChatPanel(QWidget):
         self._transcript_layout.insertWidget(self._transcript_layout.count() - 1, row)
         self._bubble_widgets.append(widget)
         self._apply_max_width(widget)
+        return row
 
     def _apply_max_width(self, widget: QWidget) -> None:
         # 창에 아직 부착되지 않은 시점(생성 직후)엔 `_transcript.width()`가

@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import SLM_CPU_MODES
+from config.settings import CHAT_RETENTION_CHOICES, SLM_CPU_MODES, chat_retention_description
 from ui.widgets.performance_combo import PerformanceCombo
 from ui.widgets.toggle_switch import ToggleSwitch
 
@@ -46,6 +46,7 @@ CPU_DESCRIPTION = (
     "AI가 쓸 CPU 스레드 수입니다. 바꾸면 떠 있던 모델을 내리고 "
     "다음 질문에서 새 값으로 다시 올립니다."
 )
+CHAT_RETENTION_LABEL = "챗봇 대화 보관"
 
 # 유휴 종료 시간 선택지(초). Phase 7이 실물로 정한 5분이 기본이다.
 IDLE_CHOICES: tuple[tuple[int, str], ...] = (
@@ -121,6 +122,7 @@ class SettingsPage(QWidget):
     keep_resident_changed = Signal(bool)
     idle_timeout_changed = Signal(int)  # 초
     cpu_mode_changed = Signal(str)  # "auto" | "half" | "max"
+    chat_retain_turns_changed = Signal(int)  # 2026-08-21
 
     def __init__(self, parent=None, initial_profile: str | None = None) -> None:
         """`initial_profile`을 생성 시점에 넘기는 이유는 사이드바와 같다 —
@@ -183,6 +185,17 @@ class SettingsPage(QWidget):
         )
         _option_row(options, CPU_LABEL, self.cpu_combo)
         _description(options, CPU_DESCRIPTION)
+
+        self.chat_retention_combo = QComboBox()
+        for turns, label in CHAT_RETENTION_CHOICES:
+            self.chat_retention_combo.addItem(label, turns)
+        self.chat_retention_combo.currentIndexChanged.connect(self._on_chat_retention_changed)
+        _option_row(options, CHAT_RETENTION_LABEL, self.chat_retention_combo)
+        # 고정 문구가 아니라 선택마다 바뀐다(2026-08-21, 사용자 요청) —
+        # 아래 set_chat_retain_turns()/_on_chat_retention_changed()가 갱신한다.
+        self._chat_retention_description = _description(
+            options, chat_retention_description(self.current_chat_retain_turns())
+        )
 
     def _build_runtime_card(self, root: QVBoxLayout) -> None:
         runtime = _card(root)
@@ -248,6 +261,26 @@ class SettingsPage(QWidget):
 
     def current_idle_timeout(self) -> int:
         return int(self.idle_combo.currentData())
+
+    def _on_chat_retention_changed(self) -> None:
+        turns = self.current_chat_retain_turns()
+        self._chat_retention_description.setText(chat_retention_description(turns))
+        self.chat_retain_turns_changed.emit(turns)
+
+    def set_chat_retain_turns(self, turns: int) -> None:
+        """저장된 값으로 콤보·설명 문구를 맞춘다. `set_slm_options`와 같은
+        이유로 신호를 막는다 — 복원이 "사용자가 바꿨다"로 읽히면 안 된다."""
+        self.chat_retention_combo.blockSignals(True)
+        try:
+            index = self.chat_retention_combo.findData(turns)
+            if index >= 0:
+                self.chat_retention_combo.setCurrentIndex(index)
+        finally:
+            self.chat_retention_combo.blockSignals(False)
+        self._chat_retention_description.setText(chat_retention_description(turns))
+
+    def current_chat_retain_turns(self) -> int:
+        return int(self.chat_retention_combo.currentData())
 
     def current_cpu_mode(self) -> str:
         return str(self.cpu_combo.currentData())

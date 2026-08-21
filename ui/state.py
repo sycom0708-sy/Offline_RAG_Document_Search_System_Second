@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from config.settings import (
+    DEFAULT_CHAT_RETAIN_TURNS,
     DEFAULT_SLM_PROFILE,
     LIGHT,
     PROJECT_ROOT,
@@ -64,6 +65,9 @@ class AppState:
     # (`config.settings.resolve_n_threads`). 숫자를 그대로 저장하면 코어 수가
     # 다른 PC로 폴더를 옮겼을 때 의미가 달라진다(TECH 9.1 포터블 원칙).
     slm_cpu_mode: str = "auto"
+    # 챗봇 대화 보관 턴 수(2026-08-21, 사용자 요청) — 이보다 오래된 턴은
+    # `ChatPanel`이 화면·메모리에서 지운다(실측 근거는 config.settings 참고).
+    chat_retain_turns: int = DEFAULT_CHAT_RETAIN_TURNS
 
     def __post_init__(self) -> None:
         # 데이터클래스 필드가 아니라(asdict()에 안 실린다) — save()를 인자

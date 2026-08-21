@@ -233,6 +233,7 @@ class MainWindow(QMainWindow):
         self.settings_page.keep_resident_changed.connect(self._on_keep_resident_changed)
         self.settings_page.idle_timeout_changed.connect(self._on_idle_timeout_changed)
         self.settings_page.cpu_mode_changed.connect(self._on_cpu_mode_changed)
+        self.settings_page.chat_retain_turns_changed.connect(self._on_chat_retain_turns_changed)
         # Phase 11: 사이드바 "폴더 관리" → 문서 관리 페이지의 "폴더 선택".
         self.document_page.folder_requested.connect(self._open_folder_dialog)
         # Phase 11-B: 인덱스 작업 버튼 3개 (DESIGN §14.4.2).
@@ -424,6 +425,7 @@ class MainWindow(QMainWindow):
         """
         if self._chat_panel_cache is None:
             panel = ChatPanel()
+            panel.set_max_retained_turns(self.state.chat_retain_turns)
             panel.message_sent.connect(self._on_chat_message_sent)
             panel.summarize_requested.connect(self._on_chat_summarize_requested)
             panel.open_failed.connect(self._on_open_failed)
@@ -782,7 +784,17 @@ class MainWindow(QMainWindow):
             idle_timeout_sec=self.state.slm_idle_timeout_sec,
             cpu_mode=self.state.slm_cpu_mode,
         )
+        self.settings_page.set_chat_retain_turns(self.state.chat_retain_turns)
         self.settings_page.set_runtime_info(self._runtime_info())
+
+    def _on_chat_retain_turns_changed(self, turns: int) -> None:
+        """챗봇 대화 보관 턴 수 변경(2026-08-21) — 이미 만들어진 패널이
+        있으면 즉시 적용해 초과분을 지운다(`ChatPanel.set_max_retained_turns`
+        가 값을 줄이면 그 자리에서 정리한다)."""
+        self.state.chat_retain_turns = turns
+        self.state.save()
+        if self._chat_panel_cache is not None:
+            self._chat_panel_cache.set_max_retained_turns(turns)
 
     def _runtime_info(self) -> dict[str, str]:
         """실행 정보 4줄. 없는 것은 "설치되지 않음"으로 분명히 말한다 —

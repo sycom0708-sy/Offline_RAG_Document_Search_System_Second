@@ -263,6 +263,32 @@ SLM_CPU_MODES: tuple[tuple[str, str], ...] = (
 )
 DEFAULT_SLM_CPU_MODE = "auto"
 
+# 챗봇 대화 보관 턴 수 (2026-08-21, 사용자 요청).
+#
+# 실측(1000턴 시뮬레이션, 실제 인덱스 청크로 매 턴 5개 결과 구성 — 143.6MB →
+# 1213.8MB, 델타 1070.1MB)으로 턴당 약 1.07MB가 쌓이는 것을 확인했다. 챗봇
+# 카드가 위젯·QPixmap을 영구 보존하는 구조라(옛 턴을 지우지 않으면 T10.16
+# "꺼도 대화 유지"가 무제한 누적으로 이어진다) 이미지가 섞인 결과일수록 더
+# 크다. 여유를 두고 1.1MB/턴으로 어림잡는다 — 실제 값은 그 세션의 결과
+# 구성(표·이미지 비중)에 따라 달라지므로 설정 화면 문구는 "약"으로 표기한다.
+CHAT_MB_PER_TURN = 1.1
+
+CHAT_RETENTION_CHOICES: tuple[tuple[int, str], ...] = (
+    (100, "기본 (최근 100턴)"),
+    (300, "보통 (최근 300턴)"),
+    (500, "많이 보관 (최근 500턴)"),
+)
+DEFAULT_CHAT_RETAIN_TURNS = 100
+
+
+def chat_retention_description(turns: int) -> str:
+    """설정 페이지가 선택지마다 보여줄 예상 메모리 사용량 문구."""
+    mb = round(turns * CHAT_MB_PER_TURN)
+    return (
+        f"최근 {turns}턴만 화면에 남기고 이전 대화는 지웁니다. "
+        f"약 {mb}MB의 메모리를 사용할 수 있습니다."
+    )
+
 
 def resolve_n_threads(mode: str, cpu_count: int | None = None) -> int | None:
     """CPU 모드를 이 PC의 실제 스레드 수로 바꾼다. `None`이면 llama.cpp 기본값.
