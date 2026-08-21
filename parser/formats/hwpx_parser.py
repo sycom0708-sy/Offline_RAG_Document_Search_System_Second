@@ -13,7 +13,12 @@ from xml.etree import ElementTree
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
-from parser.utils.headings import body_size_of, clean_heading, is_heading_size
+from parser.utils.headings import (
+    body_size_of,
+    clean_heading,
+    is_heading_size,
+    single_cell_table_heading,
+)
 from parser.utils.imaging import sniff_image_extension
 
 _SECTION_PATTERN = re.compile(r"^Contents/section\d+\.xml$", re.IGNORECASE)
@@ -99,6 +104,10 @@ class HwpxParser(BaseParser):
                 self._flush_text(document, buffer, section_index, heading.text)
                 table_data = self._read_table(child)
                 if table_data is not None:
+                    # 1칸짜리 표는 데이터가 아니라 절 제목 배너다 (T10.34).
+                    candidate = single_cell_table_heading(table_data.header_row, table_data.rows)
+                    if candidate:
+                        heading.text = candidate
                     document.chunks.append(
                         self.make_table_chunk(
                             document, table_data, page_or_slide=section_index,

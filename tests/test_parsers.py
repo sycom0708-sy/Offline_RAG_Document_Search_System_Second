@@ -592,6 +592,68 @@ class TestHwpxHeadingByFontSize:
         document = self._parse(tmp_path, [("0", "첫 문단"), ("0", "둘째 문단")])
         assert all(c.heading == "" for c in document.chunks)
 
+    def _section_with_table(self, paragraph_before, table_rows, paragraph_after):
+        import zipfile
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        table_xml = (
+            '<hp:tbl xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            + "".join(
+                "<hp:tr>"
+                + "".join(f"<hp:tc><hp:t>{cell}</hp:t></hp:tc>" for cell in row)
+                + "</hp:tr>"
+                for row in table_rows
+            )
+            + "</hp:tbl>"
+        )
+        section = (
+            '<hs:sec xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section"'
+            ' xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">'
+            f'<hp:p><hp:run charPrIDRef="1"><hp:t>{paragraph_before}</hp:t></hp:run></hp:p>'
+            f"<hp:p>{table_xml}</hp:p>"
+            f'<hp:p><hp:run charPrIDRef="0"><hp:t>{paragraph_after}</hp:t></hp:run></hp:p>'
+            "</hs:sec>"
+        )
+        return section
+
+    def test_single_cell_table_becomes_the_heading(self, tmp_path):
+        """T10.34 — 1칸짜리 표가 배너 문단을 대신해 제목이 된다."""
+        import zipfile
+
+        trailing = "본문이 길게 이어지는 문단입니다 " * 3
+        path = tmp_path / "banner.hwpx"
+        section = self._section_with_table("배너 광고 문구", [["1과목 : 리눅스 운영 및 관리"]], trailing)
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/header.xml", self.HEADER)
+            archive.writestr("Contents/section0.xml", section)
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        document = HwpxParser(asset_dir=tmp_path / "assets").parse(path)
+        table = next(c for c in document.chunks if c.type.value == "table")
+        assert table.heading == "1과목 : 리눅스 운영 및 관리"
+        text = next(c for c in document.chunks if c.type.value == "text" and c.content == trailing.strip())
+        assert text.heading == "1과목 : 리눅스 운영 및 관리"
+
+    def test_data_table_does_not_override_the_running_heading(self, tmp_path):
+        import zipfile
+
+        trailing = "본문이 길게 이어지는 문단입니다 " * 3
+        path = tmp_path / "data_table.hwpx"
+        section = self._section_with_table(
+            "배너 광고 문구", [["이름", "부서"], ["김성용", "개발팀"]], trailing
+        )
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("Contents/header.xml", self.HEADER)
+            archive.writestr("Contents/section0.xml", section)
+
+        from parser.formats.hwpx_parser import HwpxParser
+
+        document = HwpxParser(asset_dir=tmp_path / "assets").parse(path)
+        text = next(c for c in document.chunks if c.type.value == "text" and c.content == trailing.strip())
+        assert text.heading == "배너 광고 문구"
+
 
 class TestHwpHeadingByFontSize:
     """HWP는 pyhwp 중간 XML에서 `Text[charshape-id]` → `CharShape[basesize]`로 크기를 푼다."""
@@ -650,6 +712,94 @@ class TestHwpHeadingByFontSize:
         sizes = HwpParser._char_sizes(root)
         outer = next(iter(root.iter("Paragraph")))
         assert HwpParser._paragraph_size(outer, sizes) == 0.0
+
+
+class TestSingleCellTableHeading:
+    """`single_cell_table_heading()` — 1칸짜리 표만 제목 후보로 본다 (T10.34)."""
+
+    def _heading(self, header_row, rows):
+        from parser.utils.headings import single_cell_table_heading
+
+        return single_cell_table_heading(header_row, rows)
+
+    def test_lone_cell_becomes_the_heading(self):
+        assert self._heading([], [["1과목 : 리눅스 운영 및 관리"]]) == "1과목 : 리눅스 운영 및 관리"
+
+    def test_lone_header_cell_becomes_the_heading(self):
+        assert self._heading(["시험 환경 및 시험 구성도"], []) == "시험 환경 및 시험 구성도"
+
+    def test_data_table_is_not_a_heading_candidate(self):
+        """칸이 둘 이상이면 절 제목 배너가 아니라 실제 표 데이터다."""
+        assert self._heading(["이름", "부서"], [["김성용", "개발팀"]]) == ""
+
+    def test_single_column_multi_row_table_is_not_a_heading_candidate(self):
+        assert self._heading([], [["1"], ["2"], ["3"]]) == ""
+
+    def test_over_length_lone_cell_is_dropped(self):
+        """`clean_heading()`의 40자 상한을 그대로 따른다."""
+        assert self._heading([], [["가" * 41]]) == ""
+
+    def test_empty_table_has_no_heading(self):
+        assert self._heading([], []) == ""
+
+
+class TestHwpTableBannerHeading:
+    """1칸짜리 표가 절 제목 배너로 쓰이는 hwp 문서 (T10.34).
+
+    실측: 리눅스마스터 기출문제 — 진짜 절 제목(`1과목 : 리눅스 운영 및 관리`)이
+    문단이 아니라 1칸짜리 표 안에 있어, 수정 전에는 표 앞의 광고 배너 문단
+    (`최강 자격증 기출문제 전자문제집 CBT : www.comcbt.com`)이 그 뒤 모든 청크의
+    제목으로 계속 남아 있었다.
+    """
+
+    def _document(self, table_rows, trailing_text):
+        from xml.etree import ElementTree
+
+        from parser.formats.hwp_parser import HwpParser, _Heading
+        from parser.schema import ParsedDocument
+
+        table_cells = "".join(
+            "<TableRow>"
+            + "".join(
+                f'<TableCell><Paragraph><Text charshape-id="0">{cell}</Text></Paragraph></TableCell>'
+                for cell in row
+            )
+            + "</TableRow>"
+            for row in table_rows
+        )
+        xml = (
+            "<HwpDoc><CharShape basesize=\"900\"/><CharShape basesize=\"1600\"/>"
+            "<BodyText>"
+            '<Paragraph><Text charshape-id="1">최강 자격증 기출문제 전자문제집 CBT : www.comcbt.com</Text></Paragraph>'
+            f'<Paragraph><TableControl>{table_cells}</TableControl></Paragraph>'
+            f'<Paragraph><Text charshape-id="0">{trailing_text}</Text></Paragraph>'
+            "</BodyText></HwpDoc>"
+        )
+        root = ElementTree.fromstring(xml)
+        parser = HwpParser()
+        parser._counters = {}
+        document = ParsedDocument(doc_id="d1", file_path="x.hwp", file_name="x.hwp", title="x")
+        buffer: list[str] = []
+        heading = _Heading()
+        parser._walk(root, document, buffer, [900.0, 1600.0], 900.0, heading)
+        parser._flush_text(document, buffer, heading.text)
+        return document
+
+    def test_table_chunk_carries_its_own_text_as_heading(self):
+        document = self._document([["1과목 : 리눅스 운영 및 관리"]], "본문 내용입니다")
+        table = next(c for c in document.chunks if c.type.value == "table")
+        assert table.heading == "1과목 : 리눅스 운영 및 관리"
+
+    def test_heading_stops_carrying_the_banner_after_the_table(self):
+        document = self._document([["1과목 : 리눅스 운영 및 관리"]], "본문 내용입니다")
+        text = next(c for c in document.chunks if c.type.value == "text" and c.content == "본문 내용입니다")
+        assert text.heading == "1과목 : 리눅스 운영 및 관리"
+
+    def test_data_table_leaves_the_running_heading_untouched(self):
+        """칸이 여럿인 실제 표는 배너가 아니므로 직전 제목이 그대로 이어진다."""
+        document = self._document([["이름", "부서"], ["김성용", "개발팀"]], "본문 내용입니다")
+        text = next(c for c in document.chunks if c.type.value == "text" and c.content == "본문 내용입니다")
+        assert text.heading == "최강 자격증 기출문제 전자문제집 CBT : www.comcbt.com"
 
 
 class TestDocxFontSizeFallback:

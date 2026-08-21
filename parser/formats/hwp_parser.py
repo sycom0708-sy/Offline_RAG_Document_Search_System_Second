@@ -12,7 +12,12 @@ from xml.etree import ElementTree
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
-from parser.utils.headings import body_size_of, clean_heading, is_heading_size
+from parser.utils.headings import (
+    body_size_of,
+    clean_heading,
+    is_heading_size,
+    single_cell_table_heading,
+)
 from parser.utils.imaging import sniff_image_extension
 
 
@@ -92,6 +97,11 @@ class HwpParser(BaseParser):
                 self._flush_text(document, buffer, heading.text)
                 table_data = self._read_table(child)
                 if table_data is not None:
+                    # 1칸짜리 표는 데이터가 아니라 절 제목 배너다 (T10.34) — 이 표
+                    # 자신부터 새 제목을 쓰고, 뒤따르는 문단에도 이어지게 한다.
+                    candidate = single_cell_table_heading(table_data.header_row, table_data.rows)
+                    if candidate:
+                        heading.text = candidate
                     document.chunks.append(
                         self.make_table_chunk(document, table_data, heading=heading.text)
                     )

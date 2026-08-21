@@ -87,14 +87,30 @@ def body_size_of(sized_lines: list[tuple[float, str]]) -> float:
     return weights.most_common(1)[0][0]
 
 
+def single_cell_table_heading(header_row: list[str], rows: list[list[str]]) -> str:
+    """표 전체에 채워진 칸이 **딱 하나**뿐이면 그 칸을 제목으로 본다 (T10.34).
+
+    hwp·hwpx 문서는 절 제목을 문단이 아니라 "1칸짜리 표"로 그리는 경우가 있다
+    (실측: 리눅스마스터 기출문제의 `1과목 : 리눅스 운영 및 관리`, KSEL 서식의
+    `시험 환경 및 시험 구성도` — 둘 다 문단 제목이 없는 문서에서 표 하나로만
+    절이 갈린다). 표 셀을 전부 제목 후보로 승격하면(Phase 1 원칙 변경, 범위가 큼)
+    본문 표까지 오염되므로, **칸이 정확히 하나뿐인 표만** xlsx의 "1행에 한 칸"
+    규칙(`XlsxParser._sheet_heading`)과 같은 원리로 좁혀 잡는다. 데이터가 있는
+    표(칸이 여럿)는 이 함수가 항상 빈 문자열을 돌려줘 그대로 표 청크로 남는다.
+    """
+    filled = [cell for cell in [*header_row, *(c for row in rows for c in row)] if cell.strip()]
+    if len(filled) != 1:
+        return ""
+    return clean_heading(filled[0])
+
+
 def is_heading_size(size: float, body_size: float) -> bool:
     """이 크기를 제목으로 볼 것인가 (흐름 단위 문서용).
 
     PDF와 **같은 배율 문턱**을 쓴다. 흐름 단위 문서는 문서 전체의 본문 크기를 먼저
     알고 시작하니 "본문보다 크면 제목"으로 더 느슨하게 잡을 수도 있지만, 그렇게
-    바꿔서 실제로 좋아지는 문서를 이 코퍼스에서 찾지 못했다 — 유일한 후보였던
-    리눅스마스터 기출문제(hwp)는 절 제목(`1과목 : 리눅스 운영 및 관리`)이 **표 안에**
-    들어 있어 애초에 문단 제목 후보가 아니었다(표는 별도 청크로 빠진다, Phase 1).
-    근거 없이 느슨하게 하면 오탐만 늘어난다.
+    바꿔서 실제로 좋아지는 문서를 이 코퍼스에서 찾지 못했다 — 근거 없이 느슨하게
+    하면 오탐만 늘어난다. (문단이 아니라 **표 안**에 절 제목이 들어간 경우는
+    `single_cell_table_heading()`이 따로 잡는다, T10.34.)
     """
     return body_size > 0 and size >= body_size * HEADING_SIZE_RATIO
