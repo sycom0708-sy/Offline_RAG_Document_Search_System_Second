@@ -1579,6 +1579,15 @@ class TestPhase11Shell:
         assert window.sidebar.is_expanded() is True
         assert window.current_page() == before  # 페이지는 그대로
 
+    def test_expand_button_is_actually_visible(self, qtbot, window):
+        """🔴 회귀: 2026-08-20 스타일 개선 커밋이 이 버튼을 "기능 미사용"으로
+        보고 `setVisible(False)`로 숨겼다 — `.click()`은 숨겨진 버튼도 그대로
+        동작해 기존 배선 테스트는 전부 통과했지만, 실제로는 확장 영역(검색
+        옵션·문서 형식)을 열 수 있는 유일한 경로가 사라져 배포 exe 최초
+        실행에서 아예 못 여는 상태였다(사용자 보고).
+        """
+        assert window.sidebar.expand_button.isVisibleTo(window.sidebar) is True
+
     def test_expansion_is_collapsed_by_default_and_hides_options(self, qtbot, window):
         assert window.sidebar.is_expanded() is False
         assert window.sidebar._expansion.isVisibleTo(window.sidebar) is False

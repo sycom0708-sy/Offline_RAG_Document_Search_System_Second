@@ -86,21 +86,33 @@ class Sidebar(QFrame):
         self._title.setObjectName("SidebarTitle")
         self._layout.addWidget(self._title)
 
-        # --- 검색/대화 버튼 ---
+        # --- 검색/대화 + 확장 버튼 (한 행) ---
+        # 🔴 DESIGN §14.2.2 [확정]: "검색/대화 항목 오른쪽에 별도 버튼을 두고,
+        # 그 버튼만 확장/축소를 담당한다." 2026-08-20 스타일 개선 커밋이 이
+        # 버튼을 "기능 미사용"으로 보고 숨겼는데, 실제로는 확장 영역(검색
+        # 옵션·문서 형식)을 여는 유일한 경로였다 — 숨긴 뒤로는 `AppState.
+        # search_expanded`가 우연히 True로 남아있던 세션에서만 확장 영역이
+        # 보였고, 새 설치(배포 exe 최초 실행 등)는 펼칠 방법 자체가 없었다
+        # (사용자 보고, 배포 exe에서 재현).
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(4)
+
         self._nav_buttons: dict[str, _NavButton] = {}
         search_button = _NavButton(PAGE_SEARCH)
         search_button.clicked.connect(lambda: self.page_requested.emit(PAGE_SEARCH))
         self._nav_buttons[PAGE_SEARCH] = search_button
-        self._layout.addWidget(search_button)
+        search_row.addWidget(search_button, 1)
 
-        # 확장 버튼은 숨김 (UI 제거, 기능은 유지하지 않음)
         self.expand_button = QPushButton(EXPAND_COLLAPSED_TEXT)
         self.expand_button.setObjectName("SidebarExpandButton")
         self.expand_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.expand_button.setFixedWidth(28)
         self.expand_button.setToolTip("검색 옵션 펼치기/접기")
         self.expand_button.clicked.connect(self._on_expand_clicked)
-        self.expand_button.setVisible(False)
+        search_row.addWidget(self.expand_button, 0)
+
+        self._layout.addLayout(search_row)
 
         # --- 확장 영역 ---
         self._expansion = QWidget()
