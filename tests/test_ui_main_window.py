@@ -1564,43 +1564,51 @@ class TestPhase11Shell:
         window.sidebar._nav_buttons[PAGE_SEARCH].click()
         assert window.current_page() == PAGE_SEARCH
 
-    def test_expand_button_does_not_navigate(self, qtbot, window):
-        """🔴 확장 버튼은 네비게이션과 독립이다(DESIGN §14.2.2).
+    def test_search_nav_click_expands(self, qtbot, window):
+        """🔴 별도 확장 버튼은 없다 — `검색/대화`를 누르면 함께 펼쳐진다
+        (DESIGN §14.2.2, 2026-08-22 갱신).
 
-        하나로 묶으면 "필터 좀 보려고 눌렀는데 페이지가 바뀐다"가 된다.
+        2026-08-20 스타일 개선 커밋이 옛 확장 버튼을 숨기면서 이 동작으로
+        바꾸려 했으나 클릭 핸들러를 새로 잇는 걸 빠뜨려, 배포 exe 최초 실행
+        에서는 확장 영역을 열 방법 자체가 없었다(사용자 보고, T10.39 후속).
         """
-        from ui.widgets.sidebar import PAGE_SETTINGS
+        from ui.widgets.sidebar import PAGE_SEARCH
 
-        window.sidebar._nav_buttons[PAGE_SETTINGS].click()
-        before = window.current_page()
+        assert window.sidebar.is_expanded() is False
 
-        window.sidebar.expand_button.click()
+        window.sidebar._nav_buttons[PAGE_SEARCH].click()
 
         assert window.sidebar.is_expanded() is True
-        assert window.current_page() == before  # 페이지는 그대로
+        assert window.current_page() == PAGE_SEARCH
 
-    def test_expand_button_is_actually_visible(self, qtbot, window):
-        """🔴 회귀: 2026-08-20 스타일 개선 커밋이 이 버튼을 "기능 미사용"으로
-        보고 `setVisible(False)`로 숨겼다 — `.click()`은 숨겨진 버튼도 그대로
-        동작해 기존 배선 테스트는 전부 통과했지만, 실제로는 확장 영역(검색
-        옵션·문서 형식)을 열 수 있는 유일한 경로가 사라져 배포 exe 최초
-        실행에서 아예 못 여는 상태였다(사용자 보고).
-        """
-        assert window.sidebar.expand_button.isVisibleTo(window.sidebar) is True
+    def test_other_nav_click_collapses(self, qtbot, window):
+        """`문서 관리`·`설정`을 누르면 페이지 이동과 함께 접힌다."""
+        from ui.widgets.sidebar import PAGE_DOCUMENTS
+
+        window.sidebar.set_expanded(True)
+
+        window.sidebar._nav_buttons[PAGE_DOCUMENTS].click()
+
+        assert window.sidebar.is_expanded() is False
+        assert window.current_page() == PAGE_DOCUMENTS
 
     def test_expansion_is_collapsed_by_default_and_hides_options(self, qtbot, window):
+        from ui.widgets.sidebar import PAGE_SEARCH
+
         assert window.sidebar.is_expanded() is False
         assert window.sidebar._expansion.isVisibleTo(window.sidebar) is False
 
-        window.sidebar.expand_button.click()
+        window.sidebar._nav_buttons[PAGE_SEARCH].click()
 
         assert window.sidebar._expansion.isVisibleTo(window.sidebar) is True
 
     def test_expand_state_is_persisted(self, qtbot, window):
-        window.sidebar.expand_button.click()
+        from ui.widgets.sidebar import PAGE_DOCUMENTS, PAGE_SEARCH
+
+        window.sidebar._nav_buttons[PAGE_SEARCH].click()
         assert window.state.search_expanded is True
 
-        window.sidebar.expand_button.click()
+        window.sidebar._nav_buttons[PAGE_DOCUMENTS].click()
         assert window.state.search_expanded is False
 
     def test_saved_expand_state_is_restored_on_startup(self, qtbot, indexed_db, tmp_path):
@@ -1868,9 +1876,12 @@ class TestSidebarExpansionScope:
         assert window.sidebar._expansion.isVisibleTo(window.sidebar) is True
 
     def test_page_switch_does_not_change_saved_expand_state(self, qtbot, window):
-        from ui.widgets.sidebar import PAGE_SETTINGS
+        """`MainWindow.show_page()`를 직접 부르는 경로(사이드바 클릭이 아닌
+        다른 진입점)는 확장 상태를 안 건드린다 — 접고 펴는 건 사이드바
+        네비게이션 버튼 클릭에만 실려 있다."""
+        from ui.widgets.sidebar import PAGE_SEARCH, PAGE_SETTINGS
 
-        window.sidebar.expand_button.click()
+        window.sidebar._nav_buttons[PAGE_SEARCH].click()
         assert window.state.search_expanded is True
 
         window.show_page(PAGE_SETTINGS)

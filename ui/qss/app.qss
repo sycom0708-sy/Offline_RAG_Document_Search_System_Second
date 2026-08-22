@@ -83,26 +83,6 @@ QMainWindow, #CentralWidget {
     border: 2px solid #4A9FFF;
 }
 
-#SidebarExpandButton {
-    border: none;
-    background: #2A4F75;
-    color: #FFFFFF;
-    font-size: 14px;
-    font-weight: 700;
-    padding: 8px 0;
-    border-radius: 6px;
-}
-
-#SidebarExpandButton:hover {
-    background: #3A6FA5;
-    color: #FFFFFF;
-}
-
-#SidebarExpandButton:pressed {
-    background: #3A6FA5;
-    color: #FFFFFF;
-}
-
 /* 확장 영역은 사이드바와 같은 다크 네이비다[사용자 확정, 2026-08-18].
    StyledCheckbox는 이 배경에 맞춰 다시 칠했고(체크 시 강조색 채움 + 흰 체크마크),
    토글 라벨은 아래에서 밝은 색으로 덮어쓴다. */

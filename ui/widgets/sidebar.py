@@ -6,9 +6,16 @@ Phase 11에서 **네비게이션**으로 바뀌었다 — `PC 성능 선택`·`�
 `문서 형식`·`AI 챗봇 사용`은 `검색/대화` 옆 확장 영역으로 들어갔다.
 `대/소문자 구분`·`일치되는 단어`는 화면에서 제거했다(기능은 유지, DESIGN §14.7).
 
-🔴 **확장 버튼은 네비게이션과 독립이다** — `검색/대화` 항목 본체를 누르면
-페이지 이동만, 오른쪽 확장 버튼을 누르면 펼침/접힘만 일어난다. 하나로 묶으면
-"필터 좀 보려고 눌렀는데 페이지가 바뀐다"가 된다.
+**확장/축소는 네비게이션 클릭에 실려 있다**[사용자 확정, 2026-08-22] — `검색/
+대화`를 누르면 페이지 이동과 함께 펼쳐지고, `문서 관리`·`설정`을 누르면
+접힌다. 별도 확장 버튼은 없다.
+
+🔴 11-A는 원래 "확장 버튼은 네비게이션과 독립"으로 확정했었다(별도 버튼이
+펼침/접힘만 담당). 2026-08-20 스타일 개선 커밋(`3fa4e4f`)이 그 버튼을
+지우면서 이 새 동작(네비게이션 클릭이 곧 확장/축소)으로 바꾸려 했으나
+버튼만 숨기고 클릭 핸들러를 새로 잇는 걸 빠뜨려 — 반쯤 끝난 채로 남아있었다
+(배포 exe에서 "검색 옵션을 열 방법이 없다"는 형태로 드러남, T10.39). 이번에
+클릭 핸들러를 마저 이어 실제로 동작하게 했다.
 
 최근 검색은 **위치를 유지했다**[사용자 확정] — Phase 7.7에서 자리잡은 그대로
 사이드바 아래쪽에 남는다.
@@ -19,7 +26,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
@@ -42,10 +48,6 @@ NAV_LABELS = {
     PAGE_DOCUMENTS: "문서 관리",
     PAGE_SETTINGS: "설정",
 }
-
-EXPAND_COLLAPSED_TEXT = "⌄"
-EXPAND_EXPANDED_TEXT = "⌃"
-
 
 class _NavButton(QPushButton):
     """네비게이션 항목 하나. 활성 상태는 QSS의 `[active="true"]`로 표현한다."""
@@ -86,33 +88,15 @@ class Sidebar(QFrame):
         self._title.setObjectName("SidebarTitle")
         self._layout.addWidget(self._title)
 
-        # --- 검색/대화 + 확장 버튼 (한 행) ---
-        # 🔴 DESIGN §14.2.2 [확정]: "검색/대화 항목 오른쪽에 별도 버튼을 두고,
-        # 그 버튼만 확장/축소를 담당한다." 2026-08-20 스타일 개선 커밋이 이
-        # 버튼을 "기능 미사용"으로 보고 숨겼는데, 실제로는 확장 영역(검색
-        # 옵션·문서 형식)을 여는 유일한 경로였다 — 숨긴 뒤로는 `AppState.
-        # search_expanded`가 우연히 True로 남아있던 세션에서만 확장 영역이
-        # 보였고, 새 설치(배포 exe 최초 실행 등)는 펼칠 방법 자체가 없었다
-        # (사용자 보고, 배포 exe에서 재현).
-        search_row = QHBoxLayout()
-        search_row.setContentsMargins(0, 0, 0, 0)
-        search_row.setSpacing(4)
-
+        # --- 검색/대화 버튼 ---
+        # 누르면 페이지 이동과 함께 확장 영역이 펼쳐진다(아래 나머지
+        # 네비게이션은 반대로 누르면 접는다) — 별도 확장 버튼은 없다
+        # [사용자 확정, 2026-08-22].
         self._nav_buttons: dict[str, _NavButton] = {}
         search_button = _NavButton(PAGE_SEARCH)
-        search_button.clicked.connect(lambda: self.page_requested.emit(PAGE_SEARCH))
+        search_button.clicked.connect(self._on_search_nav_clicked)
         self._nav_buttons[PAGE_SEARCH] = search_button
-        search_row.addWidget(search_button, 1)
-
-        self.expand_button = QPushButton(EXPAND_COLLAPSED_TEXT)
-        self.expand_button.setObjectName("SidebarExpandButton")
-        self.expand_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.expand_button.setFixedWidth(28)
-        self.expand_button.setToolTip("검색 옵션 펼치기/접기")
-        self.expand_button.clicked.connect(self._on_expand_clicked)
-        search_row.addWidget(self.expand_button, 0)
-
-        self._layout.addLayout(search_row)
+        self._layout.addWidget(search_button)
 
         # --- 확장 영역 ---
         self._expansion = QWidget()
@@ -136,7 +120,7 @@ class Sidebar(QFrame):
         # --- 나머지 네비게이션 ---
         for page in (PAGE_DOCUMENTS, PAGE_SETTINGS):
             button = _NavButton(page)
-            button.clicked.connect(lambda _=False, p=page: self.page_requested.emit(p))
+            button.clicked.connect(lambda _=False, p=page: self._on_other_nav_clicked(p))
             self._nav_buttons[page] = button
             self._layout.addWidget(button)
 
@@ -160,18 +144,23 @@ class Sidebar(QFrame):
 
     # --- 확장 -------------------------------------------------------
 
-    def _on_expand_clicked(self) -> None:
-        self.set_expanded(not self._expanded)
-        self.expand_toggled.emit(self._expanded)
+    def _on_search_nav_clicked(self) -> None:
+        """검색/대화를 누르면 페이지 이동 + 확장을 함께 한다."""
+        self.set_expanded(True)
+        self.expand_toggled.emit(True)
+        self.page_requested.emit(PAGE_SEARCH)
+
+    def _on_other_nav_clicked(self, page: str) -> None:
+        """문서 관리·설정을 누르면 페이지 이동 + 접힘을 함께 한다."""
+        self.set_expanded(False)
+        self.expand_toggled.emit(False)
+        self.page_requested.emit(page)
 
     def set_expanded(self, expanded: bool) -> None:
         if expanded == self._expanded:
             return
         self._expanded = expanded
         self._sync_expansion_visibility()
-        self.expand_button.setText(
-            EXPAND_EXPANDED_TEXT if expanded else EXPAND_COLLAPSED_TEXT
-        )
         self._update_recent_searches_max_height()
 
     def is_expanded(self) -> bool:
@@ -181,12 +170,10 @@ class Sidebar(QFrame):
         """확장 영역은 **검색/대화 페이지에서만** 보인다 (11-A 후속 [사용자 확정]).
 
         안에 든 것(문서 형식 필터·AI 챗봇 토글)이 검색 옵션이라 문서 관리·설정
-        화면에서는 조작할 이유가 없는데, 11-A에서는 네비게이션 항목에 붙어
-        있다는 이유만으로 어느 페이지에서나 남아 있었다.
-
-        🔴 펼침 상태(`self._expanded`)는 **건드리지 않는다.** 페이지를 옮길 때
-        접어버리면 돌아왔을 때 사용자가 펼쳐 둔 상태가 사라지고, 그 값이
-        `AppState`에 저장까지 되면 다음 실행에도 접힌 채로 시작한다.
+        화면에서는 조작할 이유가 없다. `_on_search_nav_clicked`/
+        `_on_other_nav_clicked`가 페이지를 옮길 때마다 `_expanded`도 함께
+        맞춰주므로[사용자 확정, 2026-08-22] 이 AND 조건은 이제 항상 같은 값을
+        내지만, 페이지 전환 경로가 늘어나도 안전하도록 방어적으로 남겨둔다.
         """
         self._expansion.setVisible(self._expanded and self._active_page == PAGE_SEARCH)
 
