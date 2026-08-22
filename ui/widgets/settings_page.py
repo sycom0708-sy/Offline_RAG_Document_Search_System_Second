@@ -156,12 +156,12 @@ class SettingsPage(QWidget):
         options.addWidget(self.performance_combo)
 
         self.model_button = QPushButton(MODEL_MANAGER_BUTTON_LABEL)
-        self.model_button.setObjectName("SidebarFooterButton")
+        self.model_button.setObjectName("PrimaryButton")
         self.model_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.model_button.clicked.connect(
             lambda: self.model_manager_requested.emit(self.performance_combo.current_profile())
         )
-        options.addWidget(self.model_button, 0, Qt.AlignmentFlag.AlignLeft)
+        options.addWidget(self.model_button, 0, Qt.AlignmentFlag.AlignRight)
 
         self.keep_resident = ToggleSwitch(KEEP_RESIDENT_LABEL)
         self.keep_resident.toggled.connect(self._on_keep_resident_toggled)
