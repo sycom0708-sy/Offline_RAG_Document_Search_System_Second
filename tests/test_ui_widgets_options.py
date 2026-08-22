@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from PySide6.QtWidgets import QDialog
+
 from config.settings import HEAVY, LIGHT, SLM_MINIMUM, SLM_RECOMMENDED
+from ui.widgets.info_dialog import show_info
 from ui.widgets.model_manager_dialog import ModelManagerDialog
 from ui.widgets.performance_combo import PerformanceCombo
 from ui.widgets.search_options import SearchOptions
@@ -47,7 +50,7 @@ class TestSearchOptions:
         """모델 없이 켜려고 하면 꺼진 채로 되돌리고 안내 팝업을 띄운다."""
         shown = []
         monkeypatch.setattr(
-            "ui.widgets.search_options.QMessageBox.information",
+            "ui.widgets.search_options.show_info",
             lambda *args, **kwargs: shown.append(args),
         )
 
@@ -78,6 +81,31 @@ class TestSearchOptions:
         qtbot.addWidget(widget)
         widget.set_ai_summary(True)  # 저장된 상태가 ON이어도
         assert widget.is_ai_summary() is False  # 모델이 없으면 안 켜진다
+
+
+class TestInfoDialog:
+    """T10.40 후속 — `QMessageBox.information()`을 카드형 팝업으로 대체."""
+
+    def test_dialog_uses_app_styling_and_shows_the_message(self, qtbot, monkeypatch):
+        """폴더 관리 팝업과 같은 토큰(흰 배경 + PrimaryButton)을 쓰는지 확인한다."""
+        from PySide6.QtWidgets import QLabel, QPushButton
+
+        captured = {}
+        monkeypatch.setattr(QDialog, "exec", lambda self: captured.setdefault("dialog", self))
+
+        show_info("제목", "본문 메시지")
+
+        dialog = captured["dialog"]
+        assert dialog.objectName() == "InfoDialog"
+        assert dialog.windowTitle() == "제목"
+
+        body = dialog.findChild(QLabel, "InfoDialogBody")
+        assert body is not None
+        assert body.text() == "본문 메시지"
+
+        buttons = [b for b in dialog.findChildren(QPushButton) if b.objectName() == "PrimaryButton"]
+        assert len(buttons) == 1
+        assert buttons[0].text() == "확인"
 
 
 class TestPerformanceCombo:

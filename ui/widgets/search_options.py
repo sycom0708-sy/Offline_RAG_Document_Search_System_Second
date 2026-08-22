@@ -26,8 +26,9 @@ Phase 7.6에서 "AI 요약 보기"(검색마다 자동 1회 요약)를 "AI 챗�
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QLabel, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from ui.widgets.info_dialog import show_info
 from ui.widgets.toggle_switch import ToggleSwitch
 
 SECTION_LABEL = "검색 옵션"
@@ -80,9 +81,7 @@ class SearchOptions(QWidget):
             # 켜려는 시도 자체는 받아주되(비활성화하지 않는다), 실제로 켜지진
             # 않는다 — 되돌리고 왜 안 되는지 그 자리에서 안내한다.
             self.ai_summary.setChecked(False)
-            QMessageBox.information(
-                self, AI_SUMMARY_UNAVAILABLE_TITLE, AI_SUMMARY_UNAVAILABLE_MESSAGE
-            )
+            show_info(AI_SUMMARY_UNAVAILABLE_TITLE, AI_SUMMARY_UNAVAILABLE_MESSAGE, self)
             return
         self.ai_summary_changed.emit(checked)
 

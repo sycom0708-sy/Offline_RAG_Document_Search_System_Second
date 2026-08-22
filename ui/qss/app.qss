@@ -596,6 +596,19 @@ QMainWindow, #CentralWidget {
     background: #E5E7EB;
 }
 
+/* ---------- 간단 안내 팝업 (T10.40 후속) ---------- */
+
+/* `QMessageBox.information()`을 대체한다 — 폴더 관리와 같은 톤(흰 배경 +
+   PrimaryButton)으로 맞춰 네이티브 팝업만 튀는 것을 없앤다. */
+#InfoDialog {
+    background: #FFFFFF;
+}
+
+#InfoDialogBody {
+    color: #1F2937;
+    font-size: 13px;
+}
+
 /* ---------- 모델 관리 팝업 (Phase 11-E 재도색) ---------- */
 
 /* 폴더 관리 팝업과 같은 원칙 — 새 색을 만들지 않고 기존 카드·배지·버튼
