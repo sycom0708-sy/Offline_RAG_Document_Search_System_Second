@@ -72,6 +72,33 @@ def _copy_tree(src: Path, dest: Path) -> None:
     print(f"  복사됨: {src} -> {dest}")
 
 
+def _strip_libreoffice_runtime_cache(libreoffice_dir: Path) -> None:
+    """LibreOffice Portable의 사용자 프로필 캐시를 뺀다 (T9.5 실측).
+
+    `App/DefaultData/settings/user/`(첫 실행용 템플릿)와 `Data/`(PortableApps
+    런처로 한 번이라도 직접 실행하면 생기는 실제 프로필)는 우리 코드가 **절대
+    안 읽는다** — `parser/utils/libreoffice.py`의 `convert()`가 매 변환마다
+    `-env:UserInstallation=<임시 프로필>`을 넘겨 항상 새 프로필을 쓰기 때문에
+    (동시 실행 시 프로필 충돌을 피하려는 T1.9 설계), PortableApps 런처를 거치지
+    않고 `soffice.exe`를 직접 호출하는 이 앱에서 두 폴더는 순수 캐시다.
+
+    🔴 **처음엔 몰랐다가 실제 인스톨러 설치 테스트에서 발견했다** — 이 폴더
+    안에 확장자 레지스트리가 만드는 극도로 깊은 임시 경로(`.../
+    PackageRegistryBackend/lu....tmp/da/content/...xhp` 등, 실측 223자)가
+    있어 Windows MAX_PATH(260자)를 넘겨 설치가 **에러 메시지 없이 조용히
+    롤백**됐다(Inno Setup 설치 로그에 "Uninstallation process succeeded"만
+    남고 "Installation ... succeeded"는 아예 없었다 — LongPathsEnabled=1로
+    이미 켜져 있는 PC에서도 재현됨, Inno Setup 자신이 긴 경로를 지원하지
+    않는 것으로 보임). 캐시를 빼면 이 문제 자체가 사라지고, 부수로 배포
+    용량도 미세하게(~6MB) 줄어든다.
+    """
+    for relative in ("App/DefaultData/settings/user", "Data"):
+        target = libreoffice_dir / Path(*relative.split("/"))
+        if target.is_dir():
+            shutil.rmtree(target)
+            print(f"  LibreOffice 런타임 캐시 제거: {target}")
+
+
 def assemble(*, skip_libreoffice: bool) -> None:
     if not APP_DIR.is_dir():
         raise SystemExit(f"PyInstaller 결과물이 없습니다: {APP_DIR} (먼저 빌드하세요)")
@@ -86,6 +113,8 @@ def assemble(*, skip_libreoffice: bool) -> None:
     vendor_optional = () if skip_libreoffice else _VENDOR_OPTIONAL
     for name in vendor_optional:
         _copy_tree(PROJECT_ROOT / "vendor" / name, APP_DIR / "vendor" / name)
+        if name == "LibreOfficePortable":
+            _strip_libreoffice_runtime_cache(APP_DIR / "vendor" / name)
 
     for name in (*_MODELS_ALWAYS, *_MODELS_OPTIONAL):
         _copy_tree(PROJECT_ROOT / "models" / name, APP_DIR / "models" / name)

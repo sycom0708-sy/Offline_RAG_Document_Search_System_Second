@@ -12,7 +12,16 @@
 #define MyAppName "오프라인 문서 검색"
 #define MyAppVersion "0.1.0"
 #define MyAppExeName "OfflineRAGSearch.exe"
-#define MyDistDir "..\dist\OfflineRAGSearch"
+; ISCC /DMyDistDir=... 로 덮어쓸 수 있다 — LibreOffice가 확장자 레지스트리에
+; 아주 깊은 임시 폴더를 만드는데(예: .../PackageRegistryBackend/lu....tmp/
+; da/content/...xhp), 프로젝트 경로 자체가 길면 합쳐서 Windows MAX_PATH
+; (260자)를 넘어 컴파일이 "지정된 경로를 찾을 수 없습니다"로 죽는다
+; (2026-08-21 실측). 리포 경로가 짧으면 기본값 그대로 써도 되지만,
+; 안전하게는 짧은 경로(예: C:\ragbuild\OfflineRAGSearch)에 dist를 복사한
+; 뒤 그 경로를 넘기는 것을 권한다.
+#ifndef MyDistDir
+  #define MyDistDir "..\dist\OfflineRAGSearch"
+#endif
 
 [Setup]
 AppName={#MyAppName}
