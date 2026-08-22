@@ -676,3 +676,42 @@ QMainWindow, #CentralWidget {
     color: #9CA3AF;
     font-size: 11px;
 }
+
+/* ---------- sLM 다운로드 다이얼로그 ---------- */
+
+/* 모델 관리 팝업과 같은 색 토큰을 재사용한다 — 성공/실패 배지와 같은 초록·
+   빨강, 안내 문구는 ModelManagerIntro와 같은 회색. */
+#SlmDownloadDialog {
+    background: #FFFFFF;
+}
+
+#SlmDownloadInfo {
+    color: #1F2937;
+    font-size: 13px;
+}
+
+#SlmDownloadHint {
+    color: #9CA3AF;
+    font-size: 12px;
+}
+
+#SlmDownloadError {
+    background: #FEE2E2;
+    color: #B91C1C;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+#SlmDownloadSuccess {
+    background: #DCFCE7;
+    color: #15803D;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+#SlmDownloadProgressLabel {
+    color: #9CA3AF;
+    font-size: 12px;
+}

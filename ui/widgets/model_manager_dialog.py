@@ -45,6 +45,7 @@ from config.settings import (
     SlmProfile,
 )
 from slm.download import load_verified_marker, save_verified_marker, verify_installed
+from ui.widgets.slm_download_dialog import SlmDownloadDialog
 
 INTRO_TEXT = (
     "sLM 모델은 용량이 커서 프로그램에 포함되지 않습니다.\n"
@@ -193,25 +194,20 @@ class ModelManagerDialog(QDialog):
         self.slm_changed.emit()
 
     def _show_download_guide(self, profile: SlmProfile) -> None:
-        """TECH 9.3 다운로드 안내 팝업 — 링크·파일명·용량·체크섬·저장 위치.
+        """다운로드 다이얼로그를 연다 — 버튼을 누르면 앱이 직접 받는다.
 
-        **자동 다운로드는 하지 않는다.** 오프라인 PC가 전제라 앱이 인터넷에
-        나가지 않고, 인터넷 되는 PC에서 받아 옮기는 흐름을 안내한다
-        (LibreOffice 포터블과 같은 방침 — TECH 9.1).
+        이전에는 링크·명령줄을 보여주고 사용자가 브라우저나 터미널에서
+        직접 받아야 했다. `SlmDownloadDialog`가 `slm/download.py`의 이어받기
+        지원 다운로더를 백그라운드로 돌린다 — 여전히 **사용자가 버튼을
+        눌러야만** 시작되므로 "자동 다운로드는 안 한다"는 원칙과는 안
+        부딪힌다(TECH 9.1의 취지는 앱이 조용히 인터넷에 나가는 것을 막는
+        것이지, 사용자가 명시적으로 요청한 다운로드까지 막는 게 아니다).
+        인터넷이 없는 PC에서는 그대로 실패하고, 다이얼로그 안에 실패 사유와
+        함께 다른 PC에서 받아 옮기라는 안내가 남는다.
         """
-        checksum = profile.sha256 or "(기록된 체크섬 없음 — 크기만 확인합니다)"
-        QMessageBox.information(
-            self,
-            f"{profile.label} 다운로드 안내",
-            f"인터넷이 되는 PC에서 아래 파일을 받아 저장 위치에 넣은 뒤 "
-            f"'새로고침 (파일 확인)'을 누르세요.\n\n"
-            f"링크\n{profile.download_url}\n\n"
-            f"파일명\n{profile.local_path.name}  (레포 원본: {profile.gguf_file})\n\n"
-            f"용량\n{profile.size_gb:.2f} GB\n\n"
-            f"SHA256\n{checksum}\n\n"
-            f"저장 위치\n{profile.local_path.parent}\n\n"
-            f"명령줄로 받으려면:\n  python -m slm.download {profile.key}",
-        )
+        dialog = SlmDownloadDialog(profile, parent=self)
+        dialog.download_succeeded.connect(self.refresh)
+        dialog.exec()
 
     def closeEvent(self, event) -> None:  # noqa: N802 — Qt 규약
         """검증 스레드가 도는 중 창을 닫으면 죽는다 — 기다렸다 닫는다."""

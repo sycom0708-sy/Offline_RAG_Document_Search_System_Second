@@ -18,9 +18,11 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 from config.settings import SLM_CANDIDATES, SLM_ORDER, SlmProfile, get_slm_profile
 
@@ -35,6 +37,14 @@ class SlmDownloadError(RuntimeError):
     """GGUF 파일을 받지 못했다."""
 
 
+class SlmDownloadCancelled(SlmDownloadError):
+    """사용자가 다운로드 도중 취소했다 — 실패가 아니라 중단이다.
+
+    `.part` 파일은 그대로 남겨 다음 시도가 이어받을 수 있게 한다(모델 관리
+    다이얼로그의 "닫아도 이어받을 수 있습니다" 안내와 짝을 이룬다).
+    """
+
+
 def _remote_size(url: str) -> int | None:
     """Content-Length를 미리 확인한다. 실패하면 None(이어받기 판단만 못 할 뿐)."""
     request = urllib.request.Request(url, method="HEAD")
@@ -46,8 +56,25 @@ def _remote_size(url: str) -> int | None:
         return None
 
 
-def download_file(url: str, dest: Path, *, quiet: bool = False, resume: bool = True) -> Path:
-    """`url`을 `dest`로 받는다. 중단된 `.part`가 있으면 이어받는다."""
+def download_file(
+    url: str,
+    dest: Path,
+    *,
+    quiet: bool = False,
+    resume: bool = True,
+    on_progress: Callable[[int, int | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Path:
+    """`url`을 `dest`로 받는다. 중단된 `.part`가 있으면 이어받는다.
+
+    `on_progress(받은 바이트, 전체 바이트 또는 None)`을 넘기면 CLI 출력 대신
+    이 콜백으로 진행률을 알린다 — UI가 진행률 바를 그리는 용도(모델 관리
+    다이얼로그의 다운로드 버튼).
+
+    `cancel_event`가 세팅되면 다음 블록을 받기 전에 `SlmDownloadCancelled`를
+    던지고 멈춘다. 이미 받은 바이트는 `.part`에 그대로 남아 다음 호출이
+    이어받는다 — 취소는 삭제가 아니다.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_suffix(dest.suffix + ".part")
 
@@ -76,13 +103,19 @@ def download_file(url: str, dest: Path, *, quiet: bool = False, resume: bool = T
             downloaded = offset
             with open(part, mode) as fp:
                 while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SlmDownloadCancelled(f"사용자가 다운로드를 취소했습니다: {dest.name}")
                     block = response.read(_BLOCK)
                     if not block:
                         break
                     fp.write(block)
                     downloaded += len(block)
-                    if not quiet:
+                    if on_progress is not None:
+                        on_progress(downloaded, total)
+                    elif not quiet:
                         _print_progress(dest.name, downloaded, total)
+    except SlmDownloadCancelled:
+        raise
     except (urllib.error.URLError, OSError) as exc:
         raise SlmDownloadError(
             f"다운로드 실패: {url}\n원인: {exc}\n"
@@ -107,7 +140,14 @@ def _print_progress(name: str, done: int, total: int | None) -> None:
         print(f"\r  {name}: {done/scale:6.2f} {unit}", end="", file=sys.stderr, flush=True)
 
 
-def download_slm(profile: SlmProfile, *, force: bool = False, quiet: bool = False) -> Path:
+def download_slm(
+    profile: SlmProfile,
+    *,
+    force: bool = False,
+    quiet: bool = False,
+    on_progress: Callable[[int, int | None], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> Path:
     """후보 하나의 GGUF를 받고 로컬 경로를 반환한다."""
     if profile.is_installed() and not force:
         if not quiet:
@@ -119,7 +159,7 @@ def download_slm(profile: SlmProfile, *, force: bool = False, quiet: bool = Fals
         print(f"내려받는 중: {profile.label} ({profile.size_gb:.2f} GB)")
         print(f"  {url}")
 
-    download_file(url, profile.local_path, quiet=quiet)
+    download_file(url, profile.local_path, quiet=quiet, on_progress=on_progress, cancel_event=cancel_event)
     _verify(profile)
     if not quiet:
         print(f"완료: {profile.local_path}")
