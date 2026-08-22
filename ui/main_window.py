@@ -920,6 +920,9 @@ class MainWindow(QMainWindow):
             on_done=lambda report: bridge.done.emit(report),
             on_stage=lambda stage, done, total: bridge.stage.emit(stage, done, total),
             files=files,
+            # T10.37 — 안 넘기면 인덱싱이 항상 경량 모델로만 벡터를 만든다.
+            # 권장 모드를 골라도 인덱싱 자체는 그 사실을 몰랐던 것이 버그였다.
+            profile=get_profile(self.state.model_profile),
         )
 
         self.document_page.set_busy(True)

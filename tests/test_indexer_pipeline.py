@@ -165,7 +165,7 @@ def test_missing_embedding_model_is_warning_not_failure(tmp_path, sample_txt, mo
     """
     from indexer import pipeline
 
-    monkeypatch.setattr(pipeline, "_prepare_embedder", lambda: (None, "모델 없음"))
+    monkeypatch.setattr(pipeline, "_prepare_embedder", lambda profile=None: (None, "모델 없음"))
 
     work = tmp_path / "work"
     work.mkdir()
@@ -178,6 +178,33 @@ def test_missing_embedding_model_is_warning_not_failure(tmp_path, sample_txt, mo
     assert report.warnings == ["모델 없음"]
     assert report.ok
     assert conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0] > 0
+
+
+def test_index_folder_embeds_with_the_requested_profile(tmp_path, sample_txt, heavy_embedder):
+    """T10.37 — `profile=`을 넘기면 그 모델로 벡터를 만든다.
+
+    🔴 수정 전에는 `index_folder()`가 이 인자 자체를 안 받아서, PC 성능
+    선택을 권장 모드(HEAVY)로 바꿔도 인덱싱은 항상 경량 모델로만 벡터를
+    만들었다 — "모드 전환 시 벡터 자동 보완"도 결국 이 함수를 다시 부르는
+    것이라 권장 모드 벡터를 끝내 못 채웠다. `heavy_embedder` 픽스처가
+    KURE-v1 미설치 시 스킵해준다.
+    """
+    from config.settings import HEAVY
+
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(sample_txt, work / "good.txt")
+
+    conn = connect(":memory:")
+    report = index_folder(conn, work, profile=HEAVY)
+
+    assert report.failures == []
+    assert report.embedded > 0
+    model_keys = {
+        row[0]
+        for row in conn.execute("SELECT DISTINCT model FROM chunk_vectors")
+    }
+    assert model_keys == {HEAVY.key}
 
 
 def test_index_folder_progress_callback_fires_for_every_file(tmp_path, sample_txt):

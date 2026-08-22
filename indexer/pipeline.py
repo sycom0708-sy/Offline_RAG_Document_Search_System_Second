@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from config.settings import ASSETS_DIR
+from config.settings import ASSETS_DIR, ModelProfile
 from indexer.fts5.store import store_document
 from indexer.incremental import FileChange, classify_file
 from indexer.index_log import count_soffice_processes, get_logger
@@ -139,6 +139,7 @@ def reindex_files(
     stop_event: threading.Event | None = None,
     embed: bool = True,
     on_stage: StageCallback | None = None,
+    profile: ModelProfile | None = None,
 ) -> IndexReport:
     """지정한 파일만 **강제로** 다시 파싱한다 (Phase 11-B `재시도` [사용자 확정]).
 
@@ -162,6 +163,7 @@ def reindex_files(
         stop_event=stop_event,
         embed=embed,
         on_stage=on_stage,
+        profile=profile,
     )
 
 
@@ -172,6 +174,7 @@ def index_folder(
     stop_event: threading.Event | None = None,
     embed: bool = True,
     on_stage: StageCallback | None = None,
+    profile: ModelProfile | None = None,
 ) -> IndexReport:
     """폴더를 스캔해 순차적으로 파싱·저장하고, 이어서 임베딩을 만든다.
 
@@ -182,6 +185,14 @@ def index_folder(
     (문자 기준으로 자르면 임베딩이 잘린다), 저장이 끝난 뒤 벡터를 계산한다.
     모델이 없으면 키워드 인덱싱만 하고 `warnings`에 남긴다 — 벡터가 없어도
     키워드 검색은 정상 동작하므로 실패로 취급하지 않는다.
+
+    `profile`을 안 넘기면 `config.settings.get_profile()`의 기본값(경량)을
+    쓴다 — 🔴 이전에는 호출부가 뭘 넘기든 상관없이 **항상 경량 모델로만
+    임베딩했다**(T10.37). PC 성능 선택을 권장 모드로 바꿔도 인덱싱은 이
+    인자가 없어 경량 벡터만 계속 만들고 있었다 — "모드 전환 시 벡터 자동
+    보완"(T10.26)도 결국 이 함수를 다시 부르는 것이라 권장 모드 벡터를
+    끝내 못 채우는 채로 남아 있었다. 호출부(`IndexingThread`)가 활성
+    프로파일을 실어 보내야 실제로 고쳐진다.
 
     스캔하자마자, 파싱을 시작하기 전에 이번 스캔에 없는 문서부터 지운다 —
     대상 폴더가 바뀌었든, 같은 폴더 안에서 파일이 옮겨지거나 지워졌든
@@ -210,6 +221,7 @@ def index_folder(
         stop_event=stop_event,
         embed=embed,
         on_stage=on_stage,
+        profile=profile,
     )
 
 
@@ -223,6 +235,7 @@ def _run_index(
     stop_event: threading.Event | None,
     embed: bool,
     on_stage: StageCallback | None,
+    profile: ModelProfile | None = None,
 ) -> IndexReport:
     """파싱 루프 + 임베딩. `index_folder()`와 `reindex_files()`의 공통 몸통이다.
 
@@ -235,7 +248,7 @@ def _run_index(
     embedder = None
     count_tokens = None
     if embed:
-        embedder, embed_error = _prepare_embedder()
+        embedder, embed_error = _prepare_embedder(profile)
         if embedder is not None:
             count_tokens = embedder.count_tokens
         else:
@@ -326,12 +339,16 @@ def _run_index(
     return report
 
 
-def _prepare_embedder():
-    """임베더를 준비한다. 실패하면 (None, 사유)를 돌려준다."""
+def _prepare_embedder(profile: ModelProfile | None = None):
+    """임베더를 준비한다. 실패하면 (None, 사유)를 돌려준다.
+
+    `profile`을 안 넘기면 `Embedder()` 기본값(경량)을 쓴다 — 호출부가
+    활성 프로파일을 명시적으로 실어 보내야 한다(T10.37).
+    """
     try:
         from indexer.vector.embedder import Embedder
 
-        embedder = Embedder()
+        embedder = Embedder(profile)
         embedder.count_tokens("")  # 모델 파일 존재 여부를 여기서 즉시 확인
         return embedder, ""
     except Exception as exc:
@@ -354,10 +371,15 @@ class IndexingThread(threading.Thread):
         embed: bool = True,
         on_stage: StageCallback | None = None,
         files: list[Path] | None = None,
+        profile: ModelProfile | None = None,
     ) -> None:
         """`files`를 주면 폴더 전체 대신 그 파일들만 **강제로** 다시 파싱한다
         (Phase 11-B `재시도`). 이때 `root`는 쓰이지 않지만, 이후 상태 표시가
-        어느 폴더에 대한 작업인지 알 수 있도록 그대로 받아 둔다."""
+        어느 폴더에 대한 작업인지 알 수 있도록 그대로 받아 둔다.
+
+        `profile`은 어떤 임베딩 모델로 벡터를 계산할지 결정한다 — 안 넘기면
+        `Embedder()` 기본값(경량)으로 조용히 떨어진다(T10.37). 호출부가 지금
+        활성 PC 성능 선택(`AppState.model_profile`)을 실어 보내야 한다."""
         super().__init__(daemon=True)
         self._db_path = db_path
         self._root = root
@@ -366,6 +388,7 @@ class IndexingThread(threading.Thread):
         self._embed = embed
         self._on_stage = on_stage
         self._files = files
+        self._profile = profile
         self.stop_event = threading.Event()
 
     def run(self) -> None:
@@ -389,6 +412,7 @@ class IndexingThread(threading.Thread):
                         self.stop_event,
                         embed=self._embed,
                         on_stage=self._on_stage,
+                        profile=self._profile,
                     )
                 else:
                     report = index_folder(
@@ -398,6 +422,7 @@ class IndexingThread(threading.Thread):
                         self.stop_event,
                         embed=self._embed,
                         on_stage=self._on_stage,
+                        profile=self._profile,
                     )
             finally:
                 conn.close()

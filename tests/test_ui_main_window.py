@@ -1646,13 +1646,14 @@ class _FakeIndexingThread:
     instances: list = []
 
     def __init__(self, db_path, root, on_progress=None, on_done=None, embed=True,
-                 on_stage=None, files=None):
+                 on_stage=None, files=None, profile=None):
         self.db_path = db_path
         self.root = root
         self.on_progress = on_progress
         self.on_done = on_done
         self.on_stage = on_stage
         self.files = files
+        self.profile = profile
         self.started = False
         self.stop_event = threading.Event()
         _FakeIndexingThread.instances.append(self)
@@ -1696,6 +1697,24 @@ class TestDocumentPage:
         thread = fake_thread.instances[0]
         assert thread.started is True
         assert thread.files is None  # 폴더 전체 인덱싱
+
+    def test_indexing_uses_the_active_performance_profile(self, qtbot, window, fake_thread, tmp_path):
+        """T10.37 — 인덱싱이 항상 경량 모델로만 벡터를 만들던 버그.
+
+        🔴 `IndexingThread`에 `profile=`을 안 넘기면 `_prepare_embedder()`가
+        조용히 경량 기본값으로 떨어져서, 권장 모드를 선택해도 인덱싱은 그
+        사실을 몰랐다 — "모드 전환 시 벡터 자동 보완"도 결국 이 스레드를
+        다시 띄우는 것이라 권장 모드 벡터를 끝내 못 채웠다.
+        """
+        from config.settings import HEAVY
+
+        window.state.target_folder = str(tmp_path)
+        window.state.model_profile = HEAVY.key
+
+        window.document_page.update_button.click()
+
+        thread = fake_thread.instances[0]
+        assert thread.profile == HEAVY
 
     def test_update_button_opens_folder_dialog_when_no_target(self, qtbot, window, monkeypatch):
         """대상 폴더가 없으면 조용히 아무 일도 안 하는 대신 폴더 선택으로 이어준다."""
