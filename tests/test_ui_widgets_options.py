@@ -21,28 +21,46 @@ class TestSearchOptions:
         assert not hasattr(widget, "case_sensitive")
         assert not hasattr(widget, "exact_word")
 
-    def test_ai_summary_toggle_disabled_until_model_installed(self, qtbot):
-        """Phase 7: placeholder는 걷혔지만 **모델이 없으면 여전히 비활성**이다.
-
-        DESIGN §4.2 결정("켜도 아무 일이 없으면 고장으로 보인다")은 Phase 7
-        이후에도 유효하다 — 모델 없이 켤 수 있게 두면 매번 실패 메시지만 뜬다.
+    def test_ai_summary_toggle_stays_clickable_until_model_installed(self, qtbot):
+        """🔴 [사용자 확정, 2026-08-22] 모델이 없어도 토글은 회색 비활성화하지
+        않는다 — 배포 exe 최초 설치에서 sLM이 없는 게 당연한데, 회색으로
+        죽어 있으면 "고장났다"로 보인다. 대신 켜려는 시도를 가로채 안내한다
+        (아래 `test_turning_on_without_model_shows_a_popup_and_stays_off`).
         """
         widget = SearchOptions()
         qtbot.addWidget(widget)
-        assert widget.ai_summary.isEnabled() is False
+        assert widget.ai_summary.isEnabled() is True
         assert "모델 관리" in widget.ai_summary.toolTip()
 
     def test_ai_summary_toggle_opens_when_model_available(self, qtbot):
         widget = SearchOptions()
         qtbot.addWidget(widget)
         widget.set_ai_summary_available(True)
-        assert widget.ai_summary.isEnabled() is True
 
         received = []
         widget.ai_summary_changed.connect(received.append)
         widget.ai_summary.setChecked(True)
         assert received == [True]
         assert widget.is_ai_summary() is True
+
+    def test_turning_on_without_model_shows_a_popup_and_stays_off(self, qtbot, monkeypatch):
+        """모델 없이 켜려고 하면 꺼진 채로 되돌리고 안내 팝업을 띄운다."""
+        shown = []
+        monkeypatch.setattr(
+            "ui.widgets.search_options.QMessageBox.information",
+            lambda *args, **kwargs: shown.append(args),
+        )
+
+        widget = SearchOptions()
+        qtbot.addWidget(widget)
+
+        received = []
+        widget.ai_summary_changed.connect(received.append)
+        widget.ai_summary.setChecked(True)
+
+        assert widget.is_ai_summary() is False  # 꺼진 채로 되돌아갔다
+        assert len(shown) == 1
+        assert received == [False]  # 되돌린 뒤의 상태(False)만 나간다 — True는 안 나간다
 
     def test_losing_model_turns_the_toggle_back_off(self, qtbot):
         """모델이 사라졌는데 켜진 상태가 남으면 "켜져 있는데 요약이 없는" 화면이 된다."""
@@ -53,7 +71,7 @@ class TestSearchOptions:
 
         widget.set_ai_summary_available(False)
         assert widget.is_ai_summary() is False
-        assert widget.ai_summary.isEnabled() is False
+        assert widget.ai_summary.isEnabled() is True  # 회색 비활성화는 더 이상 안 한다
 
     def test_restoring_saved_state_is_ignored_without_model(self, qtbot):
         widget = SearchOptions()
