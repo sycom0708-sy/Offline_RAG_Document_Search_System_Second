@@ -126,7 +126,41 @@ class TestPerformanceCombo:
         widget = PerformanceCombo()
         qtbot.addWidget(widget)
         heavy_index = widget._combo.findData(HEAVY.key)
-        assert "준비 중" in widget._combo.itemText(heavy_index)
+        assert "설치 안 됨" in widget._combo.itemText(heavy_index)
+
+    def test_badge_requires_both_embedding_and_slm(self, qtbot, monkeypatch):
+        """T10.41 후속[사용자 확정] — 임베딩만 있고 sLM이 없으면 여전히 미설치다."""
+        from config.settings import SLM_RECOMMENDED, get_slm_profile
+
+        monkeypatch.setattr(type(HEAVY), "is_installed", lambda self: True)
+        monkeypatch.setattr(
+            type(get_slm_profile(SLM_RECOMMENDED)), "is_installed", lambda self: False
+        )
+        widget = PerformanceCombo()
+        qtbot.addWidget(widget)
+        heavy_index = widget._combo.findData(HEAVY.key)
+        assert "설치 안 됨" in widget._combo.itemText(heavy_index)
+
+    def test_installed_item_is_enabled_in_the_dropdown(self, qtbot):
+        """이 개발 환경에는 LIGHT가 실제로 완전히 설치돼 있다(임베딩+EXAONE)."""
+        widget = PerformanceCombo()
+        qtbot.addWidget(widget)
+        light_index = widget._combo.findData(LIGHT.key)
+        assert widget._combo.model().item(light_index).isEnabled() is True
+
+    def test_uninstalled_item_is_disabled_in_the_dropdown(self, qtbot, monkeypatch):
+        """설치 안 된 항목은 클릭 자체가 안 되도록 회색으로 막는다[사용자 확정].
+
+        🔴 `type(HEAVY)`는 `LIGHT`와 같은 `ModelProfile` 클래스라, 이렇게
+        패치하면 `LIGHT.is_installed()`도 같이 영향을 받는다(이 파일의
+        다른 테스트들도 이미 이 방식을 쓴다) — 그래서 이 테스트는 HEAVY만
+        본다.
+        """
+        monkeypatch.setattr(type(HEAVY), "is_installed", lambda self: False)
+        widget = PerformanceCombo()
+        qtbot.addWidget(widget)
+        heavy_index = widget._combo.findData(HEAVY.key)
+        assert widget._combo.model().item(heavy_index).isEnabled() is False
 
     def test_selecting_installed_profile_emits_profile_activated(self, qtbot):
         widget = PerformanceCombo()
@@ -156,14 +190,20 @@ class TestPerformanceCombo:
         assert widget._combo.currentData() == LIGHT.key
 
     def test_refresh_updates_badges(self, qtbot, monkeypatch):
+        from config.settings import SLM_RECOMMENDED, get_slm_profile
+
         widget = PerformanceCombo()
         qtbot.addWidget(widget)
 
         monkeypatch.setattr(type(HEAVY), "is_installed", lambda self: True)
+        monkeypatch.setattr(
+            type(get_slm_profile(SLM_RECOMMENDED)), "is_installed", lambda self: True
+        )
         widget.refresh()
 
         heavy_index = widget._combo.findData(HEAVY.key)
         assert "설치됨" in widget._combo.itemText(heavy_index)
+        assert widget._combo.model().item(heavy_index).isEnabled() is True
 
 
 class TestModelManagerDialog:

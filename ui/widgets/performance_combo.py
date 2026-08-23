@@ -1,15 +1,21 @@
 """PC 성능 선택 콤보박스 (T4.10~T4.11).
 
 DESIGN §4.3 / PLAN §4-C — **Option A**: 콤보박스는 선택 트리거만 담당하고
-실제 전환은 모델 관리 팝업에서만 일어난다. 미설치 옵션을 고르면 팝업이
-열리고, 콤보박스 선택은 현재 유효 프로파일로 되돌아간다 — "설정은 권장
-모드인데 실제로는 경량으로 검색되는" 어긋난 상태를 만들지 않기 위함이다.
+실제 전환은 모델 관리 팝업에서만 일어난다.
+
+🔴 **"설치됨" 판정 기준(T10.41 후속, 2026-08-22 [사용자 확정])**: 임베딩
+모델과 그 등급의 sLM이 **둘 다** 있어야 한다(`_is_fully_installed()`) —
+T10.41에서 PC 성능 선택이 sLM도 함께 고르게 됐으니, "권장 모드"가 실제로
+완전히 쓸 수 있으려면 KURE-v1(검색)·Qwen3.5-4B(AI 챗봇) 둘 다 필요하다.
+미설치 항목은 **드롭다운에서 아예 고를 수 없게 회색으로 막는다**(Qt
+`QStandardItem.setEnabled(False)`) — 이전에는 클릭은 되고 선택만
+되돌아갔는데, 이제는 클릭 자체가 막힌다. `model_manager_requested` 신호와
+되돌림 로직은 혹시 모를 경로(키보드 조작 등)에 대비해 방어적으로 남겨뒀다.
 
 Phase 7.7까지는 콤보 우측 하단에 "모델 관리" 링크 버튼을 따로 뒀다(이미
 설치된 사용자가 관리 화면을 열 방법이 없어서). 목업에 맞춰 사이드바 하단에
 "모델 관리" 버튼을 새로 두면서 그 버튼과 기능이 겹쳐, 이 안의 링크는
-제거했다 — `model_manager_requested` 신호는 미설치 프로파일 선택 경로에서
-계속 쓰인다.
+제거했다.
 """
 
 from __future__ import annotations
@@ -17,9 +23,23 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QComboBox, QLabel, QVBoxLayout, QWidget
 
-from config.settings import PROFILE_ORDER, PROFILES
+from config.settings import PROFILE_ORDER, PROFILES, get_slm_profile, slm_for_model_profile
 
 SECTION_LABEL = "PC 성능 선택"
+
+
+def _is_fully_installed(key: str) -> bool:
+    """이 모드를 실제로 쓸 수 있는가 — 임베딩 모델과 그 등급의 sLM이 **둘 다**
+    있어야 한다[사용자 확정, 2026-08-22].
+
+    경량은 임베딩(ko-sroberta-multitask)이 항상 번들이라 사실상 EXAONE
+    설치 여부로만 갈리고, 권장은 임베딩(KURE-v1)·sLM(Qwen3.5-4B) 둘 다
+    받아야 한다 — Qwen만 받고 KURE-v1은 안 받았는데 "권장 설치됨"으로
+    뜨면 검색은 여전히 경량 임베딩을 쓰는 중이라 표시가 거짓말이 된다.
+    """
+    embedding_installed = PROFILES[key].is_installed()
+    slm_installed = get_slm_profile(slm_for_model_profile(key)).is_installed()
+    return embedding_installed and slm_installed
 
 
 class PerformanceCombo(QWidget):
@@ -69,13 +89,20 @@ class PerformanceCombo(QWidget):
         self._combo.clear()
         for key in PROFILE_ORDER:
             profile = PROFILES[key]
-            installed = profile.is_installed()
-            badge = "설치됨" if installed else "준비 중"
+            installed = _is_fully_installed(key)
+            badge = "설치됨" if installed else "설치 안 됨"
             short_label = profile.label.split(" ", 1)[0] + " 모드"  # "경량 모드 (최소 사양)" -> "경량 모드"
             self._combo.addItem(f"{short_label} · {badge}", userData=key)
+            row = self._combo.count() - 1
             self._combo.setItemData(
-                self._combo.count() - 1, f"{profile.label} · {badge}", role=self._TOOLTIP_ROLE
+                row, f"{profile.label} · {badge}", role=self._TOOLTIP_ROLE
             )
+            # 설치 안 된 항목은 아예 고를 수 없게 회색으로 막는다
+            # [사용자 확정] — QComboBox 기본 모델은 QStandardItemModel이라
+            # 항목 단위로 활성/비활성을 걸 수 있다.
+            item = self._combo.model().item(row)
+            if item is not None:
+                item.setEnabled(installed)
         self._select_key(self._current_key)
         self._combo.blockSignals(False)
 
@@ -90,10 +117,11 @@ class PerformanceCombo(QWidget):
 
     def _on_activated(self, index: int) -> None:
         key = self._combo.itemData(index)
-        profile = PROFILES[key]
-        if profile.is_installed():
+        if _is_fully_installed(key):
             self._current_key = key
             self.profile_activated.emit(key)
         else:
+            # 비활성 항목은 Qt가 클릭 자체를 막아 보통 여기 안 온다 — 그래도
+            # 방어적으로 안내 경로는 남겨둔다.
             self.model_manager_requested.emit(key)
             self._select_key(self._current_key)  # 되돌림
