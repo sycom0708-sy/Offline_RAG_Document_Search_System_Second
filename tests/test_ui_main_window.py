@@ -1538,6 +1538,58 @@ class TestProfileSwitchBackfillsVectors:
         assert "벡터가 없는 청크" in warning.text()
 
 
+class TestPcPerformanceChoosesTheMatchingSlm:
+    """T10.37 후속(2026-08-22, 사용자 확정) — PC 성능 선택이 sLM도 함께 정한다.
+
+    🔴 이전에는 `AppState.slm_profile`을 아무도 안 바꿔서 항상 Qwen3.5-4B로
+    고정돼 있었다 — 경량 모드로 바꾸거나 EXAONE만 받아둬도 앱은 계속
+    Qwen만 찾았다. 이제 경량↔EXAONE-4.0-1.2B, 권장↔Qwen3.5-4B로 맞춘다
+    (T6.8 실측 결론을 그대로 반영).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    def test_startup_matches_the_saved_pc_performance(self, qtbot, indexed_db, tmp_path):
+        from config.settings import LIGHT, SLM_MINIMUM
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = LIGHT.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win.state.slm_profile == SLM_MINIMUM
+        assert win._slm_service.profile.key == SLM_MINIMUM
+
+    def test_switching_to_recommended_switches_to_qwen(self, qtbot, indexed_db, tmp_path):
+        from config.settings import HEAVY, LIGHT, SLM_MINIMUM, SLM_RECOMMENDED
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = LIGHT.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+        assert win.state.slm_profile == SLM_MINIMUM
+
+        win._on_profile_activated(HEAVY.key)
+
+        assert win.state.slm_profile == SLM_RECOMMENDED
+        assert win._slm_service.profile.key == SLM_RECOMMENDED
+
+    def test_switching_to_light_switches_to_exaone(self, qtbot, indexed_db, tmp_path):
+        from config.settings import HEAVY, LIGHT, SLM_MINIMUM
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = HEAVY.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        win._on_profile_activated(LIGHT.key)
+
+        assert win.state.slm_profile == SLM_MINIMUM
+        assert win._slm_service.profile.key == SLM_MINIMUM
+
+
 class TestPhase11Shell:
     """Phase 11-A — 3페이지 셸 + 확장 영역 (DESIGN §14.1·§14.2)."""
 

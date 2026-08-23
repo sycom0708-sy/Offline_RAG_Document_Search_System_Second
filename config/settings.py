@@ -262,6 +262,19 @@ SLM_OFFERED: tuple[SlmProfile, ...] = tuple(
 # (TECH 8장, Phase 6 결론) 여기서 최소 사양을 기본으로 둘 이유가 없다.
 DEFAULT_SLM_PROFILE = SLM_RECOMMENDED
 
+
+def slm_for_model_profile(model_profile_key: str) -> str:
+    """PC 성능 선택에 맞는 sLM을 고른다 [사용자 확정, 2026-08-22].
+
+    🔴 이전에는 `AppState.slm_profile`이 `DEFAULT_SLM_PROFILE`(Qwen3.5-4B)로
+    고정된 채 아무도 바꾸지 않아, 경량 모드로 전환하거나 EXAONE만 받아둬도
+    앱은 계속 Qwen만 찾았다(T6.8 실측 결론 "최소 사양이면 EXAONE, 권장
+    사양이면 Qwen"이 코드에 반영된 적이 없었다). 이 함수가 그 매핑을
+    실제로 구현한다 — 경량(`LIGHT`)이면 최소 사양 sLM, 그 외(권장)면 권장
+    사양 sLM.
+    """
+    return SLM_MINIMUM if model_profile_key == LIGHT.key else SLM_RECOMMENDED
+
 # 유휴 상태가 이만큼 이어지면 llama-server를 내려 메모리를 돌려준다.
 # 채택 모델이 4.8GB를 쓰는데 16GB PC에서 다른 작업(안드로이드 스튜디오 빌드
 # 등)과 동시에 돌아가는 것이 전제라, 안 쓰는 동안 물고 있으면 안 된다

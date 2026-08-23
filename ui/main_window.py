@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import get_profile, get_slm_profile, resolve_n_threads
+from config.settings import get_profile, get_slm_profile, resolve_n_threads, slm_for_model_profile
 from slm import runtime as slm_runtime
 from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
@@ -115,6 +115,12 @@ class MainWindow(QMainWindow):
         # AI 챗봇 (Phase 7.6, 옛 "AI 요약" 기능을 대체). 서버는 첫 요청 때
         # 올라오고 유휴 5분이면 스스로 내려간다 — 여기서 만드는 것은 관리
         # 객체일 뿐 프로세스가 아니다.
+        #
+        # 🔴 PC 성능 선택에 맞춰 매번 다시 계산한다 — `AppState.slm_profile`을
+        # 예전 세션이 다른 값으로 저장해 뒀을 수 있다(과거엔 이 필드를 아무도
+        # 안 바꿔서 항상 Qwen3.5-4B로 고정돼 있었다). 시작할 때마다 현재
+        # `model_profile`과 다시 맞춘다.
+        self.state.slm_profile = slm_for_model_profile(self.state.model_profile)
         self._slm_service = SlmService(self.state.slm_profile)
         # 검색 워커와 같은 이유로 **실행 중인 요약 워커를 전부 붙들어야 한다** —
         # 참조를 잃으면 실행 중인 QThread가 GC되며 앱이 통째로 죽는다.
@@ -708,6 +714,12 @@ class MainWindow(QMainWindow):
         if key == self.state.model_profile:
             return
         self.state.model_profile = key
+        # PC 성능에 맞는 sLM으로 함께 바꾼다[사용자 확정, 2026-08-22] — 경량은
+        # EXAONE-4.0-1.2B, 권장은 Qwen3.5-4B(T6.8 실측 결론). `set_profile()`은
+        # 떠 있는 서버가 있으면 내리기만 하고, 다음 요청에 새 모델로 올라온다.
+        self.state.slm_profile = slm_for_model_profile(key)
+        self._slm_service.set_profile(self.state.slm_profile)
+        self._refresh_ai_chat_availability()
         self.state.save()
         self._embedder = None
         self._start_embedder_warmup()

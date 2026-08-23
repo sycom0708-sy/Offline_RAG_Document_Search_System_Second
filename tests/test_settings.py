@@ -11,7 +11,10 @@ from config.settings import (
     PROFILE_ORDER,
     PROFILES,
     SIMILARITY_THRESHOLD,
+    SLM_MINIMUM,
+    SLM_RECOMMENDED,
     get_profile,
+    slm_for_model_profile,
 )
 
 
@@ -53,6 +56,12 @@ def test_model_paths_are_relative_to_project_root():
     """TECH 9.1 포터블 원칙: 절대 경로를 코드에 박지 않는다."""
     for profile in PROFILES.values():
         assert profile.local_dir.is_relative_to(settings.PROJECT_ROOT)
+
+
+def test_slm_matches_the_pc_performance_choice():
+    """T6.8 실측 결론(경량→EXAONE, 권장→Qwen)이 실제로 코드에 반영돼 있는지."""
+    assert slm_for_model_profile(LIGHT.key) == SLM_MINIMUM
+    assert slm_for_model_profile(HEAVY.key) == SLM_RECOMMENDED
 
 
 def test_profile_order_covers_all_profiles():
