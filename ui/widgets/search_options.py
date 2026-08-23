@@ -58,7 +58,7 @@ class SearchOptions(QWidget):
         label.setObjectName("SidebarSectionLabel")
         layout.addWidget(label)
 
-        self.ai_summary = ToggleSwitch("AI 챗봇 사용")
+        self.ai_summary = ToggleSwitch("챗봇 모드")
         self.ai_summary.setToolTip(AI_SUMMARY_UNAVAILABLE_TOOLTIP)
         self.ai_summary.toggled.connect(self._on_toggled)
         layout.addWidget(self.ai_summary)
