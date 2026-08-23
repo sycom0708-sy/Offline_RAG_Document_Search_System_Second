@@ -17,6 +17,7 @@ from indexer.fts5.schema import connect
 from indexer.fts5.store import store_document
 from indexer.vector.store import embed_missing
 from parser.schema import Chunk, ChunkType, ImageData, ParsedDocument, TableData
+from slm.service import SlmService
 from ui.main_window import MainWindow
 from ui.state import AppState
 
@@ -1588,6 +1589,74 @@ class TestPcPerformanceChoosesTheMatchingSlm:
 
         assert win.state.slm_profile == SLM_MINIMUM
         assert win._slm_service.profile.key == SLM_MINIMUM
+
+
+class TestLightModeDisablesAiChat:
+    """2026-08-23(사용자 확정) — 경량 모드에서는 AI 챗봇을 기본으로 꺼둔다.
+
+    EXAONE-4.0-1.2B의 과잉 기권률이 Phase 6 실측으로 약 50%였다는 것을
+    실사용 보고("리눅스 마스터 2급 명령어 종류" 질문에서 재확인)로 다시
+    짚은 뒤 내린 결정 — 켜져 있어도 20초 가까이 기다린 끝에 기권으로
+    끝나는 경우가 잦아 실사용 이득이 낮다고 판단했다. 강제로 막지는
+    않는다(available이 True면 다시 켤 수 있다) — 전환·기동 시점에만 꺼둔다.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _skip_embedder_warmup(self, monkeypatch):
+        monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
+
+    @pytest.fixture(autouse=True)
+    def _slm_always_available(self, monkeypatch):
+        # 모델 설치 여부와 무관하게 정책 자체를 검증한다 — 실제 설치 여부는
+        # TestPcPerformanceChoosesTheMatchingSlm이 다른 관점에서 이미 본다.
+        monkeypatch.setattr(SlmService, "is_available", lambda self: True)
+
+    def test_switching_to_light_turns_off_a_running_chat(self, qtbot, indexed_db, tmp_path):
+        from config.settings import HEAVY, LIGHT
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = HEAVY.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        win.sidebar.search_options.ai_summary.setChecked(True)
+        assert win.state.ai_chat_enabled is True
+        assert win._chat_panel is not None
+
+        win._on_profile_activated(LIGHT.key)
+
+        assert win.state.ai_chat_enabled is False
+        assert win.sidebar.search_options.is_ai_summary() is False
+        assert win._chat_panel is None
+
+    def test_startup_in_light_mode_forces_it_off(self, qtbot, indexed_db, tmp_path):
+        from config.settings import LIGHT
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = LIGHT.key
+        state.ai_chat_enabled = True  # 예전에 권장 모드에서 켜둔 채 저장된 상태를 가정
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        assert win.state.ai_chat_enabled is False
+        assert win.sidebar.search_options.is_ai_summary() is False
+
+    def test_switching_to_recommended_does_not_force_it_off(self, qtbot, indexed_db, tmp_path):
+        """권장 모드는 이 정책의 대상이 아니다 — 사용자가 켠 채로 둔다."""
+        from config.settings import HEAVY, LIGHT
+
+        state = AppState.load(path=tmp_path / "state.json")
+        state.model_profile = LIGHT.key
+        win = MainWindow(db_path=indexed_db, state=state)
+        qtbot.addWidget(win)
+
+        win.sidebar.search_options.ai_summary.setChecked(True)
+        assert win.state.ai_chat_enabled is True
+
+        win._on_profile_activated(HEAVY.key)
+
+        assert win.state.ai_chat_enabled is True
+        assert win.sidebar.search_options.is_ai_summary() is True
 
 
 class TestPhase11Shell:

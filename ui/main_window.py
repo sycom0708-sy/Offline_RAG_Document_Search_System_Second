@@ -21,7 +21,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config.settings import get_profile, get_slm_profile, resolve_n_threads, slm_for_model_profile
+from config.settings import (
+    LIGHT,
+    get_profile,
+    get_slm_profile,
+    resolve_n_threads,
+    slm_for_model_profile,
+)
 from slm import runtime as slm_runtime
 from indexer.fts5.schema import connect
 from indexer.incremental.watcher import FolderWatcher
@@ -406,6 +412,21 @@ class MainWindow(QMainWindow):
         self.sidebar.search_options.set_ai_summary_available(available)
         if available:
             self.sidebar.search_options.set_ai_summary(self.state.ai_chat_enabled)
+        self._enforce_light_mode_ai_chat_policy()
+
+    def _enforce_light_mode_ai_chat_policy(self) -> None:
+        """경량 모드에서는 AI 챗봇을 기본적으로 꺼둔다 [사용자 확정, 2026-08-23].
+
+        EXAONE-4.0-1.2B는 Phase 6 실측에서 과잉 기권률이 약 50%로 나왔다 —
+        여러 발췌를 종합해야 하는 질문일수록 20초 가까이 기다린 끝에
+        기권으로 끝나는 경우가 잦아, 켜져 있어도 실사용 이득이 낮다.
+        `set_ai_summary(False)`가 `toggled(False)`를 실제로 내보내(T10.40과
+        같은 성질) `_on_ai_chat_toggled()`까지 그대로 타고 들어가므로, 새
+        로직 없이 기존 신호 경로 재사용만으로 챗봇 모드 해제까지 이어진다.
+        강제로 막지는 않는다 — 원하면 사용자가 다시 켤 수 있다.
+        """
+        if self.state.model_profile == LIGHT.key and self.state.ai_chat_enabled:
+            self.sidebar.search_options.set_ai_summary(False)
 
     def _on_ai_chat_toggled(self, enabled: bool) -> None:
         self.state.ai_chat_enabled = enabled
