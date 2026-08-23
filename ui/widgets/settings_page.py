@@ -25,12 +25,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from config.settings import CHAT_RETENTION_CHOICES, SLM_CPU_MODES, chat_retention_description
 from ui.widgets.performance_combo import PerformanceCombo
+from ui.widgets.status_bar import build_ci_watermark_row
 from ui.widgets.toggle_switch import ToggleSwitch
 
 MODEL_MANAGER_BUTTON_LABEL = "모델 관리"
@@ -131,7 +133,28 @@ class SettingsPage(QWidget):
         super().__init__(parent)
         self.setObjectName("SettingsPage")
 
-        root = QVBoxLayout(self)
+        # 워터마크는 카드 영역(24px 여백)이 아니라 페이지 가장자리에 붙어야
+        # 문서 관리·상태바와 같은 위치가 된다 — 그래서 여백 없는 `outer`를
+        # 따로 두고, 카드들은 스크롤 영역 안에 담는다(문서 관리 페이지와
+        # 같은 구조, 2026-08-23 위치 불일치 수정). 스크롤이 없으면 창이
+        # 낮을 때 워터마크가 창 아래로 밀려나 아예 안 보이는 것도 이번에
+        # 같이 확인했다 — 카드 5개+옵션이 늘어난 지금은 문서 관리 페이지와
+        # 마찬가지로 넘침이 생길 수 있다.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setObjectName("PageScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        content.setObjectName("PageScrollContent")
+        scroll.setWidget(content)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(16)
 
@@ -144,6 +167,11 @@ class SettingsPage(QWidget):
         self._build_runtime_card(root)
 
         root.addStretch()
+
+        # CI 워터마크 — 검색/대화 페이지의 상태바와 같은 자리(우측 하단).
+        watermark = build_ci_watermark_row()
+        if watermark is not None:
+            outer.addWidget(watermark)
 
     # --- 구성 -------------------------------------------------------
 

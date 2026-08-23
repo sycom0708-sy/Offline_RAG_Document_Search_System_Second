@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.widgets.status_bar import format_relative_time
+from ui.widgets.status_bar import build_ci_watermark_row, format_relative_time
 
 NO_FOLDER_TEXT = "선택되지 않음"
 FOLDER_BUTTON_LABEL = "폴더 선택"
@@ -153,6 +153,13 @@ class DocumentPage(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         outer.addWidget(scroll)
+
+        # CI 워터마크 — 검색/대화 페이지의 상태바와 같은 자리(우측 하단).
+        # 이 페이지엔 상태바가 없어(위 docstring) 스크롤 영역 바깥에 따로
+        # 고정한다 — 카드 안에 넣으면 스크롤에 같이 밀려 올라간다.
+        watermark = build_ci_watermark_row()
+        if watermark is not None:
+            outer.addWidget(watermark)
 
         content = QWidget()
         content.setObjectName("PageScrollContent")

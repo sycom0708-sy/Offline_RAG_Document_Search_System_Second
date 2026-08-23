@@ -11,10 +11,43 @@ Phase 7.7에서 "폴더 관리" 버튼을 사이드바 하단(모델 관리 옆)
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QProgressBar, QWidget
 
 IDLE_NO_DOCS_MESSAGE = "인덱싱된 문서가 없습니다"
+
+# 상태바 우측 CI 워터마크 (2026-08-22 요청) — `ui/icons`는 `ui/qss`와 같은
+# 방식으로 `deploy/app.spec`의 datas에 등록돼 있어, `__file__` 기준 상대
+# 경로가 개발 모드·얼린 exe 양쪽에서 그대로 맞는다(T9.2와 같은 이유).
+_LOGO_PATH = Path(__file__).resolve().parents[1] / "icons" / "atecmobility_ci.png"
+_LOGO_HEIGHT = 12  # 상태바 한 줄 높이보다 작게 — 텍스트보다 튀지 않게
+
+
+def build_ci_watermark_row() -> QWidget | None:
+    """CI 워터마크 한 줄을 새로 만들어 반환한다.
+
+    `StatusBar`가 없는 문서 관리·설정 페이지에도 같은 워터마크를 붙이려고
+    분리했다(2026-08-23 요청) — 로고 파일이 없으면 `None`을 돌려줘 호출부가
+    `if` 하나로 안전하게 건너뛸 수 있다.
+    """
+    if not _LOGO_PATH.is_file():
+        return None
+    row = QWidget()
+    row.setObjectName("CiWatermarkRow")
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(16, 0, 16, 8)
+    layout.addStretch()
+    logo_label = QLabel()
+    logo_label.setPixmap(
+        QPixmap(str(_LOGO_PATH)).scaledToHeight(
+            _LOGO_HEIGHT, Qt.TransformationMode.SmoothTransformation
+        )
+    )
+    layout.addWidget(logo_label)
+    return row
 
 
 def format_relative_time(dt: datetime, now: datetime | None = None) -> str:
@@ -63,6 +96,16 @@ class StatusBar(QWidget):
         layout.addWidget(self._warning_label)
         layout.addWidget(self._progress)
         layout.addStretch()
+
+        # CI 워터마크 — 검색 흐름을 방해하지 않는 우측 끝에 작게.
+        if _LOGO_PATH.is_file():
+            logo_label = QLabel()
+            logo_label.setPixmap(
+                QPixmap(str(_LOGO_PATH)).scaledToHeight(
+                    _LOGO_HEIGHT, Qt.TransformationMode.SmoothTransformation
+                )
+            )
+            layout.addWidget(logo_label)
 
     def set_idle(self, document_count: int, last_indexed_at: datetime | None) -> None:
         self._progress.hide()
