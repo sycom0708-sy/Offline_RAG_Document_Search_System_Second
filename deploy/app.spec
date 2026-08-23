@@ -30,6 +30,8 @@ binaries += collect_dynamic_libs("tokenizers")
 
 datas = [
     (str(PROJECT_ROOT / "ui" / "qss"), "ui/qss"),
+    # 창·팝업 아이콘 — ui/app.py가 런타임에 QApplication.setWindowIcon()로 읽는다.
+    (str(PROJECT_ROOT / "ui" / "icons"), "ui/icons"),
 ]
 datas += collect_data_files("tokenizers")
 
@@ -59,7 +61,7 @@ exe = EXE(
     name="OfflineRAGSearch",
     console=False,  # PySide6 GUI 앱 — 콘솔 창을 띄우지 않는다
     # 문서+돋보기 아이콘(시안 1번, 20% 확대) — `python -m deploy.make_icon`으로 생성
-    icon=str(PROJECT_ROOT / "deploy" / "icon.ico"),
+    icon=str(PROJECT_ROOT / "ui" / "icons" / "app.ico"),
 )
 
 coll = COLLECT(

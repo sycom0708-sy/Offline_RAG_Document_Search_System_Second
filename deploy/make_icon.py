@@ -5,6 +5,12 @@
 새 디자인 도구를 들이는 대신 이미 확정된 좌표를 재사용하는 편이 결과물이
 시안과 어긋날 위험이 없다.
 
+결과물은 `deploy/`가 아니라 `ui/icons/`에 둔다 — exe·인스톨러 아이콘
+자원일 뿐 아니라 `ui/app.py`가 런타임에 창·팝업 아이콘으로도 그대로
+쓰기 때문이다(메인 창·모든 다이얼로그에 공통 적용, 2026-08-22 요청).
+`ui/qss/app.qss`와 같은 방식으로 `deploy/app.spec`의 datas에 등록해
+얼린 exe에도 번들된다.
+
     python -m deploy.make_icon
 """
 
@@ -14,7 +20,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-OUT_PATH = Path(__file__).resolve().parent / "icon.ico"
+OUT_PATH = Path(__file__).resolve().parent.parent / "ui" / "icons" / "app.ico"
 
 BLUE = (37, 99, 235, 255)  # #2563EB — 앱 강조색과 동일
 WHITE = (255, 255, 255, 255)

@@ -250,10 +250,10 @@ SLM_ORDER = tuple(p.key for p in SLM_CANDIDATES)
 # 제외(지어낸 답에 근거 번호까지 붙인다).
 SLM_RECOMMENDED = "qwen3.5-4b"   # 권장 사양(16GB)
 SLM_MINIMUM = "exaone-4.0-1.2b"  # 최소 사양(8GB)
-SLM_OFFERED_ORDER = (SLM_RECOMMENDED, SLM_MINIMUM)
-# 목록 순서는 `SLM_OFFERED_ORDER`를 따른다 — 권장 사양을 먼저 보여줘야
-# 사용자가 기본으로 고를 것이 위에 온다(`SLM_CANDIDATES` 순서는 측정 순서라
-# 최소 사양 모델이 앞에 있다).
+# 목록 순서는 `SLM_OFFERED_ORDER`를 따른다[사용자 확정, 2026-08-22 — 최소
+# 사양을 먼저 보여주는 순서로 변경. `SLM_CANDIDATES` 순서는 측정 순서라
+# 최소 사양 모델이 이미 앞에 있어 이 값과 우연히 같다].
+SLM_OFFERED_ORDER = (SLM_MINIMUM, SLM_RECOMMENDED)
 SLM_OFFERED: tuple[SlmProfile, ...] = tuple(
     SLM_PROFILES[key] for key in SLM_OFFERED_ORDER
 )
