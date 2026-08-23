@@ -58,7 +58,8 @@ exe = EXE(
     exclude_binaries=True,
     name="OfflineRAGSearch",
     console=False,  # PySide6 GUI 앱 — 콘솔 창을 띄우지 않는다
-    icon=None,  # TODO: 아이콘 파일이 생기면 여기에 연결
+    # 문서+돋보기 아이콘(시안 1번, 20% 확대) — `python -m deploy.make_icon`으로 생성
+    icon=str(PROJECT_ROOT / "deploy" / "icon.ico"),
 )
 
 coll = COLLECT(

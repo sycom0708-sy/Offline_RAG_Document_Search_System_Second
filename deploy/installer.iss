@@ -26,6 +26,8 @@
 [Setup]
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+; 설치 마법사·제거 프로그램 아이콘도 앱과 같은 문서+돋보기 아이콘으로.
+SetupIconFile=icon.ico
 ; 관리자 권한 없이 사용자 폴더에 설치 — PRD 4장 전제.
 PrivilegesRequired=lowest
 DefaultDirName={localappdata}\{#MyAppName}
