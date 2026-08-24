@@ -29,7 +29,30 @@ def _load_fonts() -> None:
     QFontDatabase.addApplicationFont(str(FONT_DIR / "NanumGothicBold.ttf"))
 
 
+def _set_taskbar_app_id() -> None:
+    """작업표시줄이 python.exe 아이콘으로 그룹핑하는 것을 막는다.
+
+    `python run_app.py`처럼 얼리지 않은 스크립트로 실행하면, Windows는
+    AppUserModelID를 따로 지정하지 않는 한 같은 인터프리터로 뜬 모든
+    스크립트를 python.exe 아이콘 하나로 묶는다 — 창 자체는
+    `setWindowIcon()`으로 앱 아이콘을 걸어도 작업표시줄만 파이썬 아이콘으로
+    보이는 이유. PyInstaller로 얼린 배포용 exe는 exe 파일 자체에 아이콘이
+    있어 이 문제가 없다(개발 편의를 위한 조치).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "ATECMobility.OfflineRAGSearch"
+        )
+    except (AttributeError, OSError):
+        pass  # 실패해도 앱 동작에는 지장 없다 — 작업표시줄 아이콘만 원래대로 남는다
+
+
 def create_app() -> QApplication:
+    _set_taskbar_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
     _load_fonts()
 
