@@ -204,6 +204,28 @@ class TestNoRerenderChurnOnResize:
 
         assert many > few > 0
 
+    def test_label_stays_compact_when_reserved_space_is_much_taller(self, qtbot):
+        """T10.49 — 라벨이 예약 공간을 대신 늘어나 항목과 멀어지면 안 된다.
+
+        stretch가 없으면 QLabel의 기본 세로 정책(Preferred)이 남는 예약
+        공간을 대신 흡수해, "최근 검색" 라벨이 실제 항목과 큰 간격을 두고
+        떨어지는 문제가 있었다(실사용 보고 — 검색 기록이 있는데도 항목이
+        위젯 맨 아래로 밀려 보임).
+        """
+        widget = RecentSearches()
+        qtbot.addWidget(widget)
+        widget.set_max_height(1000)  # 10건 자리(라벨보다 훨씬 큼)를 예약
+        widget.set_items(["첫 검색어"])
+        widget.resize(220, widget.height())
+        widget.show()
+        qtbot.waitExposed(widget)
+
+        label_height = widget._label.height()
+        button = widget._list_layout.itemAt(0).widget()
+
+        assert label_height < 30  # 한 줄 라벨 — 예약 공간(수백 px)만큼 늘어나면 안 된다
+        assert button.y() < 60  # 라벨 바로 아래 — 위젯 하단으로 밀려나면 안 된다
+
     def test_item_buttons_are_parented_on_creation(self, qtbot):
         """부모 없는 위젯은 최상위 창이 된다 — 생성 시점에 부모를 준다."""
         from PySide6.QtWidgets import QPushButton

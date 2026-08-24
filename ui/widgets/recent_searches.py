@@ -56,6 +56,13 @@ class RecentSearches(QWidget):
         self._outer.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
         self._outer.addWidget(self._label)
         self._outer.addLayout(self._list_layout)
+        # 🔴 stretch가 없으면 예약해 둔 10건분 여유 공간을 **라벨 자신**이
+        # 늘어나서 채운다(QLabel의 기본 세로 정책이 Preferred라 이 레이아웃
+        # 안에서 유일하게 자랄 수 있는 위젯이었다) — "최근 검색" 라벨과 항목
+        # 사이에 큰 빈틈이 생기고 항목이 위젯 맨 아래로 밀려나는 원인이었다
+        # (실사용 보고, T10.49). 여유는 라벨 밑, 항목들 뒤에 붙는 stretch가
+        # 흡수해야 라벨+항목이 위쪽에 붙어 있는다.
+        self._outer.addStretch()
 
         self._all_items: list[str] = []  # 최신이 맨 앞(AppState와 같은 순서)
         self._max_height: int | None = None
