@@ -57,6 +57,10 @@ def count_soffice_processes() -> int | None:
             capture_output=True,
             timeout=10,
             check=False,
+            # tasklist는 콘솔 프로그램이라, 콘솔 없는(--windowed) 이 앱에서
+            # 그냥 부르면 Windows가 새 콘솔 창을 띄웠다 닫는다 — 인덱싱 중
+            # 사용자에게 원인 모를 창 깜빡임으로 보인다.
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

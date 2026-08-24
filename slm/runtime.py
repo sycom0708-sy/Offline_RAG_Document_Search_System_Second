@@ -242,6 +242,10 @@ def start_server(
         stderr=subprocess.DEVNULL,
         text=True,
         errors="replace",
+        # llama-server는 콘솔 프로그램이라, 콘솔 없는(--windowed) 이 앱에서
+        # 그냥 띄우면 서버가 떠 있는 내내 콘솔 창이 하나 남는다. stdout/stderr를
+        # 이미 버리고 있어(DEVNULL) 창을 숨겨도 잃는 진단 정보는 없다.
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
 
     try:

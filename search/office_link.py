@@ -192,7 +192,10 @@ def open_and_locate(file_path: str, plan: OpenPlan, timeout: int = DEFAULT_TIMEO
 
         try:
             result = subprocess.run(
-                command, capture_output=True, timeout=timeout, check=False, text=True
+                command, capture_output=True, timeout=timeout, check=False, text=True,
+                # PowerShell은 콘솔 프로그램이라, 콘솔 없는(--windowed) 이 앱에서
+                # 그냥 부르면 "원문 열기"마다 콘솔 창이 잠깐 떴다 사라진다.
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except subprocess.TimeoutExpired as exc:
             raise OfficeAutomationTimeoutError(

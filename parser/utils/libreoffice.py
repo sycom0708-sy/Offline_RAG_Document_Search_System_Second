@@ -132,6 +132,10 @@ def convert(
                 capture_output=True,
                 timeout=timeout,
                 check=False,
+                # soffice 자체는 GUI 프로그램이라 보통 콘솔을 안 띄우지만,
+                # 콘솔 없는(--windowed) 이 앱에서 다른 자식 프로세스들과
+                # 일관되게 콘솔 자동 생성을 막아둔다.
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         except subprocess.TimeoutExpired as exc:
             # T10.36 — 대량 인덱싱 중 PC가 멎는 원인을 다음번엔 로그로 좁힐 수
