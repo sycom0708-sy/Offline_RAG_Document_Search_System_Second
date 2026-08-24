@@ -214,3 +214,22 @@ def test_embed_missing_only_processes_new_chunks(db, embedder):
     store_document(db, _document("d2", count=2))
 
     assert embed_missing(db, embedder) == 2
+
+
+def test_embed_missing_stops_early_when_stop_event_set(db, embedder):
+    """T10.48 — 취소 버튼을 눌러도 임베딩 단계는 수천 개를 다 처리할 때까지
+    멈추지 않던 문제(실사용 보고). 다음 배치를 시작하기 전에 확인해야 한다.
+    """
+    import threading
+
+    total = db.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    assert total >= 2  # `db` 픽스처는 3개 — 최소 2개는 있어야 "일부만 처리"가 성립
+
+    stop_event = threading.Event()
+    processed = embed_missing(
+        db, embedder, batch_size=1,
+        on_progress=lambda done, t: stop_event.set(),
+        stop_event=stop_event,
+    )
+
+    assert processed == 1

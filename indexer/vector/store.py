@@ -107,11 +107,17 @@ def embed_missing(
     embedder: Embedder | None = None,
     batch_size: int = 16,
     on_progress=None,
+    stop_event=None,
 ) -> int:
     """벡터가 없는 청크를 찾아 임베딩하고 저장한다. 처리한 개수를 반환.
 
     인덱싱 직후뿐 아니라 모델을 바꾼 뒤에도 그대로 호출하면 된다 — 새 모델
     기준으로 비어 있는 청크만 다시 계산한다.
+
+    `stop_event`가 설정되면 다음 배치를 시작하기 전에 멈춘다 — 배치
+    하나(기본 16개)만큼은 이미 계산 중일 수 있어 즉시는 아니지만, 취소
+    버튼을 눌러도 남은 수천 개를 다 처리할 때까지 기다리는 것보다는
+    훨씬 짧다(실사용 보고, T10.48).
     """
     embedder = embedder or Embedder()
     model_key = embedder.profile.key
@@ -122,6 +128,8 @@ def embed_missing(
 
     done = 0
     for start in range(0, len(pending), batch_size):
+        if stop_event is not None and stop_event.is_set():
+            break
         batch_ids = pending[start : start + batch_size]
         texts = _fetch_contents(conn, batch_ids)
         vectors = embedder.encode(texts, batch_size=batch_size)
