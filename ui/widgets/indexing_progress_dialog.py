@@ -125,10 +125,20 @@ class IndexingProgressDialog(QDialog):
         self._update_time_label(now, done, total)
 
     def set_stage(self, stage: str, done: int = 0, total: int = 0) -> None:
-        """현재 단계를 한 줄 덧붙인다 (Phase 11-B)."""
+        """현재 단계를 한 줄 덧붙인다 (Phase 11-B).
+
+        🔴 막대도 이 단계 자신의 진행률로 다시 채운다 — 파싱이 끝나 막대가
+        파일 기준 100%에서 멈춘 채로 "단계: 임베딩"만 표시되면 이미 끝난
+        것처럼 보인다(실사용 보고). 총량을 아직 모르는 전환 직후는
+        불확정(marquee)으로 돌려 새 단계가 시작됐음을 즉시 알린다.
+        """
         text = f"단계: {stage}"
         if total > 0:
             text += f" · {done:,}/{total:,}"
+            self._progress.setRange(0, total)
+            self._progress.setValue(done)
+        else:
+            self._progress.setRange(0, 0)
         self._stage_label.setText(text)
         self._stage_label.setVisible(True)
 

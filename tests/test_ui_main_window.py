@@ -1941,6 +1941,29 @@ class TestDocumentPage:
         assert "임베딩" in window.document_page.stage_text()
         assert "128" in window.document_page.stage_text()
 
+    def test_embedding_stage_refills_the_progress_bar(self, qtbot, window):
+        """T10.46 — 파싱이 끝나 막대가 100%인 채로 "임베딩"만 표시되면 이미
+        끝난 것으로 보인다(실사용 보고). 임베딩 자신의 done/total로 막대가
+        다시 채워져야 한다.
+        """
+        from indexer.pipeline import STAGE_EMBEDDING, STAGE_PARSING
+
+        page = window.document_page
+        window._on_indexing_progress(19, 19, "마지막파일.docx")
+        assert page._progress.value() == 19
+        assert page._progress.maximum() == 19
+
+        window._on_indexing_stage(STAGE_EMBEDDING, 0, 0)
+        assert page._progress.maximum() == 0  # 총량 모름 — 불확정(marquee)
+
+        window._on_indexing_stage(STAGE_EMBEDDING, 128, 607)
+        assert page._progress.value() == 128
+        assert page._progress.maximum() == 607
+
+        window._on_indexing_stage(STAGE_PARSING, 0, 19)
+        assert page._progress.value() == 0
+        assert page._progress.maximum() == 19
+
     def test_busy_state_swaps_the_badge_and_buttons(self, qtbot, window):
         page = window.document_page
         page.set_busy(True)

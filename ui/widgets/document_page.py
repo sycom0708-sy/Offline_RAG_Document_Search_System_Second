@@ -367,6 +367,12 @@ class DocumentPage(QWidget):
 
         임베딩 구간은 파일이 아니라 청크 단위로 돌아 총량이 파일 진행률과
         다르다 — 그래서 여기서 받은 done/total을 그대로 덧붙인다.
+
+        🔴 막대도 이 단계 자신의 진행률로 다시 채운다. 파싱이 끝나면 막대가
+        파일 기준 100%에서 멈추는데, 그 상태 그대로 두고 "현재 단계 임베딩"
+        문구만 바뀌면 임베딩이 이미 끝난 것처럼 보인다(실사용 보고). 총량을
+        아직 모르는 순간(단계 전환 직후)은 불확정(marquee)으로 돌려 "막대가
+        멈춘 게 아니라 새 단계가 시작됐다"는 걸 즉시 알린다.
         """
         if stage is None:
             self._stage_label.setText("현재 단계 —")
@@ -374,6 +380,10 @@ class DocumentPage(QWidget):
         text = f"현재 단계 {stage}"
         if total > 0:
             text += f" · {done:,}/{total:,}"
+            self._progress.setRange(0, total)
+            self._progress.setValue(done)
+        else:
+            self._progress.setRange(0, 0)
         self._stage_label.setText(text)
 
     def stage_text(self) -> str:

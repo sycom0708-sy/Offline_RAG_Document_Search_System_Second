@@ -210,6 +210,32 @@ class TestIndexingProgressDialog:
         assert len(dialog._file_label.text()) < len(long_path)
         assert "…" in dialog._file_label.text() or "..." in dialog._file_label.text()
 
+    def test_stage_with_total_refills_the_bar(self, qtbot):
+        """T10.46 — 파싱이 끝나 막대가 100%인 채로 "임베딩"만 표시되면 이미
+        끝난 것처럼 보인다(실사용 보고). 임베딩 자신의 done/total로 다시
+        채워야 한다.
+        """
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        dialog.set_progress(19, 19)
+        assert dialog._progress.value() == 19
+        assert dialog._progress.maximum() == 19
+
+        dialog.set_stage("임베딩", 128, 607)
+
+        assert dialog._progress.value() == 128
+        assert dialog._progress.maximum() == 607
+
+    def test_stage_without_total_shows_marquee(self, qtbot):
+        """총량을 아직 모르는 전환 직후는 불확정 표시로 "새 단계 시작"을 알린다."""
+        dialog = IndexingProgressDialog()
+        qtbot.addWidget(dialog)
+        dialog.set_progress(19, 19)
+
+        dialog.set_stage("임베딩", 0, 0)
+
+        assert dialog._progress.maximum() == 0
+
     def test_cancel_button_emits_signal_and_disables_itself(self, qtbot):
         """두 번 눌러도 중복 요청이 안 나가야 한다."""
         dialog = IndexingProgressDialog()
