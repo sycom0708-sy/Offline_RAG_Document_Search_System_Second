@@ -220,6 +220,37 @@ def test_index_folder_progress_callback_fires_for_every_file(tmp_path, sample_tx
     assert calls == [(1, 2), (2, 2)]
 
 
+def test_embedding_stage_forwards_stop_event(tmp_path, sample_txt, monkeypatch):
+    """T10.48 — 취소를 눌러도 임베딩 단계가 끝까지 다 처리하던 문제.
+
+    `embed_missing()` 자체의 조기 종료는 test_vector_store.py에서 직접
+    검증한다 — 여기서는 파이프라인이 그 인자를 실제로 넘기는지만 본다.
+    """
+    from indexer import pipeline
+
+    captured = {}
+
+    def fake_embed_missing(conn, embedder, on_progress=None, stop_event=None):
+        captured["stop_event"] = stop_event
+        return 0
+
+    import types
+
+    fake_embedder = types.SimpleNamespace(count_tokens=None)
+    monkeypatch.setattr(pipeline, "_prepare_embedder", lambda profile=None: (fake_embedder, None))
+    monkeypatch.setattr(pipeline, "embed_missing", fake_embed_missing)
+
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(sample_txt, work / "a.txt")
+
+    stop_event = threading.Event()
+    conn = connect(":memory:")
+    pipeline.index_folder(conn, work, stop_event=stop_event)
+
+    assert captured["stop_event"] is stop_event
+
+
 def test_index_folder_stops_early_when_stop_event_set(tmp_path, sample_txt):
     work = tmp_path / "work"
     work.mkdir()
@@ -326,6 +357,29 @@ def test_stage_callback_reports_parsing(tmp_path, sample_txt):
 
     assert stages[0] == STAGE_PARSING
     assert stages[-1] == STAGE_DONE
+
+
+def test_stage_callback_updates_progress_while_parsing(tmp_path, sample_txt):
+    """T10.47 — 파싱 단계는 파일마다 done/total이 갱신돼야 한다.
+
+    이전에는 시작 시점에 (0, total) 딱 한 번만 보내, 파싱이 끝날 때까지
+    "단계: 파싱 · 0/N"이 그대로 멈춰 있는 것처럼 보였다(실사용 보고).
+    """
+    from indexer.pipeline import STAGE_PARSING
+
+    work = tmp_path / "work"
+    work.mkdir()
+    for i in range(3):
+        shutil.copy(sample_txt, work / f"f{i}.txt")
+
+    parsing_done_values = []
+    conn = connect(":memory:")
+    index_folder(
+        conn, work, embed=False,
+        on_stage=lambda s, d, t: parsing_done_values.append(d) if s == STAGE_PARSING else None,
+    )
+
+    assert parsing_done_values == [0, 1, 2, 3]
 
 
 def test_failed_document_paths_reads_persisted_failures(tmp_path, sample_txt):

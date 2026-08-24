@@ -304,6 +304,13 @@ def _run_index(
         finally:
             if on_progress is not None:
                 on_progress(done, total, path)
+            if on_stage is not None:
+                # T10.47 — 파싱은 파일 단위라 on_progress와 도메인이 완전히
+                # 같다(임베딩과 달리 "파일 vs 청크"로 갈리지 않는다). 시작
+                # 시점에 한 번만 알리면(위 STAGE_PARSING 최초 호출) "단계:
+                # 파싱 · 0/130"이 파싱이 끝날 때까지 그대로 멈춰 있는 것처럼
+                # 보인다 — 실사용 보고로 발견.
+                on_stage(STAGE_PARSING, done, total)
 
         # 50개마다 soffice.bin 잔존 개수를 남긴다 — 정상이면 매 파일 처리
         # 후 곧 0으로 떨어져야 한다. 계속 쌓인다면 좀비 프로세스 누적이
@@ -327,7 +334,9 @@ def _run_index(
 
             if on_stage is not None:
                 on_stage(STAGE_EMBEDDING, 0, 0)
-            report.embedded = embed_missing(conn, embedder, on_progress=_embed_progress)
+            report.embedded = embed_missing(
+                conn, embedder, on_progress=_embed_progress, stop_event=stop_event
+            )
             log.info("임베딩 단계 종료: %d개 청크", report.embedded)
         except Exception as exc:
             report.warnings.append(f"임베딩 계산 실패 (키워드 검색은 정상): {exc}")
