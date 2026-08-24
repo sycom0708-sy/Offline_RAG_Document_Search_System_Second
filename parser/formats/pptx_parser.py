@@ -9,7 +9,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
-from parser.utils.headings import MAX_HEADING_CHARS
+from parser.utils.headings import MAX_HEADING_CHARS, pick_largest_top_line
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
@@ -69,29 +69,55 @@ class PptxParser(BaseParser):
 
     @staticmethod
     def _slide_title(slide) -> str:
-        """슬라이드의 제목 플레이스홀더 텍스트 (T10.31).
+        """슬라이드의 제목 — 플레이스홀더 우선(T10.31), 없으면 글꼴+위치 폴백(T10.33).
 
-        pptx는 제목을 별도 플레이스홀더로 들고 있어 추측이 필요 없다 —
+        pptx는 제목을 별도 플레이스홀더로 들고 있어 있으면 추측이 필요 없다 —
         PDF가 글꼴 크기로, docx가 스타일 이름으로 푸는 것을 여기서는 정확히
-        알 수 있다. 제목 플레이스홀더가 없는 슬라이드(그림만 있는 장 등)는
-        빈 문자열이다.
+        알 수 있다. 다만 이 코퍼스는 슬라이드의 상당수가 제목을 플레이스홀더가
+        아니라 일반 텍스트 상자로 쓴다(`_font_size_heading` 참고).
         """
         try:
             title_shape = slide.shapes.title
         except Exception:
-            return ""
-        if title_shape is None or not title_shape.has_text_frame:
-            return ""
-        title = title_shape.text_frame.text.strip()
-        if not title:
-            return ""
-        return title.splitlines()[0][:MAX_HEADING_CHARS]
+            title_shape = None
+        if title_shape is not None and title_shape.has_text_frame:
+            title = title_shape.text_frame.text.strip()
+            if title:
+                return title.splitlines()[0][:MAX_HEADING_CHARS]
+        return PptxParser._font_size_heading(slide)
 
-    def _iter_shapes(self, shapes):
+    @classmethod
+    def _font_size_heading(cls, slide) -> str:
+        """제목 플레이스홀더가 없는 슬라이드를 위한 글꼴 크기+위치 폴백 (T10.33).
+
+        `pick_largest_top_line()`이 "가장 크면서 가장 위"인 도형만 제목으로
+        인정한다 — 판단 근거는 그 함수 docstring 참고.
+        """
+        sized: list[tuple[float, float, str]] = []
+        for shape in cls._iter_shapes(slide.shapes):
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            text = shape.text_frame.text.strip()
+            if not text:
+                continue
+            sizes = [
+                run.font.size.pt
+                for paragraph in shape.text_frame.paragraphs
+                for run in paragraph.runs
+                if run.font.size is not None
+            ]
+            if not sizes:
+                continue
+            top = shape.top if shape.top is not None else float("inf")
+            sized.append((max(sizes), top, text.splitlines()[0]))
+        return pick_largest_top_line(sized)
+
+    @staticmethod
+    def _iter_shapes(shapes):
         """그룹 도형 안쪽까지 펼쳐서 순회한다."""
         for shape in shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-                yield from self._iter_shapes(shape.shapes)
+                yield from PptxParser._iter_shapes(shape.shapes)
             else:
                 yield shape
 

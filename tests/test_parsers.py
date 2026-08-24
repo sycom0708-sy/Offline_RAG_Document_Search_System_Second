@@ -862,3 +862,63 @@ class TestDocxFontSizeFallback:
         """두 기준을 섞으면 제목 수준이 뒤죽박죽이 된다 — 스타일이 있으면 그것만 쓴다."""
         headings = self._headings(tmp_path, [(28.0, "아주 큰 본문 줄")], styled=True)
         assert headings == ["스타일 제목"]
+
+
+class TestPptxFontSizeAndPositionFallback:
+    """제목 플레이스홀더가 없는 슬라이드를 글꼴 크기+위치로 구한다 (T10.33).
+
+    실측(exdoc pptx 11개): 제목 없는 슬라이드 110개 중 72%가 제목을 플레이스홀더가
+    아니라 일반 텍스트 상자로 쓴다. 글꼴 크기만 보면(`.doc`과 같은 방식) 다이어그램
+    안 강조 라벨("동"·"읍면"처럼 본문보다 크지만 슬라이드 중간에 있는 글자)까지
+    걸린다 — 위치 조건(가장 큰 글꼴 중 슬라이드에서 가장 위)을 더해야 실측
+    28개 후보 중 오탐 8개가 전부 걸러진다.
+    """
+
+    def _build(self, tmp_path, boxes):
+        from pptx import Presentation
+        from pptx.util import Emu, Pt
+
+        presentation = Presentation()
+        slide = presentation.slides.add_slide(presentation.slide_layouts[6])  # 빈 레이아웃(제목 없음)
+        for top, size, text in boxes:
+            box = slide.shapes.add_textbox(Emu(0), Emu(top), Emu(4000000), Emu(500000))
+            box.text_frame.text = text
+            for run in box.text_frame.paragraphs[0].runs:
+                run.font.size = Pt(size)
+        path = tmp_path / "sample.pptx"
+        presentation.save(path)
+        return path
+
+    def _heading(self, tmp_path, boxes):
+        from parser.formats.pptx_parser import PptxParser
+
+        path = self._build(tmp_path, boxes)
+        document = PptxParser(asset_dir=tmp_path / "assets").parse(path)
+        return document.chunks[0].heading
+
+    def test_topmost_largest_shape_becomes_the_heading(self, tmp_path):
+        """실측 재현: 'CASE 2 : ...' 라벨이 슬라이드 맨 위, 가장 큰 글꼴로 쓰였다."""
+        assert self._heading(tmp_path, [
+            (100_000, 20.0, "CASE 2 : 요금제 및 할증율이 다수 존재하는 경우"),
+            (900_000, 10.0, "본문 설명이 이어집니다 " * 3),
+        ]) == "CASE 2 : 요금제 및 할증율이 다수 존재하는 경우"
+
+    def test_largest_shape_not_at_top_is_rejected(self, tmp_path):
+        """실측 재현: '동'/'읍면'은 본문보다 크지만(24pt) 다이어그램 라벨일 뿐 맨 위가 아니다."""
+        assert self._heading(tmp_path, [
+            (100_000, 10.0, "1. 충청북도"),
+            (500_000, 24.0, "동"),
+            (900_000, 10.0, "본문 설명이 이어집니다 " * 3),
+        ]) == ""
+
+    def test_uniform_font_slide_has_no_heading(self, tmp_path):
+        assert self._heading(tmp_path, [
+            (100_000, 12.0, "첫 상자입니다"),
+            (500_000, 12.0, "둘째 상자입니다"),
+        ]) == ""
+
+    def test_single_text_box_has_no_heading(self, tmp_path):
+        """비교할 본문 크기가 없으면 제목을 가릴 근거가 없다."""
+        assert self._heading(tmp_path, [
+            (100_000, 20.0, "혼자 있는 큰 글자"),
+        ]) == ""

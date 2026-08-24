@@ -70,6 +70,39 @@ def pick_largest_line(sized_lines: list[tuple[float, str]]) -> str:
     return clean_heading(next(text for size, text in lines if size == largest))
 
 
+def pick_largest_top_line(sized_positioned: list[tuple[float, float, str]]) -> str:
+    """**가장 큰 글꼴이면서 슬라이드에서 가장 위**에 있는 도형의 첫 줄만 제목으로 본다 (T10.33).
+
+    pptx는 제목 플레이스홀더가 없는 슬라이드가 많다(이 코퍼스 실측: 제목 없는
+    슬라이드 110개 중 72%). 글꼴 크기만으로 `pick_largest_line()`과 같은 방식을
+    쓰면 다이어그램 안 강조 라벨("동"·"읍면"·"기본"·"오지")까지 걸린다 — 본문보다
+    크지만 슬라이드 중간에 있다. pptx는 도형 좌표(`shape.top`)를 알 수 있어
+    PDF·docx에는 없는 이 단서를 추가로 쓴다.
+
+    실측: 위치 조건 없이 크기만 보면 28개 슬라이드가 후보에 오르고 그중 8개가
+    다이어그램 라벨(오탐)이었다. **가장 큰 글꼴 중 슬라이드 전체에서 가장 위에
+    있는 것**으로 좁히자 정확히 그 8개가 전부 걸러지고, 남은 20개는 전부 실제
+    절 제목·케이스 라벨("CASE 2 : ...", "4. 경상남도")이었다.
+    """
+    lines = [(size, top, text) for size, top, text in sized_positioned if text.strip()]
+    if not lines:
+        return ""
+
+    largest = max(size for size, _, _ in lines)
+    body_sizes = [size for size, _, _ in lines if size < largest]
+    if not body_sizes:
+        return ""  # 전체가 같은 크기 — 제목을 가릴 근거가 없다
+    if largest < max(body_sizes) * HEADING_SIZE_RATIO:
+        return ""  # 본문과 충분히 구분되지 않는다
+
+    min_top = min(top for _, top, _ in lines)
+    top_candidates = [text for size, top, text in lines if size == largest and top == min_top]
+    if not top_candidates:
+        return ""  # 가장 큰 글꼴이 맨 위가 아니다 — 본문 강조 라벨일 가능성
+
+    return clean_heading(top_candidates[0])
+
+
 def body_size_of(sized_lines: list[tuple[float, str]]) -> float:
     """문서의 **본문** 글꼴 크기를 정한다 (흐름 단위 문서용).
 
