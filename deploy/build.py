@@ -99,6 +99,41 @@ def _strip_libreoffice_runtime_cache(libreoffice_dir: Path) -> None:
             print(f"  LibreOffice 런타임 캐시 제거: {target}")
 
 
+# 헤드리스 `--convert-to` 변환(`parser/utils/libreoffice.py`)이 절대 건드리지
+# 않는 자산들 (T9.11) — 도움말·문서·클립아트/마법사/매크로 예제. 실측 약 57MB.
+# 🔴 사전(`share/extensions/dict-*`, 467MB)·UI 로케일 리소스(`program/resource/*`,
+# 271MB)는 **일부러 뺐다** — 어떤 필터가 은근히 의존하는지 doc/xls/ppt 전체
+# 회귀 없이는 확신할 수 없어 더 큰 위험이다(T9.11 백로그로 남겨둠). 여기 목록은
+# 문서·클립아트·매크로 예제뿐이라 변환 필터 자체와 무관하다는 확신이 높다.
+_LIBREOFFICE_UNUSED_ASSETS = (
+    "App/libreoffice/help",
+    "App/libreoffice/readmes",
+    "App/libreoffice/CREDITS.fodt",
+    "App/libreoffice/LICENSE.html",
+    "App/libreoffice/license.txt",
+    "App/Manual",
+    "App/Readme.txt",
+    "App/libreoffice/share/gallery",
+    "App/libreoffice/share/wizards",
+    "App/libreoffice/share/template",
+    "App/libreoffice/share/basic",
+    "App/libreoffice/share/autotext",
+    "App/libreoffice/share/Scripts",
+)
+
+
+def _strip_libreoffice_unused_assets(libreoffice_dir: Path) -> None:
+    """도움말·매뉴얼·클립아트·마법사·매크로 예제를 뺀다 (T9.11, ~57MB 절감)."""
+    for relative in _LIBREOFFICE_UNUSED_ASSETS:
+        target = libreoffice_dir / Path(*relative.split("/"))
+        if target.is_dir():
+            shutil.rmtree(target)
+            print(f"  미사용 LibreOffice 자산 제거: {target}")
+        elif target.is_file():
+            target.unlink()
+            print(f"  미사용 LibreOffice 자산 제거: {target}")
+
+
 def assemble(*, skip_libreoffice: bool) -> None:
     if not APP_DIR.is_dir():
         raise SystemExit(f"PyInstaller 결과물이 없습니다: {APP_DIR} (먼저 빌드하세요)")
@@ -115,6 +150,7 @@ def assemble(*, skip_libreoffice: bool) -> None:
         _copy_tree(PROJECT_ROOT / "vendor" / name, APP_DIR / "vendor" / name)
         if name == "LibreOfficePortable":
             _strip_libreoffice_runtime_cache(APP_DIR / "vendor" / name)
+            _strip_libreoffice_unused_assets(APP_DIR / "vendor" / name)
 
     for name in (*_MODELS_ALWAYS, *_MODELS_OPTIONAL):
         _copy_tree(PROJECT_ROOT / "models" / name, APP_DIR / "models" / name)
