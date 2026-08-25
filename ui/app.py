@@ -78,7 +78,7 @@ def main() -> int:
     app = create_app()
 
     window = MainWindow()
-    window.setWindowTitle("오프라인 문서 검색")
+    window.setWindowTitle("ATEC DocsAI")
     window.resize(1100, 720)
     window.show()
 

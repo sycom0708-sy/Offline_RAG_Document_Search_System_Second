@@ -37,7 +37,7 @@ from ui.widgets.recent_searches import RecentSearches
 from ui.widgets.search_options import SearchOptions
 
 SIDEBAR_WIDTH = 220  # DESIGN §2.2 [제안]
-APP_TITLE = "오프라인 문서 검색"
+APP_TITLE = "ATEC DocsAI"
 
 PAGE_SEARCH = "search"
 PAGE_DOCUMENTS = "documents"
