@@ -1,12 +1,16 @@
 """"원문 열기" 딥링크 — Office COM / Edge PDF 뷰어로 정확한 위치로 이동 (T10.1, T10.50).
 
-docx/pptx/xlsx/pdf만 다룬다(hwp/hwpx는 이 PC에 한글이 없어 실측 검증이
-불가능해 이번 범위에서 제외 — 사용자 확정). docx/pptx/xlsx는 pywin32
-없이 PowerShell 서브프로세스로 Word/PowerPoint/Excel COM을 구동한다
-(2026-08-07 실측 확인, LibreOffice 변환과 같은 "관리자 권한 불필요"
-원칙과 결이 같다). pdf는 COM이 아니라 Edge를 `--single-argument`로
-직접 실행해 `#page=` URL 프래그먼트로 페이지 이동한다(기본 PDF 뷰어가
-Edge일 때만 — T10.50, 상세는 `_open_pdf_at_page` 참고).
+docx/doc/pptx/xlsx/xls/pdf만 다룬다(hwp/hwpx는 이 PC에 한글이 없어 실측
+검증이 불가능해 이번 범위에서 제외 — 사용자 확정, ppt는 요청 범위 밖이라
+미포함). doc/xls는 신버전과 같은 Word/Excel COM이 `Documents.Open()`/
+`Workbooks.Open()`으로 포맷을 자동 인식해 직접 여는 것뿐이라 docx/xlsx와
+완전히 같은 스크립트·로직을 재사용한다(실측 확인 — LibreOffice 변환은
+**인덱싱 파싱** 전용이고 이 딥링크 경로와는 무관하다). Office 계열은
+pywin32 없이 PowerShell 서브프로세스로 COM을 구동한다(2026-08-07 실측
+확인, LibreOffice 변환과 같은 "관리자 권한 불필요" 원칙과 결이 같다).
+pdf는 COM이 아니라 Edge를 `--single-argument`로 직접 실행해 `#page=`
+URL 프래그먼트로 페이지 이동한다(기본 PDF 뷰어가 Edge일 때만 — T10.50,
+상세는 `_open_pdf_at_page` 참고).
 
 **순수 점진적 개선이다.** COM이 없거나 실패해도 오늘의 "그냥 열기"가
 그대로 보장된다 — 이 모듈은 실패하면 예외를 던지기만 하고, 실제 폴백
@@ -36,6 +40,9 @@ _PROGID_BY_EXT = {
     ".docx": "Word.Application",
     ".pptx": "PowerPoint.Application",
     ".xlsx": "Excel.Application",
+    # 구버전 포맷도 같은 앱이 COM으로 직접 연다(포맷만 다를 뿐 — 실측 확인).
+    ".doc": "Word.Application",
+    ".xls": "Excel.Application",
 }
 
 
@@ -122,14 +129,18 @@ def plan_open(hybrid_result) -> OpenPlan:
         # 텍스트 검색 없이 슬라이드 이동만으로 충분하다.
         return OpenPlan(page_or_slide=hybrid_result.page_or_slide)
 
-    if ext == ".xlsx" and hybrid_result.type is ChunkType.TABLE:
+    if ext in (".xlsx", ".xls") and hybrid_result.type is ChunkType.TABLE:
+        # .xls는 Excel COM이 신버전과 똑같이 `Workbooks.Open()`으로 직접
+        # 여는 구버전 포맷일 뿐이라 xlsx와 같은 로직을 그대로 쓴다(실측 확인).
         table = parse_table_data(result)
         if table is None:
             return OpenPlan()
         needle = _longest_cell(table.rows, table.header_row)
         return OpenPlan(sheet_name=table.caption or None, needles=[needle] if needle else [])
 
-    if ext == ".docx":
+    if ext in (".docx", ".doc"):
+        # .doc도 Word COM이 `Documents.Open()`으로 직접 열 수 있는 구버전
+        # 포맷이라 docx와 같은 needle ladder 로직을 그대로 쓴다(실측 확인).
         if hybrid_result.type is ChunkType.TEXT:
             return OpenPlan(needles=_build_needle_ladder(hybrid_result.content))
         if hybrid_result.type is ChunkType.TABLE:
@@ -379,4 +390,8 @@ _SCRIPT_BY_EXT = {
     ".docx": _DOCX_SCRIPT,
     ".pptx": _PPTX_SCRIPT,
     ".xlsx": _XLSX_SCRIPT,
+    # `Documents.Open()`/`Workbooks.Open()`은 포맷을 자동 인식해 구버전도
+    # 그대로 여는 COM 호출이라 스크립트를 따로 만들 필요가 없다(실측 확인).
+    ".doc": _DOCX_SCRIPT,
+    ".xls": _XLSX_SCRIPT,
 }

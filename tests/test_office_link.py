@@ -126,6 +126,59 @@ class TestPlanOpenDocx:
         assert plan_open(_hybrid(result)).is_empty()
 
 
+class TestPlanOpenLegacyDocXls:
+    """.doc/.xls는 Word/Excel COM이 `.Open()`으로 신버전과 똑같이 직접
+
+    여는 구버전 포맷일 뿐이라 docx/xlsx와 완전히 같은 로직을 쓴다(실측
+    확인 — 실제 .doc/.xls 파일로 Word/Excel COM이 열고 텍스트/셀을 찾는
+    것까지 확인했다). LibreOffice 변환은 인덱싱 파싱 전용이고 이 딥링크
+    경로와는 무관하다.
+    """
+
+    def test_doc_text_chunk_builds_needle_ladder_from_content(self):
+        content = "짧은 문단."
+        result = _result("x.doc", ChunkType.TEXT, content=content)
+        plan = plan_open(_hybrid(result))
+        assert plan.needles == [content]
+
+    def test_doc_table_chunk_uses_longest_cell(self):
+        table = TableData(rows=[["a", "가장 긴 셀"]], header_row=["h1", "h2"])
+        result = _result("x.doc", ChunkType.TABLE, table=table)
+        plan = plan_open(_hybrid(result))
+        assert plan.needles == ["가장 긴 셀"]
+
+    def test_xls_table_uses_sheet_name_and_longest_cell(self):
+        table = TableData(rows=[["짧음", "가장 긴 셀 값입니다"]], header_row=["h1", "h2"], caption="Sheet2")
+        result = _result("x.xls", ChunkType.TABLE, table=table)
+        plan = plan_open(_hybrid(result))
+        assert plan.sheet_name == "Sheet2"
+        assert plan.needles == ["가장 긴 셀 값입니다"]
+
+    def test_xls_non_table_chunk_yields_empty_plan(self):
+        result = _result("x.xls", ChunkType.TEXT)
+        assert plan_open(_hybrid(result)).is_empty()
+
+    def test_is_office_available_recognizes_doc_and_xls(self, monkeypatch):
+        import winreg
+
+        class _FakeKey:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(winreg, "OpenKey", lambda *a, **k: _FakeKey())
+        assert is_office_available(".doc") is True
+        assert is_office_available(".xls") is True
+
+    def test_script_by_ext_maps_doc_and_xls_to_existing_templates(self):
+        from search.office_link import _DOCX_SCRIPT, _SCRIPT_BY_EXT, _XLSX_SCRIPT
+
+        assert _SCRIPT_BY_EXT[".doc"] is _DOCX_SCRIPT
+        assert _SCRIPT_BY_EXT[".xls"] is _XLSX_SCRIPT
+
+
 class TestPlanOpenPdf:
     """pdf는 pptx와 같은 방식이다 — 페이지 번호만으로 충분하다(T10.50).
 
