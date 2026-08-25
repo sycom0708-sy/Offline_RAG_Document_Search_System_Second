@@ -81,6 +81,27 @@ def _regex_split(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def _regex_split_with_seps(text: str) -> list[str]:
+    """문장마다 원래 경계 문자(줄바꿈 또는 공백)를 뒤에 붙여 반환한다 (T10.50).
+
+    🔴 원래는 `_regex_split()` + `" ".join()`으로 문단 경계(`\\n`)가 전부
+    공백으로 뭉개지고 있었다 — 파서(`docx_parser.py` 등)는 문단을 `\\n`으로
+    이어붙여 넘기는데, 여기서 사라지면 `search/office_link.py`의 딥링크
+    검색어가 실제 Word/PDF 원문과 어긋나 Find가 항상 실패했다(실측 확인).
+    문장 끝에 원래 있던 구분자를 그대로 붙여 반환하고, `_group()`이
+    `"".join()`으로만 이어 붙이면 문단 경계가 청킹을 거쳐도 살아남는다.
+    """
+    out = []
+    for m in _SENTENCE.finditer(text):
+        raw = m.group()
+        cleaned = raw.strip()
+        if not cleaned:
+            continue
+        sep = "\n" if "\n" in raw else " "
+        out.append(cleaned + sep)
+    return out
+
+
 def _kss_split(text: str) -> list[str]:
     """kss 기반 분리. 미설치·실패 시 정규식으로 폴백한다."""
     try:
@@ -122,42 +143,52 @@ def chunk_text(
     하나의 청크가 된다(실측한 한국어 문서에서는 128토큰을 넘는 단일 문장이
     없었다).
     """
-    sentences = split_sentences(text, use_kss=use_kss)
-    if not sentences:
+    # kss는 문단 경계를 추적하지 않아(일반 문장 분리기) 공백으로만 잇는다 —
+    # 정규식 경로(기본값)만 원본 줄바꿈 경계를 보존한다(T10.50, 위 docstring 참고).
+    if use_kss:
+        sentences = split_sentences(text, use_kss=True)
+        pieces = [s + " " for s in sentences]
+    else:
+        pieces = _regex_split_with_seps(text)
+    if not pieces:
         return []
 
     if count_tokens is not None:
-        return _group(sentences, limit=max_tokens, measure=count_tokens)
-    return _group(sentences, limit=max_chars, measure=len)
+        return _group(pieces, limit=max_tokens, measure=count_tokens)
+    return _group(pieces, limit=max_chars, measure=len)
 
 
 def _group(
-    sentences: list[str],
+    pieces: list[str],
     limit: int,
     measure: Callable[[str], int],
 ) -> list[str]:
-    """문장을 `measure` 기준 `limit` 이하가 되도록 순서대로 묶는다.
+    """문장(+ 원래 경계 문자)을 `measure` 기준 `limit` 이하가 되도록 순서대로 묶는다.
 
     묶은 결과를 실제로 재측정한다 — 문장별 측정값의 합은 실제 결합 결과와
     다를 수 있다(토크나이저는 특수 토큰을 붙이고, 경계에서 토큰이 합쳐지기도
     한다). 합산 추정만 믿으면 한도를 넘긴 청크가 새어 나간다.
+
+    `pieces`는 이미 각자 뒤에 원래 구분자(`\\n` 또는 `" "`)를 달고 있어
+    `"".join()`으로만 이어 붙인다 — 여기서 `" ".join()`을 쓰면 다시
+    문단 경계가 뭉개진다(T10.50).
     """
     chunks: list[str] = []
     current: list[str] = []
 
-    for sentence in sentences:
+    for piece in pieces:
         if not current:
-            current = [sentence]
+            current = [piece]
             continue
 
-        candidate = " ".join([*current, sentence])
+        candidate = "".join([*current, piece]).rstrip()
         if measure(candidate) > limit:
-            chunks.append(" ".join(current))
-            current = [sentence]
+            chunks.append("".join(current).rstrip())
+            current = [piece]
         else:
-            current = [*current, sentence]
+            current = [*current, piece]
 
     if current:
-        chunks.append(" ".join(current))
+        chunks.append("".join(current).rstrip())
 
     return chunks

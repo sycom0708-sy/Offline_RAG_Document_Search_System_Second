@@ -77,3 +77,26 @@ def test_chunk_text_single_long_sentence_kept_whole(force_kss_import_error):
     long_sentence = "가" * 500 + "."
     chunks = chunk_text(long_sentence, max_chars=100)
     assert chunks == [long_sentence]
+
+
+def test_chunk_text_preserves_paragraph_breaks_when_regrouping(force_kss_import_error):
+    """🔴 실사용 검증에서 실제로 잡은 버그(T10.50): 파서가 `\\n`으로 이어붙인
+
+    문단 경계를 여기서 공백으로 뭉개면, 원래 별개 문단이던 텍스트가 한
+    문장처럼 이어져 `search/office_link.py`의 딥링크 검색어가 실제
+    문서(Word/PDF) 텍스트와 어긋난다(Find가 항상 실패, 실측 확인).
+    문단 사이 줄바꿈은 재그룹 후에도 그대로 남아 있어야 한다.
+    """
+    text = "단말기 네트워크 구성도\n(업데이트 서버, VAN 서버 등 상호작용하는 객체, 행동 등 서술)"
+    chunks = chunk_text(text, max_chars=1000)
+    assert len(chunks) == 1
+    assert "\n" in chunks[0]
+    assert chunks[0] == text
+
+
+def test_chunk_text_uses_space_within_a_paragraph_not_newline(force_kss_import_error):
+    """같은 문단 안 문장끼리는 여전히 공백으로 잇는다 — \\n은 문단 경계에서만."""
+    text = "첫 문장이다. 둘째 문장이다."
+    chunks = chunk_text(text, max_chars=1000)
+    assert chunks == ["첫 문장이다. 둘째 문장이다."]
+    assert "\n" not in chunks[0]

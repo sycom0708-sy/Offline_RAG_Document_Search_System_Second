@@ -20,9 +20,14 @@ from indexer.fts5.search import SearchResult
 from parser.schema import ChunkType, ImageData, TableData
 from search.hybrid_search import HybridResult
 from search.office_link import (
+    _DOCX_SCRIPT,
+    _PPTX_SCRIPT,
+    _XLSX_SCRIPT,
+    OfficeAutomationFailedError,
     OpenPlan,
     _build_needle_ladder,
     _longest_cell,
+    _open_pdf_at_page,
     is_office_available,
     plan_open,
 )
@@ -121,13 +126,31 @@ class TestPlanOpenDocx:
         assert plan_open(_hybrid(result)).is_empty()
 
 
+class TestPlanOpenPdf:
+    """pdf는 pptx와 같은 방식이다 — 페이지 번호만으로 충분하다(T10.50).
+
+    docx TEXT 청크와 달리 chunker.py의 문장 재그룹을 거쳐도 페이지 번호
+    자체는 훼손되지 않으므로 needle 없이 page_or_slide만으로 딥링크가 된다.
+    """
+
+    def test_text_chunk_uses_page_number_only(self):
+        result = _result("x.pdf", ChunkType.TEXT, page_or_slide=3, content="본문")
+        plan = plan_open(_hybrid(result))
+        assert plan == OpenPlan(page_or_slide=3)
+
+    def test_table_and_image_chunks_also_use_page_number(self):
+        for chunk_type in (ChunkType.TABLE, ChunkType.IMAGE):
+            result = _result("x.pdf", chunk_type, page_or_slide=7)
+            assert plan_open(_hybrid(result)) == OpenPlan(page_or_slide=7)
+
+    def test_missing_page_number_yields_empty_plan(self):
+        result = _result("x.pdf", ChunkType.TEXT, page_or_slide=None)
+        assert plan_open(_hybrid(result)).is_empty()
+
+
 class TestPlanOpenUnsupportedFormats:
     def test_txt_yields_empty_plan_regardless_of_content(self):
         result = _result("x.txt", ChunkType.TEXT, content="충분히 긴 본문 내용입니다" * 10)
-        assert plan_open(_hybrid(result)).is_empty()
-
-    def test_pdf_yields_empty_plan(self):
-        result = _result("x.pdf", ChunkType.TEXT, page_or_slide=1, content="본문")
         assert plan_open(_hybrid(result)).is_empty()
 
 
@@ -205,6 +228,115 @@ class TestIsOfficeAvailable:
 
         monkeypatch.setattr(winreg, "OpenKey", _raise)
         assert is_office_available(".pptx") is False
+
+
+class TestIsOfficeAvailablePdf:
+    """PDF는 Office COM ProgID가 아니라 Edge PDF 뷰어 여부로 판단한다 (T10.50)."""
+
+    def test_edge_default_and_exe_found_is_true(self, monkeypatch):
+        import search.office_link as office_link
+
+        monkeypatch.setattr(office_link, "_pdf_default_progid", lambda: "MSEdgePDF")
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: r"C:\edge\msedge.exe")
+        assert is_office_available(".pdf") is True
+
+    def test_non_edge_default_is_false(self, monkeypatch):
+        import search.office_link as office_link
+
+        monkeypatch.setattr(office_link, "_pdf_default_progid", lambda: "AcroExch.Document")
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: r"C:\edge\msedge.exe")
+        assert is_office_available(".pdf") is False
+
+    def test_edge_default_but_exe_missing_is_false(self, monkeypatch):
+        import search.office_link as office_link
+
+        monkeypatch.setattr(office_link, "_pdf_default_progid", lambda: "MSEdgePDF")
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: None)
+        assert is_office_available(".pdf") is False
+
+    def test_no_user_choice_registered_is_false(self, monkeypatch):
+        import search.office_link as office_link
+
+        monkeypatch.setattr(office_link, "_pdf_default_progid", lambda: None)
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: r"C:\edge\msedge.exe")
+        assert is_office_available(".pdf") is False
+
+
+class TestOpenPdfAtPage:
+    """`_open_pdf_at_page()`는 msedge.exe를 직접 실행한다 — 실제 창은 안 띄운다(Popen 모킹)."""
+
+    def test_launches_msedge_with_single_argument_and_page_fragment(self, monkeypatch, tmp_path):
+        import search.office_link as office_link
+
+        pdf_path = tmp_path / "문서.pdf"
+        pdf_path.write_bytes(b"%PDF-1.4")
+
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: r"C:\edge\msedge.exe")
+        captured = {}
+
+        def _fake_popen(args, **kwargs):
+            captured["args"] = args
+
+        monkeypatch.setattr(office_link.subprocess, "Popen", _fake_popen)
+
+        office_link._open_pdf_at_page(str(pdf_path), OpenPlan(page_or_slide=5))
+
+        args = captured["args"]
+        assert args[0] == r"C:\edge\msedge.exe"
+        assert args[1] == "--single-argument"
+        assert args[2].startswith("file:")
+        assert args[2].endswith("#page=5")
+
+    def test_missing_page_number_raises(self, tmp_path):
+        with pytest.raises(OfficeAutomationFailedError):
+            _open_pdf_at_page(str(tmp_path / "x.pdf"), OpenPlan())
+
+    def test_msedge_not_found_raises(self, monkeypatch, tmp_path):
+        import search.office_link as office_link
+
+        monkeypatch.setattr(office_link, "_find_msedge_exe", lambda: None)
+        with pytest.raises(OfficeAutomationFailedError):
+            _open_pdf_at_page(str(tmp_path / "x.pdf"), OpenPlan(page_or_slide=1))
+
+
+class TestComScriptOpenIsOutsideNavigationTryBlock:
+    """🔴 실제로 재현한 회귀(T10.51): "파일 열기"와 "위치로 이동"이 하나의
+
+    try/catch로 묶여 있으면, 파일은 이미 정상적으로 열렸는데 위치 이동
+    (Find/GotoSlide/Worksheets.Item)만 실패해도 스크립트 전체가 실패로
+    처리돼 파이썬 쪽 폴백이 **새 프로세스로 같은 파일을 한 번 더** 연다
+    (실측: xlsx 하나로 Excel 창 두 개가 동시에 떴다). `.Open()` 호출이
+    `try {` 블록보다 앞에 있어야 이 회귀가 재발하지 않는다 — 실제 COM을
+    띄우지 않고도 문자열 구조로 지킬 수 있는 불변식이다.
+    """
+
+    @pytest.mark.parametrize(
+        "script,open_call",
+        [
+            (_DOCX_SCRIPT, "$word.Documents.Open("),
+            (_PPTX_SCRIPT, "$ppt.Presentations.Open("),
+            (_XLSX_SCRIPT, "$excel.Workbooks.Open("),
+        ],
+    )
+    def test_open_call_precedes_try_block(self, script, open_call):
+        open_index = script.index(open_call)
+        try_index = script.index("try {")
+        assert open_index < try_index
+
+
+class TestPptxVisibleIsNotPlainBoolean:
+    """🔴 실제로 재현한 별개 버그: PowerPoint의 `Application.Visible`은
+
+    Word/Excel과 달리 순수 Boolean이 아니라 `MsoTriState` 열거형이다.
+    이 서브프로세스 실행 컨텍스트에서는 `$ppt.Visible = $true`가 자동으로
+    `MsoTriState`로 캐스팅되지 않고 예외가 난다(실측 확인 — pptx 실 문서로
+    처음 종단 검증했을 때 드러났다; 이전까지는 실 pptx가 없어 안 걸렸다).
+    `-1`(MsoTriState.msoTrue의 실제 값)을 쓰면 어떤 컨텍스트에서도 안전하다.
+    """
+
+    def test_pptx_script_does_not_assign_plain_bool_to_visible(self):
+        assert "$ppt.Visible = $true" not in _PPTX_SCRIPT
+        assert "$ppt.Visible = -1" in _PPTX_SCRIPT
 
 
 requires_office = pytest.mark.skipif(
