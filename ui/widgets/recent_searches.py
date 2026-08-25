@@ -16,7 +16,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QLabel, QLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 SECTION_LABEL = "최근 검색"
 # 실제 배치 전(첫 resizeEvent 전)에는 가용 높이를 알 수 없다 — Phase
@@ -32,10 +39,70 @@ _RESERVED_ROWS = 10
 _ITEM_WIDTH = 188
 # QSS #RecentSearchItem의 padding(5px 0)만큼 폰트 높이에 더한다 — 근사치.
 _ROW_PADDING = 10
+# 삭제(✕) 버튼 한 칸 — 마우스가 행 위에 있을 때만 보이지만, 나타날 때
+# 검색어 텍스트가 옆으로 밀리지 않도록 항상 이 너비만큼은 비워 둔다.
+_DELETE_BUTTON_SIZE = 18
+_ROW_SPACING = 4
+_TEXT_WIDTH = _ITEM_WIDTH - _DELETE_BUTTON_SIZE - _ROW_SPACING
+
+
+class _RecentSearchRow(QWidget):
+    """최근 검색 한 줄. 마우스가 올라오면 삭제(✕) 버튼이 나타난다."""
+
+    selected = Signal(str)
+    delete_requested = Signal(str)
+
+    def __init__(self, query: str, elided_text: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.query = query
+        self.setToolTip(query)  # 잘린 전체 문구는 툴팁으로
+
+        self.text_button = QPushButton(elided_text, self)
+        self.text_button.setObjectName("RecentSearchItem")
+        self.text_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.text_button.setFlat(True)
+        self.text_button.setToolTip(query)
+        self.text_button.clicked.connect(lambda: self.selected.emit(self.query))
+
+        self.delete_button = QPushButton("✕", self)  # ✕
+        self.delete_button.setObjectName("RecentSearchDeleteButton")
+        self.delete_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.delete_button.setFlat(True)
+        self.delete_button.setFixedSize(_DELETE_BUTTON_SIZE, _DELETE_BUTTON_SIZE)
+        self.delete_button.setToolTip("삭제")
+        # 숨겨도 자리는 그대로 차지하게 한다 — 안 그러면 마우스가 올라올 때
+        # 마다 검색어 버튼 폭이 늘었다 줄었다 하며 화면이 흔들린다.
+        policy = self.delete_button.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.delete_button.setSizePolicy(policy)
+        self.delete_button.setVisible(False)
+        self.delete_button.clicked.connect(lambda: self.delete_requested.emit(self.query))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_ROW_SPACING)
+        layout.addWidget(self.text_button, 1)
+        layout.addWidget(self.delete_button, 0)
+
+    def enterEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().enterEvent(event)
+        self.delete_button.setVisible(True)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 — Qt 규약
+        super().leaveEvent(event)
+        self.delete_button.setVisible(False)
+
+    # 기존 코드·테스트가 "행 = 버튼"으로 다루던 것과 호환되도록 위임한다.
+    def text(self) -> str:
+        return self.text_button.text()
+
+    def click(self) -> None:
+        self.text_button.click()
 
 
 class RecentSearches(QWidget):
     item_selected = Signal(str)
+    item_delete_requested = Signal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -157,20 +224,16 @@ class RecentSearches(QWidget):
         self.updateGeometry()
 
         self.setVisible(bool(visible))
+        metrics = QFontMetrics(self.font())
         for query in visible:
             # 🔴 부모를 생성 시점에 준다. 부모 없는 QWidget은 Qt에서 최상위
             # 창이라, 레이아웃에 넣기 전 짧은 순간이라도 화면에 별도 창처럼
             # 튀어나올 수 있다 — 위 재렌더 억제와 함께 깜박임의 원인이었다.
-            button = QPushButton(self)
-            button.setObjectName("RecentSearchItem")
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setFlat(True)
-            button.setToolTip(query)  # 잘린 전체 문구는 툴팁으로
-            metrics = QFontMetrics(button.font())
-            elided = metrics.elidedText(query, Qt.TextElideMode.ElideRight, _ITEM_WIDTH)
-            button.setText(elided)
-            button.clicked.connect(lambda _checked=False, q=query: self.item_selected.emit(q))
-            self._list_layout.addWidget(button)
+            elided = metrics.elidedText(query, Qt.TextElideMode.ElideRight, _TEXT_WIDTH)
+            row = _RecentSearchRow(query, elided, self)
+            row.selected.connect(self.item_selected)
+            row.delete_requested.connect(self.item_delete_requested)
+            self._list_layout.addWidget(row)
 
     def sizeHint(self) -> QSize:
         """자리로 잡아둔 높이를 선호 크기로 돌려준다.

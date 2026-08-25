@@ -114,6 +114,10 @@ class AppState:
         self.recent_searches = [query] + [q for q in self.recent_searches if q != query]
         del self.recent_searches[RECENT_SEARCHES_LIMIT:]
 
+    def remove_recent_search(self, query: str) -> None:
+        """최근 검색 목록에서 특정 검색어 한 건을 지운다."""
+        self.recent_searches = [q for q in self.recent_searches if q != query]
+
     def save(self, path: Path | None = None) -> None:
         target = path if path is not None else self._path
         target.parent.mkdir(parents=True, exist_ok=True)

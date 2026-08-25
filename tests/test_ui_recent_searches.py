@@ -9,6 +9,9 @@ PC 성능 선택 바로 아래에서 시작해 아래로 자라고, 공간이 �
 
 from __future__ import annotations
 
+from PySide6.QtCore import QEvent, QPointF
+from PySide6.QtGui import QEnterEvent
+
 from ui.widgets.recent_searches import RecentSearches
 from ui.widgets.sidebar import Sidebar
 
@@ -94,6 +97,57 @@ class TestRecentSearchesGrowthAndEviction:
         button.click()
 
         assert received == [long_query]
+
+
+class TestRecentSearchesDeleteButton:
+    """행에 마우스를 올리면 삭제(✕) 버튼이 나타나고, 누르면 삭제를 요청한다."""
+
+    def test_delete_button_is_hidden_until_hover(self, qtbot):
+        widget = RecentSearches()
+        qtbot.addWidget(widget)
+        widget.set_max_height(10_000)
+        widget.set_items(_NEWEST_FIRST)
+
+        row = widget._list_layout.itemAt(0).widget()
+        # 🔴 isVisible()은 조상 전체가 화면에 붙어야 True다(Phase 7.6·11-C와
+        # 같은 함정) — 이 테스트는 위젯을 띄우지 않으므로 isVisibleTo(row)로
+        # "이 행 기준으로 보이는가"만 확인한다.
+        assert row.delete_button.isVisibleTo(row) is False
+
+        enter_event = QEnterEvent(QPointF(0, 0), QPointF(0, 0), QPointF(0, 0))
+        row.enterEvent(enter_event)
+        assert row.delete_button.isVisibleTo(row) is True
+
+        row.leaveEvent(QEvent(QEvent.Type.Leave))
+        assert row.delete_button.isVisibleTo(row) is False
+
+    def test_clicking_delete_emits_the_query(self, qtbot):
+        widget = RecentSearches()
+        qtbot.addWidget(widget)
+        widget.set_max_height(10_000)
+        widget.set_items(_NEWEST_FIRST)
+
+        received = []
+        widget.item_delete_requested.connect(received.append)
+        row = widget._list_layout.itemAt(1).widget()  # "n2"
+        row.delete_button.click()
+
+        assert received == ["n2"]
+
+    def test_deleting_does_not_also_select_the_item(self, qtbot):
+        """삭제 버튼 클릭이 검색어 버튼 클릭(item_selected)까지 같이 쏘면
+        안 된다 — 두 버튼은 레이아웃만 같은 행일 뿐 별개 위젯이다."""
+        widget = RecentSearches()
+        qtbot.addWidget(widget)
+        widget.set_max_height(10_000)
+        widget.set_items(_NEWEST_FIRST)
+
+        selected = []
+        widget.item_selected.connect(selected.append)
+        row = widget._list_layout.itemAt(0).widget()
+        row.delete_button.click()
+
+        assert selected == []
 
 
 class TestSidebarRecentSearchesPlacement:

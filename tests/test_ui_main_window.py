@@ -347,8 +347,24 @@ class TestRecentSearchWiring:
         assert window._last_query == "리눅스"  # 검색은 아직 실행되지 않았다
 
         window.input_bar.submit_text(window.input_bar.text())  # Enter·검색 버튼을 흉내
+
         assert window._last_query == "계약서"
         qtbot.waitUntil(lambda: window.result_list.card_count() > 0, timeout=SEARCH_TIMEOUT_MS)
+
+    def test_deleting_a_recent_search_removes_it_from_state_and_sidebar(self, qtbot, window):
+        window.input_bar.submit_text("계약서")
+        window.input_bar.submit_text("리눅스")
+
+        row = next(
+            window.sidebar.recent_searches._list_layout.itemAt(i).widget()
+            for i in range(window.sidebar.recent_searches._list_layout.count())
+            if window.sidebar.recent_searches._list_layout.itemAt(i).widget().toolTip() == "계약서"
+        )
+        row.delete_button.click()
+
+        assert "계약서" not in window.state.recent_searches
+        assert "계약서" not in window.sidebar.recent_searches._all_items
+        assert "리눅스" in window.state.recent_searches  # 다른 항목은 그대로
 
 
 class TestReindexFlow:

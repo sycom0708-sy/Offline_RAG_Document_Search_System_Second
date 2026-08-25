@@ -71,6 +71,7 @@ class Sidebar(QFrame):
     page_requested = Signal(str)
     expand_toggled = Signal(bool)
     recent_search_selected = Signal(str)
+    recent_search_delete_requested = Signal(str)
 
     def __init__(self, parent=None, expanded: bool = False) -> None:
         super().__init__(parent)
@@ -133,6 +134,7 @@ class Sidebar(QFrame):
 
         self.recent_searches = RecentSearches()
         self.recent_searches.item_selected.connect(self.recent_search_selected)
+        self.recent_searches.item_delete_requested.connect(self.recent_search_delete_requested)
         self._layout.addWidget(self.recent_searches)
 
         # `set_expanded`/`set_active_page`가 서로의 값을 읽으므로 둘 다 먼저

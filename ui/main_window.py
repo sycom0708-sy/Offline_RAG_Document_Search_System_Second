@@ -230,6 +230,9 @@ class MainWindow(QMainWindow):
         # 하고, 검색은 사용자가 직접 Enter·검색 버튼을 눌러야 시작된다
         # (이전엔 submit_text로 클릭 즉시 검색이 실행됐다).
         self.sidebar.recent_search_selected.connect(self.input_bar.set_text)
+        self.sidebar.recent_search_delete_requested.connect(
+            self._on_recent_search_delete_requested
+        )
         self.sidebar.page_requested.connect(self.show_page)
         self.sidebar.expand_toggled.connect(self._on_expand_toggled)
 
@@ -284,6 +287,11 @@ class MainWindow(QMainWindow):
         """확장 상태는 다음 실행에서도 유지한다(DESIGN §14.2.2)."""
         self.state.search_expanded = expanded
         self.state.save()
+
+    def _on_recent_search_delete_requested(self, query: str) -> None:
+        self.state.remove_recent_search(query)
+        self.state.save()  # 인자 없이 — T10.5가 기억해둔 경로로 저장된다
+        self.sidebar.set_recent_searches(self.state.recent_searches)
 
     # --- 입력 라우팅 (Phase 7.7) --------------------------------------------
 

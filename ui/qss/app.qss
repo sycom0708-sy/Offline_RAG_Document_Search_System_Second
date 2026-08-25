@@ -263,6 +263,18 @@ QMainWindow, #CentralWidget {
     color: #2563EB;
 }
 
+#RecentSearchDeleteButton {
+    border: none;
+    background: transparent;
+    color: #9CA3AF;
+    font-size: 11px;
+    padding: 0;
+}
+
+#RecentSearchDeleteButton:hover {
+    color: #DC2626;
+}
+
 /* 사이드바 하단 "모델 관리"·"폴더 관리" (Phase 7.7 — 각각 PerformanceCombo·
    StatusBar에 흩어져 있던 것을 옮겼다) */
 #SidebarFooterButton {
