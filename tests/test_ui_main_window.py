@@ -2089,6 +2089,14 @@ class TestSettingsPageOptions:
         assert page.current_idle_timeout() == 1800
         assert page.current_cpu_mode() == "max"
 
+    def test_open_source_notice_mentions_libreoffice(self, qtbot, window):
+        """구버전 문서 변환에 동봉한 LibreOffice를 사용자가 확인할 수 있게
+
+        설정 화면에 고지한다(사용자 요청, MPLv2/LGPLv3+는 소스 공개 의무는
+        없지만 어떤 오픈소스가 들어있는지 밝히는 게 좋은 관행이다).
+        """
+        assert "LibreOffice" in window.settings_page.open_source_notice_text()
+
     def test_restoring_does_not_look_like_a_user_change(self, qtbot, window):
         """복원이 신호를 쏘면 저장·적용이 도로 돌고, CPU 모드는 모델까지 내린다.
 

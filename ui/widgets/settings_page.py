@@ -50,6 +50,15 @@ CPU_DESCRIPTION = (
 )
 CHAT_RETENTION_LABEL = "챗봇 대화 보관"
 
+# 구버전 문서(doc/xls/ppt) 변환에 LibreOffice Portable을 동봉해 쓴다
+# (Phase 3·9, TECH 9.1). MPLv2/LGPLv3+는 수정 없이 그대로 동봉하는 것 자체엔
+# 소스 공개 의무를 지우지 않지만, 어떤 오픈소스가 들어있는지 사용자가 확인할
+# 수 있게 설정 화면에 고지한다(사용자 요청).
+OPEN_SOURCE_NOTICE = (
+    "이 제품은 LibreOffice(© LibreOffice contributors, MPLv2/LGPLv3+)를 "
+    "구버전 문서(doc/xls/ppt) 변환에 포함하고 있습니다."
+)
+
 # 유휴 종료 시간 선택지(초). Phase 7이 실물로 정한 5분이 기본이다.
 IDLE_CHOICES: tuple[tuple[int, str], ...] = (
     (60, "1분"),
@@ -165,6 +174,7 @@ class SettingsPage(QWidget):
 
         self._build_options_card(root, initial_profile)
         self._build_runtime_card(root)
+        self._build_open_source_card(root)
 
         root.addStretch()
 
@@ -258,6 +268,12 @@ class SettingsPage(QWidget):
         grid.setColumnStretch(1, 1)
         runtime.addLayout(grid)
 
+    def _build_open_source_card(self, root: QVBoxLayout) -> None:
+        licenses = _card(root)
+        licenses.addWidget(_eyebrow("OPEN SOURCE"))
+        licenses.addWidget(_title("오픈소스 라이선스"))
+        self._open_source_notice = _description(licenses, OPEN_SOURCE_NOTICE)
+
     # --- 값 읽기·쓰기 ------------------------------------------------
 
     def _on_keep_resident_toggled(self, resident: bool) -> None:
@@ -323,3 +339,7 @@ class SettingsPage(QWidget):
     def runtime_text(self, key: str) -> str:
         """테스트·검증용."""
         return self._runtime_values[key].text()
+
+    def open_source_notice_text(self) -> str:
+        """테스트·검증용."""
+        return self._open_source_notice.text()
