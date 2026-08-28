@@ -8,11 +8,12 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
@@ -65,6 +66,36 @@ _THREAD_SHUTDOWN_WAIT_MS = 5000
 # 요약은 중앙 18.3초(채택 모델 실측)라 검색과 같은 5초로는 못 기다린다.
 _SUMMARY_SHUTDOWN_WAIT_MS = 20000
 
+# ONNX 임베딩 세션 생성 중 이 계열 PC에서 access violation(0xc0000409류)이
+# 간헐적으로 재현된다 — Phase 8부터 알려진 문제. 실사용에서 실제로 걸린 건
+# 인스톨러 "설치 후 자동 실행" 직후(2026-08-28) — 압축 해제·백신 스캔 직후라
+# 디스크·CPU 경합이 가장 심한 순간에 워밍업 스레드가 곧바로 뜬 것과 겹친다.
+#
+# 🔴 처음엔 "여러 워밍업이 동시에 세션을 만들어서"로 보고 아래 락+세대
+# 카운터로 직렬화했지만, 재확인 결과 **단일 워밍업 스레드만 떠도 크래시가
+# 재현됐다**(전체 테스트 스위트 실행 중, `TestFolderWatch`에서 mock을 잠깐
+# 풀고 재현 — 프로세스가 통째로 죽었다) — 즉 "동시 생성 경합"은 이 크래시의
+# 유일한 원인이 아니다. 근본 원인(Qt 이벤트 루프가 도는 동안 백그라운드
+# 스레드의 네이티브 ONNX 호출이 겹치는 조건 자체의 스레드 안전성 문제로
+# 추정, 정확한 지점은 크래시 덤프 없이는 확정 불가)은 이번에도 못 고쳤다.
+#
+# 그래도 두 조치는 남겨둔다 — ① 락은 "프로파일을 빠르게 여러 번 전환"할 때
+# 정말로 동시에 두 세션이 만들어지는 실재하는 별개의 경합을 막아주고(그
+# 자체로 유효한 수정), ② 아래 `_WARMUP_START_DELAY_MS`로 최초 워밍업을
+# 지연시켜 최소한 "설치 직후 자동 실행"처럼 가장 취약한 순간은 피한다.
+# 둘 다 크래시를 **없앤다는 보장은 없다** — 확률을 줄이는 완화책이다.
+_EMBEDDER_WARMUP_LOCK = threading.Lock()
+# 워밍업이 만든 세션은 이후 실제 검색 재순위에도 재사용된다(`self._embedder`).
+# 코어를 전부 쓰게 두면 스레드 풀 생성 자체가 경합의 원인이 되므로 절반으로
+# 제한한다 — 질의 인코딩은 문장 한두 개짜리라 스레드를 줄여도 체감 지연에
+# 미치는 영향은 미미하다(대량 배치를 도는 인덱싱용 `Embedder`는 이 제한과
+# 무관하게 기본값을 그대로 쓴다).
+_WARMUP_THREAD_CAP = max(1, (os.cpu_count() or 2) // 2)
+# 창을 만들자마자(이벤트 루프가 돌기도 전에) 워밍업을 띄우던 것을 늦춘다 —
+# "설치 후 자동 실행" 직후처럼 디스크·백신 스캔이 아직 안 끝났을 수 있는
+# 가장 불안정한 구간을 피한다.
+_WARMUP_START_DELAY_MS = 2000
+
 
 class _IndexingBridge(QObject):
     """백그라운드 인덱싱 스레드(`threading.Thread`)의 콜백을 Qt 신호로 옮긴다.
@@ -112,6 +143,7 @@ class MainWindow(QMainWindow):
         # `request_id` 비교가 이미 해주므로, 여기서는 살려두기만 하면 된다.
         self._active_workers: set[SearchWorker] = set()
         self._embedder = None  # 백그라운드 워밍업 완료 전까지 None
+        self._warmup_generation = 0  # 프로파일 전환 시 이전 워밍업 결과를 stale 처리
         self._last_query = ""
         self._last_results: list = []
         self._indexing_thread: IndexingThread | None = None
@@ -161,7 +193,9 @@ class MainWindow(QMainWindow):
         self._refresh_status_bar()
         self._refresh_ai_chat_availability()
         self.sidebar.set_recent_searches(self.state.recent_searches)
-        self._start_embedder_warmup()
+        # `_WARMUP_START_DELAY_MS`만큼 늦춰서 띄운다 — 창 생성 직후(이벤트
+        # 루프가 돌기도 전)는 가장 불안정한 순간이다(위 상수 설명 참고).
+        QTimer.singleShot(_WARMUP_START_DELAY_MS, self._start_embedder_warmup)
         self._sync_folder_watcher()  # T8.5: 이전 세션에서 켜뒀으면 자동 재개
 
     # --- UI 구성 --------------------------------------------------
@@ -725,17 +759,27 @@ class MainWindow(QMainWindow):
         완료 전에 검색이 들어오면 `SearchWorker`가 `embedder=None`으로 받아
         내부에서 자체적으로 만든다(느리지만 정상 동작) — 워밍업 실패가
         검색 자체를 막지는 않는다.
+
+        `_EMBEDDER_WARMUP_LOCK`으로 세션 생성을 직렬화하고 `_warmup_generation`
+        으로 낡은 요청을 걸러낸다 — 둘 다 이 파일 상단 상수 설명 참고
+        (0xc0000409 크래시 완화).
         """
+        self._warmup_generation += 1
+        generation = self._warmup_generation
+        profile_key = self.state.model_profile
 
         def warmup() -> None:
-            try:
-                from indexer.vector.embedder import Embedder
+            with _EMBEDDER_WARMUP_LOCK:
+                if generation != self._warmup_generation:
+                    return  # 락을 기다리는 사이 더 최신 요청으로 대체됨
+                try:
+                    from indexer.vector.embedder import Embedder
 
-                embedder = Embedder(get_profile(self.state.model_profile))
-                embedder.count_tokens("")  # 세션 생성을 강제로 트리거
-                self._embedder = embedder
-            except Exception:
-                pass  # 모델 미설치 등 — 조용히 포기, 검색은 키워드 결과로 대체됨
+                    embedder = Embedder(get_profile(profile_key), num_threads=_WARMUP_THREAD_CAP)
+                    embedder.count_tokens("")  # 세션 생성을 강제로 트리거
+                    self._embedder = embedder
+                except Exception:
+                    pass  # 모델 미설치 등 — 조용히 포기, 검색은 키워드 결과로 대체됨
 
         threading.Thread(target=warmup, daemon=True).start()
 

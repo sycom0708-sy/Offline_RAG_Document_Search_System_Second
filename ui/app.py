@@ -8,11 +8,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from PySide6.QtCore import QSharedMemory
 from PySide6.QtGui import QFont, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication
 
 from config.settings import PROJECT_ROOT
 from ui.main_window import MainWindow
+from ui.widgets.info_dialog import show_info
+
+# 중복 실행 방지에 쓰는 공유 메모리 키. AppUserModelID(_set_taskbar_app_id)와
+# 같은 이름 공간을 쓴다.
+_SINGLE_INSTANCE_KEY = "ATECMobility.OfflineRAGSearch.SingleInstanceGuard"
 
 # `PROJECT_ROOT`(config.settings)를 쓴다 — `__file__` 기준이면 PyInstaller로
 # 얼린 exe에서 `font/`를 exe 옆이 아니라 번들 내부 기준으로 잘못 찾는다 (T9.2).
@@ -51,6 +57,24 @@ def _set_taskbar_app_id() -> None:
         pass  # 실패해도 앱 동작에는 지장 없다 — 작업표시줄 아이콘만 원래대로 남는다
 
 
+def _acquire_single_instance_guard(key: str = _SINGLE_INSTANCE_KEY) -> QSharedMemory | None:
+    """이미 다른 인스턴스가 떠 있으면 None, 아니면 자리를 지키는 객체를 돌려준다.
+
+    Windows의 공유 메모리 세그먼트는 참조 카운트 기반 커널 객체라 이걸 쥔
+    프로세스가 (정상 종료든 크래시든) 끝나면 시스템이 자동으로 해제한다 —
+    그래서 잔류 락 파일 걱정 없이 `attach()` 성공 여부만으로 중복 실행을
+    판별할 수 있다. 반환값은 호출자가 앱 수명 동안 붙들고 있어야
+    가비지컬렉션으로 조기에 풀리지 않는다. `key`는 테스트가 실제 실행 중인
+    앱과 충돌하지 않도록 격리된 값을 넣을 수 있게 매개변수로 뺐다.
+    """
+    guard = QSharedMemory(key)
+    if guard.attach():
+        return None
+    if not guard.create(1):
+        return None  # 생성마저 실패하면(권한 등) 중복 실행 방지를 포기하고 그냥 띄운다
+    return guard
+
+
 def create_app() -> QApplication:
     _set_taskbar_app_id()
     app = QApplication.instance() or QApplication(sys.argv)
@@ -76,6 +100,15 @@ def create_app() -> QApplication:
 
 def main() -> int:
     app = create_app()
+
+    guard = _acquire_single_instance_guard()
+    if guard is None:
+        show_info(
+            "이미 실행 중입니다",
+            "ATEC DocsAI가 이미 실행되고 있습니다. 작업 표시줄에서 확인해주세요.",
+        )
+        return 0
+    app.single_instance_guard = guard  # 앱 수명 동안 붙들어 GC로 조기 해제되지 않게 한다
 
     window = MainWindow()
     window.setWindowTitle("ATEC DocsAI")

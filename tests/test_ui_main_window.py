@@ -504,6 +504,10 @@ class TestFolderWatch:
         ONNX 세션 생성이 겹쳐 이 PC에서 재현되는 기존 크래시(access
         violation)를 훨씬 자주 유발한다 — 실제로 겪었다. 이 클래스의
         어떤 테스트도 `_embedder`를 쓰지 않으므로 워밍업 자체를 꺼서 피한다.
+
+        🔴 2026-08-28 재확인: 락+세대 카운터로 동시 세션 생성 자체를 막아도
+        이 클래스에서 크래시가 그대로 재현됐다 — 원인이 "동시 생성 경합"
+        하나만은 아니라는 뜻. 그래서 이 모킹은 계속 필요하다(제거 금지).
         """
         monkeypatch.setattr(MainWindow, "_start_embedder_warmup", lambda self: None)
 

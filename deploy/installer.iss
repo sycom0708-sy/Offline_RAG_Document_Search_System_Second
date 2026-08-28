@@ -10,7 +10,7 @@
 ;      결과물은 deploy\output\OfflineRAGSearchSetup.exe
 
 #define MyAppName "오프라인 문서 검색"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppExeName "OfflineRAGSearch.exe"
 ; ISCC /DMyDistDir=... 로 덮어쓸 수 있다 — LibreOffice가 확장자 레지스트리에
 ; 아주 깊은 임시 폴더를 만드는데(예: .../PackageRegistryBackend/lu....tmp/
@@ -29,8 +29,12 @@ AppVersion={#MyAppVersion}
 ; 설치 마법사·제거 프로그램 아이콘도 앱과 같은 문서+돋보기 아이콘으로.
 SetupIconFile=..\ui\icons\app.ico
 ; 관리자 권한 없이 사용자 폴더에 설치 — PRD 4장 전제.
+; 기본 설치 위치는 바탕화면(사용자 확정, 2026-08-27) — Program Files는
+; 일반 사용자 쓰기 권한이 없어 관리자 권한 필요 + 앱이 exe 옆에 쓰는
+; data/(인덱스·설정·로그)가 실패하거나 VirtualStore로 리다이렉트되는
+; 문제가 있어 배제했다. {userdesktop}은 admin 없이도 항상 쓰기 가능하다.
 PrivilegesRequired=lowest
-DefaultDirName={localappdata}\{#MyAppName}
+DefaultDirName={userdesktop}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=output
