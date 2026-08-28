@@ -34,6 +34,11 @@ SetupIconFile=..\ui\icons\app.ico
 ; data/(인덱스·설정·로그)가 실패하거나 VirtualStore로 리다이렉트되는
 ; 문제가 있어 배제했다. {userdesktop}은 admin 없이도 항상 쓰기 가능하다.
 PrivilegesRequired=lowest
+; 실행 중인 앱 위에 그대로 설치하면 아직 로드된 DLL(python314.dll 등)을
+; 덮어쓰다 충돌한다(실사용 중 발견, 2026-08-28) — 앱이 시작할 때 만드는
+; 같은 이름의 뮤텍스(`ui/app.py`의 `_create_app_mutex()`)가 있으면 설치를
+; 시작하기 전에 먼저 종료해달라고 막는다.
+AppMutex=ATECMobility.OfflineRAGSearch.Mutex
 DefaultDirName={userdesktop}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes

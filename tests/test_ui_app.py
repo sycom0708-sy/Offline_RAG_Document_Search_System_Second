@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import sys
 import uuid
 
-from ui.app import _acquire_single_instance_guard
+from ui.app import _APP_MUTEX_NAME, _acquire_single_instance_guard, _create_app_mutex
 
 
 def _unique_key() -> str:
@@ -60,3 +61,29 @@ class TestSingleInstanceGuard:
                 first.detach()
             if second is not None:
                 second.detach()
+
+
+class TestAppMutex:
+    """인스톨러(`deploy/installer.iss`의 `AppMutex`)가 감지하는 뮤텍스.
+
+    실행 중인 앱 위에 재설치하면 로드된 DLL을 덮어쓰다 충돌하던 문제
+    (실사용 중 발견, 2026-08-28)를 막으려고 추가했다 — Inno Setup이 실제로
+    감지할 수 있는지는 이 뮤텍스가 Win32 `OpenMutexW`로 열리는지로 검증한다.
+    """
+
+    def test_creates_a_detectable_named_mutex(self):
+        if sys.platform != "win32":
+            return  # Windows 전용 — 다른 플랫폼에서는 그냥 통과
+        import ctypes
+
+        _create_app_mutex()
+        handle = ctypes.windll.kernel32.OpenMutexW(0x00100000, False, _APP_MUTEX_NAME)
+        try:
+            assert handle  # 0이 아니면 뮤텍스가 실제로 존재해 Inno Setup이 감지할 수 있다
+        finally:
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+
+    def test_calling_twice_does_not_raise(self):
+        _create_app_mutex()
+        _create_app_mutex()  # 이미 있는 뮤텍스를 다시 열어도 예외 없이 통과해야 한다

@@ -19,6 +19,8 @@ from ui.widgets.info_dialog import show_info
 # 중복 실행 방지에 쓰는 공유 메모리 키. AppUserModelID(_set_taskbar_app_id)와
 # 같은 이름 공간을 쓴다.
 _SINGLE_INSTANCE_KEY = "ATECMobility.OfflineRAGSearch.SingleInstanceGuard"
+# 인스톨러(`deploy/installer.iss`의 `AppMutex`)가 감지하는 이름 있는 뮤텍스.
+_APP_MUTEX_NAME = "ATECMobility.OfflineRAGSearch.Mutex"
 
 # `PROJECT_ROOT`(config.settings)를 쓴다 — `__file__` 기준이면 PyInstaller로
 # 얼린 exe에서 `font/`를 exe 옆이 아니라 번들 내부 기준으로 잘못 찾는다 (T9.2).
@@ -57,6 +59,27 @@ def _set_taskbar_app_id() -> None:
         pass  # 실패해도 앱 동작에는 지장 없다 — 작업표시줄 아이콘만 원래대로 남는다
 
 
+def _create_app_mutex() -> None:
+    """인스톨러가 감지할 이름 있는 Win32 뮤텍스를 만든다.
+
+    실행 중인 앱 위에 새 버전을 설치하면 인스톨러가 아직 로드돼 있는
+    `python314.dll` 등을 덮어쓰다 충돌한다(실사용 중 발견, 2026-08-28) —
+    Inno Setup의 `AppMutex`는 이 이름의 뮤텍스가 있으면 설치를 시작하기
+    **전에** "먼저 앱을 종료해달라"고 막아준다. `_acquire_single_instance_guard`
+    (QSharedMemory)와는 별개다 — Inno Setup은 Win32 뮤텍스만 인식해서 감지용을
+    따로 만든다. 핸들을 명시적으로 닫지 않아도 프로세스가 끝나면 시스템이
+    자동으로 해제한다.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.CreateMutexW(None, False, _APP_MUTEX_NAME)
+    except (AttributeError, OSError):
+        pass  # 실패해도 앱 동작에는 지장 없다 — 인스톨러의 실행 중 감지만 못 한다
+
+
 def _acquire_single_instance_guard(key: str = _SINGLE_INSTANCE_KEY) -> QSharedMemory | None:
     """이미 다른 인스턴스가 떠 있으면 None, 아니면 자리를 지키는 객체를 돌려준다.
 
@@ -77,6 +100,7 @@ def _acquire_single_instance_guard(key: str = _SINGLE_INSTANCE_KEY) -> QSharedMe
 
 def create_app() -> QApplication:
     _set_taskbar_app_id()
+    _create_app_mutex()
     app = QApplication.instance() or QApplication(sys.argv)
     _load_fonts()
 
