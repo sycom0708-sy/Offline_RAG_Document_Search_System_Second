@@ -33,6 +33,15 @@ def _project_root() -> Path:
 PROJECT_ROOT = _project_root()
 MODELS_DIR = PROJECT_ROOT / "models"
 
+# 앱 자신의 인덱스 DB·설정·로그·자산이 쌓이는 곳. `indexer/scanner.py`가
+# 스캔 대상에서 항상 제외한다 — 사용자가 검색 대상 폴더로 이 폴더(또는 이
+# 폴더를 포함하는 상위 폴더)를 고르면, 인덱싱이 `data/index.sqlite3`·
+# `data/app_state.json`·`data/logs/*.log`에 쓰기를 하고 그 변경을 폴더
+# 감시가 다시 감지해 재인덱싱하는 무한 루프가 실사용 중 실제로 재현됐다
+# (2026-08-28, 진단 로그 파일 자체가 "문서"로 인식돼 매번 인덱싱되며 내용이
+# 계속 불어났다).
+DATA_DIR = PROJECT_ROOT / "data"
+
 # 파서가 추출·캡처한 이미지를 모아두는 곳 (Phase 11-D).
 #
 # 예전에는 문서 폴더 옆에 `<문서폴더>/.assets/<파일명>/`으로 흩어져 저장됐다

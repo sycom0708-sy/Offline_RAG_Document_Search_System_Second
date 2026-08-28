@@ -14,14 +14,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from config.settings import (
+    DATA_DIR,
     DEFAULT_CHAT_RETAIN_TURNS,
     DEFAULT_SLM_PROFILE,
     LIGHT,
-    PROJECT_ROOT,
     SLM_IDLE_TIMEOUT_SEC,
 )
 
-DATA_DIR = PROJECT_ROOT / "data"
 STATE_PATH = DATA_DIR / "app_state.json"
 DB_PATH = DATA_DIR / "index.sqlite3"
 RECENT_SEARCHES_LIMIT = 10

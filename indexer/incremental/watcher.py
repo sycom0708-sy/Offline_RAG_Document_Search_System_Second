@@ -18,7 +18,23 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from config.settings import DATA_DIR
+
 DEFAULT_DEBOUNCE_SECONDS = 3.0
+
+# 감시 대상 폴더가 앱 자신의 data/를 포함하면(예: 대상 폴더를 잘못 골랐거나
+# data/를 포함하는 상위 폴더를 골랐을 때), 재인덱싱이 data/에 쓴 변경을
+# 감시가 다시 감지해 무한 재인덱싱하는 루프가 실사용 중 재현됐다
+# (2026-08-28) — data/ 안에서 나는 이벤트는 어떤 이유로든 무시한다.
+_DATA_DIR_RESOLVED = DATA_DIR.resolve()
+
+
+def _is_within_data_dir(raw_path: str) -> bool:
+    try:
+        resolved = Path(raw_path).resolve()
+    except OSError:
+        return False
+    return resolved == _DATA_DIR_RESOLVED or _DATA_DIR_RESOLVED in resolved.parents
 
 
 class _DebouncedHandler(FileSystemEventHandler):
@@ -32,6 +48,11 @@ class _DebouncedHandler(FileSystemEventHandler):
 
     def _schedule(self, event) -> None:
         if event.is_directory:
+            return
+        if _is_within_data_dir(event.src_path):
+            return
+        dest_path = getattr(event, "dest_path", None)
+        if dest_path and _is_within_data_dir(dest_path):
             return
         with self._lock:
             if self._timer is not None:

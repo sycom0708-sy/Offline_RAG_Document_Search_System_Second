@@ -86,6 +86,36 @@ def test_stop_joins_the_observer_thread(tmp_path):
     assert not watcher._observer.is_alive()
 
 
+def test_changes_inside_app_data_dir_do_not_trigger_on_change(tmp_path, monkeypatch):
+    """앱 자신의 data/ 폴더 안에서 나는 변경은 무시해야 한다.
+
+    대상 폴더를 앱의 data/ 폴더(또는 이를 포함하는 상위 폴더)로 잘못 고르면,
+    재인덱싱이 data/index.sqlite3·data/app_state.json·data/logs/*.log에
+    쓰기를 하고, 그 변경을 감시가 다시 감지해 재인덱싱을 반복하는 무한
+    루프가 실사용 중 재현됐다(2026-08-28) — 감시 쪽에서도 data/ 안의
+    이벤트를 걸러내야 스캔 제외(scanner.py)만으로는 못 막는 "0개 문서인데
+    계속 재트리거되는" 루프까지 완전히 막을 수 있다.
+    """
+    import indexer.incremental.watcher as watcher_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(watcher_module, "_DATA_DIR_RESOLVED", data_dir.resolve())
+
+    fired = threading.Event()
+    watcher = FolderWatcher(tmp_path, on_change=fired.set, debounce_seconds=_FAST_DEBOUNCE)
+    watcher.start()
+    try:
+        (data_dir / "index.sqlite3").write_text("변경", encoding="utf-8")
+        assert not fired.wait(timeout=1), "data/ 안의 변경인데 on_change가 불렸음"
+
+        # data/ 바깥의 진짜 변경은 여전히 정상적으로 감지돼야 한다.
+        (tmp_path / "진짜문서.txt").write_text("내용", encoding="utf-8")
+        assert fired.wait(timeout=5), "data/ 바깥 변경이 감지되지 않음"
+    finally:
+        watcher.stop()
+
+
 def test_starting_on_missing_folder_raises(tmp_path):
     missing = tmp_path / "없는폴더"
     watcher = FolderWatcher(missing, on_change=lambda: None)

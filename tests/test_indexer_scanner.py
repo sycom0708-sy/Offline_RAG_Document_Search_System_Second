@@ -64,6 +64,42 @@ def test_count_supported_matches_scan_length(tmp_path):
     assert count_supported(tmp_path) == 2 == len(list(scan_folder(tmp_path)))
 
 
+def test_scan_skips_app_data_dir_anywhere_under_root(tmp_path, sample_txt, monkeypatch):
+    """앱 자신의 data/ 폴더는 대상 폴더 어디에 있든 스캔 대상이 아니다.
+
+    사용자가 검색 대상 폴더를 앱의 data/ 폴더(또는 이를 포함하는 상위
+    폴더)로 잘못 고르면, 인덱싱이 data/index.sqlite3·data/app_state.json·
+    data/logs/*.log에 쓰기를 하고 그 변경을 폴더 감시가 다시 감지해
+    재인덱싱하는 무한 루프가 실사용 중 재현됐다(2026-08-28) — 특히 진단
+    로그 파일이 "문서"로 인식돼 매번 인덱싱되며 내용이 계속 불어났다.
+    """
+    import shutil
+
+    import indexer.scanner as scanner_module
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(scanner_module, "_DATA_DIR_RESOLVED", data_dir.resolve())
+
+    shutil.copy(sample_txt, tmp_path / "보고서.txt")
+    shutil.copy(sample_txt, data_dir / "index_log.txt")
+
+    names = [p.name for p in scan_folder(tmp_path)]
+    assert names == ["보고서.txt"]
+
+
+def test_scan_of_app_data_dir_itself_returns_nothing(tmp_path, sample_txt, monkeypatch):
+    """대상 폴더로 data/ 자체를 고른 경우(사용자가 실제로 저지른 실수)."""
+    import shutil
+
+    import indexer.scanner as scanner_module
+
+    monkeypatch.setattr(scanner_module, "_DATA_DIR_RESOLVED", tmp_path.resolve())
+    shutil.copy(sample_txt, tmp_path / "indexing_log.txt")
+
+    assert list(scan_folder(tmp_path)) == []
+
+
 def test_scan_skips_office_lock_files(tmp_path, sample_txt):
     """Office 잠금 파일(`~$...`)은 대상이 아니다 (Phase 11-B).
 
