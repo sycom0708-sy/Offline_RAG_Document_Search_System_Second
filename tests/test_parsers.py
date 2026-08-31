@@ -499,6 +499,86 @@ class TestDocxHeadingTracking:
         assert first.heading == ""
 
 
+class TestDocxLegacyCaptionFix:
+    """T10.52 — `.doc`→LibreOffice 변환에서 깨지는 캡션 번호를 `fix_legacy_captions=True`일 때만 고친다.
+
+    순정 docx(플래그 기본값 False)는 절대 건드리면 안 된다 — Word가 저장 시점에
+    필드를 이미 올바르게 계산해뒀으므로, 우연히 전역 순번처럼 보이는 정상 캡션까지
+    잘못 고칠 위험이 있다(조사 문서 §4).
+    """
+
+    def _build(self, tmp_path):
+        import docx
+
+        source = docx.Document()
+        source.add_paragraph("1장 개요", style="Heading 1")
+        source.add_paragraph("2장 통신", style="Heading 1")
+        source.add_paragraph("[표 2-1] 요청 패킷")
+        source.add_paragraph("[표 2-2] 응답 패킷")
+        source.add_paragraph("3장 진단", style="Heading 1")
+        source.add_paragraph("[표 3-3] 진단 코드")  # 깨짐 — 원래 3-1
+        source.add_paragraph("4장 배터리", style="Heading 1")
+        source.add_paragraph("[표 4-4] 배터리 상태 표")  # 깨짐 — 원래 4-1
+        path = tmp_path / "sample.docx"
+        source.save(path)
+        return path
+
+    def test_broken_captions_are_recomputed_when_flag_is_on(self, tmp_path):
+        from parser.formats.docx_parser import DocxParser
+
+        path = self._build(tmp_path)
+        document = DocxParser(asset_dir=tmp_path / "assets", fix_legacy_captions=True).parse(path)
+        body = text_of(document)
+
+        assert "[표 3-1] 진단 코드" in body
+        assert "[표 4-1] 배터리 상태 표" in body
+        assert "[표 3-3]" not in body
+        assert "[표 4-4]" not in body
+        # 이미 맞았던 값은 그대로 유지된다.
+        assert "[표 2-1] 요청 패킷" in body
+        assert "[표 2-2] 응답 패킷" in body
+
+    def test_native_docx_is_left_untouched_by_default(self, tmp_path):
+        """플래그를 안 켜면(순정 docx 파싱 경로) 같은 패턴이어도 손대지 않는다."""
+        from parser.formats.docx_parser import DocxParser
+
+        path = self._build(tmp_path)
+        document = DocxParser(asset_dir=tmp_path / "assets").parse(path)
+        body = text_of(document)
+
+        assert "[표 3-3] 진단 코드" in body
+        assert "[표 4-4] 배터리 상태 표" in body
+
+    def test_chapter_boundary_is_the_top_heading_level_only(self, tmp_path):
+        """실제 검증에서 드러난 함정 — 문서에 Heading 1(장)과 Heading 2(절)가
+        섞여 있으면, 절 제목까지 챕터 경계로 보면 안 된다. 캡션 번호는 장
+        번호를 참조하므로, 같은 장 안의 서로 다른 절에 있는 캡션도 같은
+        major를 받아야 한다."""
+        import docx
+
+        from parser.formats.docx_parser import DocxParser
+
+        source = docx.Document()
+        source.add_paragraph("1장", style="Heading 1")
+        source.add_paragraph("2장", style="Heading 1")
+        source.add_paragraph("2.1 절", style="Heading 2")
+        source.add_paragraph("[표 2-1] 첫째 표")
+        source.add_paragraph("2.2 절", style="Heading 2")
+        source.add_paragraph("[표 2-2] 둘째 표")
+        source.add_paragraph("3장", style="Heading 1")
+        source.add_paragraph("[표 3-3] 셋째 표")  # 깨짐 — 원래 3-1
+        path = tmp_path / "multilevel.docx"
+        source.save(path)
+
+        document = DocxParser(asset_dir=tmp_path / "assets", fix_legacy_captions=True).parse(path)
+        body = text_of(document)
+
+        assert "[표 2-1] 첫째 표" in body
+        assert "[표 2-2] 둘째 표" in body
+        assert "[표 3-1] 셋째 표" in body
+        assert "[표 3-3]" not in body
+
+
 class TestXlsxSheetHeading:
     """시트 1행의 제목 칸을 쓰되, 시트명과 겹치면 비운다 [사용자 확정]."""
 

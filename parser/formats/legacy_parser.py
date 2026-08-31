@@ -38,7 +38,12 @@ class LegacyOfficeParser(BaseParser):
 
             # 변환본에서 추출한 이미지는 임시 폴더와 함께 사라지므로 원본 기준 asset 폴더로 받는다.
             asset_dir = self.asset_dir_for(path)
-            delegate = parser_cls(asset_dir=asset_dir)
+            delegate_kwargs: dict = {"asset_dir": asset_dir}
+            if parser_cls is DocxParser:
+                # LibreOffice가 캡션 필드(SEQ+STYLEREF \s)의 챕터 리셋을 못 해
+                # 번호가 전역 카운터로 깨진다 (T10.52) — .doc/.rtf 변환본에서만 켠다.
+                delegate_kwargs["fix_legacy_captions"] = True
+            delegate = parser_cls(**delegate_kwargs)
             try:
                 converted_doc = delegate.parse(converted)
             except Exception as exc:

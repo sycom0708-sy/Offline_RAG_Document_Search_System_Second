@@ -107,6 +107,40 @@ def test_legacy_parser_reports_failure_without_libreoffice(tmp_path, monkeypatch
     assert document.chunks == []
 
 
+def test_legacy_doc_conversion_recomputes_broken_caption_numbers(tmp_path, monkeypatch):
+    """T10.52 — `.doc`→docx 변환 경로에서만 `fix_legacy_captions=True`가 켜져야 한다.
+
+    실제 LibreOffice 없이도 검증할 수 있도록 `convert()`를 가짜 변환본(python-docx로
+    직접 만든, LibreOffice가 만들어낼 법한 깨진 캡션이 있는 docx)으로 대체한다.
+    """
+    import docx
+
+    from parser.formats import legacy_parser
+
+    def fake_convert(source, target_ext, output_dir=None, timeout=None):
+        converted = docx.Document()
+        converted.add_paragraph("1장 개요", style="Heading 1")
+        converted.add_paragraph("2장 통신", style="Heading 1")
+        converted.add_paragraph("[표 2-1] 요청 패킷")
+        converted.add_paragraph("[표 2-2] 응답 패킷")
+        converted.add_paragraph("3장 진단", style="Heading 1")
+        converted.add_paragraph("[표 3-3] 진단 코드")  # 깨짐 — 원래 3-1
+        out_path = Path(output_dir) / f"{Path(source).stem}.{target_ext}"
+        converted.save(out_path)
+        return out_path
+
+    monkeypatch.setattr(legacy_parser, "convert", fake_convert)
+
+    path = tmp_path / "구버전문서.doc"
+    path.write_bytes(b"\xd0\xcf\x11\xe0")  # 실제로는 안 읽힘 — convert()가 가짜라 무관
+
+    document = parse_file(path)
+    assert document.status is ParseStatus.OK
+    body = "\n".join(c.content for c in document.chunks if c.type.value == "text")
+    assert "[표 3-1] 진단 코드" in body
+    assert "[표 3-3]" not in body
+
+
 # --- 실제 변환 (LibreOffice 필요) ----------------------------------------
 
 

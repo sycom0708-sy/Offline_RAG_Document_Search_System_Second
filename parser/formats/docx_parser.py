@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import docx
@@ -12,20 +13,32 @@ from docx.text.paragraph import Paragraph
 
 from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
+from parser.utils.captions import recompute_legacy_captions
 from parser.utils.headings import body_size_of, clean_heading, is_heading_size
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
 _IMAGE_CONTENT_PREFIX = "image/"
 
+_HEADING_LEVEL_RE = re.compile(r"^Heading (\d+)$")
+
 
 class DocxParser(BaseParser):
     extensions = (".docx",)
 
-    def __init__(self, asset_dir: str | Path | None = None, capture_vector_shapes: bool = False) -> None:
+    def __init__(
+        self,
+        asset_dir: str | Path | None = None,
+        capture_vector_shapes: bool = False,
+        fix_legacy_captions: bool = False,
+    ) -> None:
         super().__init__(asset_dir)
         # 벡터 도형 캡처는 LibreOffice 변환을 거쳐 느리므로 기본 OFF.
         self._capture_vector_shapes = capture_vector_shapes
+        # `.doc`/`.rtf`→LibreOffice 변환본에서만 켠다 (T10.52) — 순정 docx는
+        # Word가 저장 시점에 필드를 이미 올바르게 계산해뒀으므로 건드릴 이유가
+        # 없고, 잘못 건드리면 의도된 전역 순번 캡션을 오히려 망가뜨릴 수 있다.
+        self._fix_legacy_captions = fix_legacy_captions
 
     def _parse(self, path: Path, document: ParsedDocument) -> None:
         try:
@@ -40,6 +53,7 @@ class DocxParser(BaseParser):
         heading = ""
         blocks = list(self._iter_blocks(source))
         fallback = self._font_size_headings(blocks)
+        caption_fixes = self._caption_fixes(blocks, fallback) if self._fix_legacy_captions else {}
         paragraph_index = -1
         for block in blocks:
             if isinstance(block, Paragraph):
@@ -47,6 +61,7 @@ class DocxParser(BaseParser):
                 text = block.text.strip()
                 if not text:
                     continue
+                text = caption_fixes.get(paragraph_index, text)
                 if self._is_heading(block) or paragraph_index in fallback:
                     # 새 절이 시작된다 — 앞선 문단은 **이전** 절의 제목으로 확정하고
                     # 나서 제목을 갈아 끼운다. 순서를 바꾸면 앞 절 내용이 다음 절
@@ -130,6 +145,54 @@ class DocxParser(BaseParser):
         return {
             index for size, text, index in sized if size == largest and clean_heading(text)
         }
+
+    @classmethod
+    def _caption_fixes(cls, blocks: list, fallback: set[int]) -> dict[int, str]:
+        """레거시 `.doc` 캡션 번호 재계산 입력을 만든다 (T10.52).
+
+        🔴 챕터 경계는 **문서에서 실제로 쓰인 가장 높은 Heading 레벨 하나만**
+        본다 — 처음엔 본문 루프의 `heading` 갱신 조건(`_is_heading()`, 모든
+        레벨을 동일하게 취급)을 그대로 재사용했는데, 실제 검증 문서로 돌려보니
+        "장"(Heading 1) 아래 "절"(Heading 2)이 있는 문서에서 절 제목까지
+        챕터 경계로 잘못 세어 번호가 완전히 틀어졌다 — 캡션은 항상 "장" 번호를
+        참조하지, 절 번호를 참조하지 않는다. 문서에 쓰인 Heading 레벨 중
+        최소값(가장 상위)을 그 문서의 "장" 레벨로 보고, 그 레벨의 문단만
+        경계로 쓴다. Heading 스타일이 전혀 없는 문서(글꼴 크기 폴백만 있는
+        `.doc` 변환본)는 레벨 정보 자체가 없으므로 기존 방식
+        (`_is_heading()` 또는 글꼴 크기 폴백)으로 되돌아간다 — 이 경우
+        문서에 절 구분이 따로 없어 과도하게 경계를 세울 위험이 없다.
+        """
+        paragraphs_only = [b for b in blocks if isinstance(b, Paragraph)]
+        levels = [
+            level
+            for p in paragraphs_only
+            if (level := cls._heading_level(p)) is not None
+        ]
+        chapter_level = min(levels) if levels else None
+
+        paragraphs: list[tuple[int, bool, str]] = []
+        paragraph_index = -1
+        for block in blocks:
+            if not isinstance(block, Paragraph):
+                continue
+            paragraph_index += 1
+            text = block.text.strip()
+            if not text:
+                continue
+            if chapter_level is not None:
+                is_boundary = cls._heading_level(block) == chapter_level
+            else:
+                is_boundary = cls._is_heading(block) or paragraph_index in fallback
+            paragraphs.append((paragraph_index, is_boundary, text))
+        return recompute_legacy_captions(paragraphs)
+
+    @staticmethod
+    def _heading_level(paragraph: Paragraph) -> int | None:
+        """`Heading N` 스타일의 레벨 `N`. Heading 스타일이 아니면 `None`."""
+        style = getattr(paragraph, "style", None)
+        name = getattr(style, "name", "") or ""
+        match = _HEADING_LEVEL_RE.match(name)
+        return int(match.group(1)) if match else None
 
     @staticmethod
     def _paragraph_font_size(paragraph: Paragraph) -> float:
