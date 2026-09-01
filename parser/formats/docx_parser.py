@@ -15,6 +15,7 @@ from parser.base import BaseParser, DocumentReadError
 from parser.schema import ImageData, ParsedDocument, TableData
 from parser.utils.captions import recompute_legacy_captions
 from parser.utils.headings import body_size_of, clean_heading, is_heading_size
+from parser.utils.numbering import NumberingResolver
 from parser.utils.libreoffice import LibreOfficeError
 from parser.utils.render import render_pages
 
@@ -54,6 +55,7 @@ class DocxParser(BaseParser):
         blocks = list(self._iter_blocks(source))
         fallback = self._font_size_headings(blocks)
         caption_fixes = self._caption_fixes(blocks, fallback) if self._fix_legacy_captions else {}
+        numbering = NumberingResolver.from_docx_path(path)
         paragraph_index = -1
         for block in blocks:
             if isinstance(block, Paragraph):
@@ -63,6 +65,14 @@ class DocxParser(BaseParser):
                     continue
                 text = caption_fixes.get(paragraph_index, text)
                 if self._is_heading(block) or paragraph_index in fallback:
+                    # 워드가 문단 텍스트가 아니라 numPr(직접 또는 스타일 상속)로
+                    # "3.2" 같은 번호를 그려주는 경우, python-docx가 읽는 텍스트에는
+                    # 그 번호가 없다 (T10.53). 있으면 앞에 붙인다 — 아래에서 이
+                    # 문단이 그대로 본문에도 남으므로(검색용) 번호가 자동으로
+                    # 색인·검색된다, 새 컬럼이 필요 없다.
+                    number = numbering.number_for(block)
+                    if number:
+                        text = f"{number} {text}"
                     # 새 절이 시작된다 — 앞선 문단은 **이전** 절의 제목으로 확정하고
                     # 나서 제목을 갈아 끼운다. 순서를 바꾸면 앞 절 내용이 다음 절
                     # 제목을 달고 나온다.
