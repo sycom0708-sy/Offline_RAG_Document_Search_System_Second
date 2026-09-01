@@ -25,6 +25,17 @@ from slm.verify import find_invalid_citations, overlap_ratio, verify_answer
 
 EVIDENCE = "DNS에서는 도메인명을 분산된 트리 형태의 계층적 구조로 관리한다."
 
+# 표 청크의 전형적인 모습 — 표 본체는 서술어가 없는 전보체고, 아래에 안내
+# 문장이 한두 줄 붙는다 (T10.54). 실측한 발췌와 **같은 겹침도(0.545)**가
+# 나오도록 구성했다.
+_TABLE_EVIDENCE = (
+    "지원 유형별 응시료 안내\n"
+    "구분 | 가형 지원 | 나형 지원\n"
+    "응시료 | 20만원(회비 별도) | 35만원(회비 별도)\n"
+    "의무사항 | 정회원 가입 후 자격 유지 | 정회원 가입 후 자격 유지\n"
+    "※ 응시료는 서류 접수 기간 내에 납부합니다."
+)
+
 
 def _result(file_name="리눅스마스터.pdf", page=13, content=EVIDENCE) -> SearchResult:
     return SearchResult(
@@ -274,6 +285,34 @@ class TestGate4Overlap:
     def test_reason_explains_why(self):
         result = verify_answer("정답은 GTK+ 입니다. [7]", _excerpts())
         assert "근거 번호" in result.reason
+
+    def test_paraphrase_of_a_table_is_not_flagged(self):
+        """표를 근거로 한 환언에 "확인 필요"가 붙던 오판 (T10.54, 2026-09-01 실측).
+
+        표는 서술어 없이 쓰이므로("응시료 | 20만원 | 35만원") 자연스러운 문장을
+        만들면 "~에 따라"·"또는"·"입니다" 같은 접착어가 근거에 없어 겹침도가
+        구조적으로 깎인다 — 값은 표 그대로인데도 옛 임계값(0.6)에 걸렸다.
+        금액·사양 표는 이 앱에서 가장 흔한 근거 유형이다.
+
+        🔴 실제 문서 문구는 쓰지 않는다(T10.52의 교훈) — 같은 구조의 가상 표다.
+        """
+        sentence = "응시료는 지원 유형에 따라 20만원 또는 35만원입니다."
+        # 옛 값(0.6)이 오판하던 밴드 안에 있는지 먼저 고정한다 — 지표가 흔들려
+        # 이 문장이 밴드를 벗어나면 아래 단언은 통과해도 의미가 없어진다.
+        assert 0.5 <= overlap_ratio(sentence, _TABLE_EVIDENCE) < 0.6
+
+        excerpts = [Excerpt("요금표.xlsx", "요금", _TABLE_EVIDENCE)]
+        assert verify_answer(f"{sentence} [1]", excerpts).needs_review is False
+
+    def test_unsupported_claim_against_the_same_table_is_still_flagged(self):
+        """임계값을 낮춰도 검출력이 남아 있는가 — 위 테스트의 짝이다.
+
+        실측에서 음성 652쌍 중 0.5를 넘는 것이 하나도 없었다는 근거를,
+        같은 표를 쓰는 문장 하나로 회귀 테스트에 남긴다.
+        """
+        excerpts = [Excerpt("요금표.xlsx", "요금", _TABLE_EVIDENCE)]
+        result = verify_answer("이 자격은 국가공인 민간자격으로 등록되어 있습니다. [1]", excerpts)
+        assert result.needs_review is True
 
     def test_summary_exposes_needs_review(self):
         service = _FakeService(text="50번 문항의 정답은 IaaS 입니다. [1]")
