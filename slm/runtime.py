@@ -16,6 +16,7 @@ import os
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -192,6 +193,147 @@ def _health_ok(port: int) -> bool:
         return False
 
 
+# --- 고아 프로세스 방지 (T10.36) --------------------------------------
+#
+# `SlmService.shutdown()`은 정상 종료 경로만 지킨다. Windows에서 `Popen`으로
+# 띄운 자식은 **부모가 죽어도 같이 죽지 않으므로**, 앱이 크래시하거나 강제
+# 종료되면 모델을 통째로 올린 llama-server가 3~4GB를 문 채 고아로 남는다.
+#
+# 2026-08-21 사고의 실제 원인이 이것이었다 — 시스템 이벤트 로그(Resource-
+# Exhaustion 2004)에 llama-server **3대**가 동시에 살아 3.62+3.02+2.72=9.36GB를
+# 쓰고 있었고, 그중 한 대는 1시간 30분 넘게 생존했다. 여기에 인덱싱 파이썬
+# 프로세스가 겹치면서 물리 메모리 15.6GB를 넘겨 PC가 멎었다. (당시 유력
+# 용의선상이던 LibreOffice는 그 목록에 한 번도 오르지 않았다.)
+#
+# Job Object에 묶어두면 부모 프로세스가 **어떤 이유로 죽든** — 크래시,
+# 작업 관리자 강제 종료, os._exit — OS가 핸들을 닫으면서 자식을 함께
+# 죽인다. 정상 경로(`shutdown()`)를 대체하는 게 아니라 그 아래에 까는
+# 안전망이다.
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+_PROCESS_TERMINATE = 0x0001
+_PROCESS_SET_QUOTA = 0x0100
+
+# 프로세스 전체에서 하나만 만들어 계속 들고 있는다 — 이 핸들이 닫히는
+# 순간이 곧 자식들이 죽는 순간이라, 절대 닫지 않는 것이 정상 동작이다.
+_job_handle: int | None = None
+_job_lock = threading.Lock()
+
+
+def _ensure_job_handle() -> int | None:
+    """KILL_ON_JOB_CLOSE가 걸린 Job 핸들을 만들어 캐시한다. 실패하면 None."""
+    global _job_handle
+    if _job_handle is not None:
+        return _job_handle
+
+    import ctypes
+
+    class _IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class _BASIC_LIMIT(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", ctypes.c_ulong),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_ulong),
+            # ULONG_PTR — 포인터 크기여야 뒤 필드 정렬이 맞는다.
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_ulong),
+            ("SchedulingClass", ctypes.c_ulong),
+        ]
+
+    class _EXTENDED_LIMIT(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", _BASIC_LIMIT),
+            ("IoInfo", _IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.windll.kernel32
+    # restype을 안 주면 64비트에서 핸들이 32비트로 잘린다
+    # (`process_memory_mb()`가 같은 함정을 이미 겪었다).
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+
+    # lpJobAttributes=NULL이라 **상속되지 않는 핸들**이 나온다. 이게 중요하다 —
+    # 자식이 이 핸들을 물려받으면 부모가 죽어도 핸들이 안 닫혀 KILL이 안 걸린다.
+    handle = kernel32.CreateJobObjectW(None, None)
+    if not handle:
+        return None
+
+    info = _EXTENDED_LIMIT()
+    info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    kernel32.SetInformationJobObject.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_ulong
+    ]
+    ok = kernel32.SetInformationJobObject(
+        ctypes.c_void_p(handle),
+        _JOBOBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    )
+    if not ok:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return None
+
+    _job_handle = handle
+    return handle
+
+
+def assign_to_job(process: subprocess.Popen) -> bool:
+    """자식 프로세스를 "부모가 죽으면 같이 죽는" Job에 넣는다.
+
+    성공 여부를 돌려주되 **실패해도 예외를 던지지 않는다** — 이건 안전망이라,
+    묶는 데 실패했다고 서버 기동 자체를 막으면 得보다 失이 크다.
+    Windows 전용이며 다른 OS에서는 아무것도 하지 않고 False를 돌려준다.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        with _job_lock:
+            handle = _ensure_job_handle()
+        if handle is None:
+            return False
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        # Popen이 프로세스 핸들을 계속 들고 있으므로 이 PID가 그사이 다른
+        # 프로세스로 재사용될 수 없다 — PID로 열어도 안전한 구간이다.
+        proc_handle = kernel32.OpenProcess(
+            _PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, process.pid
+        )
+        if not proc_handle:
+            return False
+        try:
+            kernel32.AssignProcessToJobObject.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p
+            ]
+            return bool(
+                kernel32.AssignProcessToJobObject(
+                    ctypes.c_void_p(handle), ctypes.c_void_p(proc_handle)
+                )
+            )
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(proc_handle))
+    except Exception:
+        return False
+
+
 def start_server(
     model_path: str | Path,
     *,
@@ -247,6 +389,10 @@ def start_server(
         # 이미 버리고 있어(DEVNULL) 창을 숨겨도 잃는 진단 정보는 없다.
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
+
+    # 띄우자마자 묶는다 (T10.36). 아래 준비 대기가 최대 180초라, 그사이 앱이
+    # 죽으면 정확히 사고 때와 같은 고아가 생긴다 — 대기 **전에** 묶어야 한다.
+    assign_to_job(process)
 
     try:
         deadline = started + startup_timeout

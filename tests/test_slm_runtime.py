@@ -7,6 +7,10 @@ Phase 1의 LibreOffice·hwp, Phase 3의 임베딩 모델과 같은 방식이다.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import time
 import urllib.error
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -280,3 +284,106 @@ class TestClientAbort:
         from slm.client import LlamaClientAborted, LlamaClientError
 
         assert issubclass(LlamaClientAborted, LlamaClientError)
+
+
+# --- 고아 프로세스 방지 (T10.36) -----------------------------------------
+
+
+def _pid_alive(pid: int) -> bool:
+    """PID가 살아 있는가. `os.kill(pid, 0)`은 **Windows에서 실제로 죽이므로**
+    쓰면 안 된다 — `indexer/index_log.py`와 같은 tasklist 방식으로 확인한다."""
+    result = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        capture_output=True, timeout=10, check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    return str(pid) in result.stdout.decode("cp949", errors="replace")
+
+
+class TestJobObjectOrphanGuard:
+    """부모가 죽으면 llama-server도 같이 죽는지 (2026-08-21 사고의 실제 원인).
+
+    당시 llama-server 3대가 고아로 남아 9.36GB를 물고 있었다 — 정상 종료
+    경로(`SlmService.shutdown()`)는 크래시·강제 종료를 못 막는다.
+    """
+
+    def test_start_server_assigns_job_before_waiting(self, tmp_path, monkeypatch):
+        """준비 대기(최대 180초) **전에** 묶어야 한다 — 그 사이에 앱이 죽으면
+        정확히 사고 때와 같은 고아가 생긴다."""
+        calls = []
+
+        class _FakeProc:
+            pid = 4242
+
+            def poll(self):
+                return None
+
+        model = tmp_path / "model.gguf"
+        model.write_bytes(b"")
+        monkeypatch.setattr(
+            runtime, "find_llama_server", lambda: tmp_path / "llama-server.exe"
+        )
+        monkeypatch.setattr(runtime.subprocess, "Popen", lambda *a, **k: _FakeProc())
+        monkeypatch.setattr(
+            runtime, "assign_to_job", lambda p: calls.append(("assign", p.pid))
+        )
+        monkeypatch.setattr(
+            runtime, "_health_ok", lambda port: calls.append(("health", port)) or True
+        )
+
+        runtime.start_server(model)
+
+        assert calls[0] == ("assign", 4242), f"묶기 전에 다른 일을 했다: {calls}"
+
+    @pytest.mark.skipif(os.name != "nt", reason="Job Object는 Windows 전용")
+    def test_child_dies_when_parent_is_killed(self):
+        """부모를 **강제 종료**해도 자식이 따라 죽는가 — 실제 보장의 종단 검증.
+
+        Job Object가 없으면 이 자식은 부모와 무관하게 계속 살아남는다(그게
+        사고 때 3.62GB짜리 프로세스가 1시간 30분을 버틴 이유다).
+        """
+        root = str(Path(__file__).resolve().parents[1])
+        script = (
+            "import subprocess, sys, time\n"
+            f"sys.path.insert(0, {root!r})\n"
+            "from slm import runtime\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(child.pid, int(runtime.assign_to_job(child)), flush=True)\n"
+            "time.sleep(120)\n"
+        )
+        parent = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        grandchild_pid = None
+        try:
+            line = parent.stdout.readline().split()
+            grandchild_pid, assigned = int(line[0]), bool(int(line[1]))
+            assert assigned, "Job Object에 묶는 데 실패했다"
+            assert _pid_alive(grandchild_pid), "자식이 뜨지도 않았다"
+
+            # 크래시를 흉내낸다 — terminate가 아니라 강제 종료라
+            # `shutdown()` 같은 정리 코드는 한 줄도 돌지 않는다.
+            parent.kill()
+            parent.wait(timeout=10)
+
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                if not _pid_alive(grandchild_pid):
+                    break
+                time.sleep(0.3)
+            else:
+                pytest.fail(
+                    f"부모가 죽었는데 자식(pid={grandchild_pid})이 살아남았다 — 고아 발생"
+                )
+        finally:
+            # 테스트가 실패했다면 정작 이 테스트가 고아를 남기게 된다.
+            if grandchild_pid is not None and _pid_alive(grandchild_pid):
+                subprocess.run(
+                    ["taskkill", "/F", "/PID", str(grandchild_pid)],
+                    capture_output=True, check=False,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            if parent.poll() is None:
+                parent.kill()
