@@ -10,7 +10,7 @@
 ;      결과물은 deploy\output\OfflineRAGSearchSetup.exe
 
 #define MyAppName "오프라인 문서 검색"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.1.0"
 #define MyAppExeName "OfflineRAGSearch.exe"
 ; ISCC /DMyDistDir=... 로 덮어쓸 수 있다 — LibreOffice가 확장자 레지스트리에
 ; 아주 깊은 임시 폴더를 만드는데(예: .../PackageRegistryBackend/lu....tmp/
