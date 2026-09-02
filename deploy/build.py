@@ -101,10 +101,6 @@ def _strip_libreoffice_runtime_cache(libreoffice_dir: Path) -> None:
 
 # 헤드리스 `--convert-to` 변환(`parser/utils/libreoffice.py`)이 절대 건드리지
 # 않는 자산들 (T9.11) — 도움말·문서·클립아트/마법사/매크로 예제. 실측 약 57MB.
-# 🔴 사전(`share/extensions/dict-*`, 467MB)·UI 로케일 리소스(`program/resource/*`,
-# 271MB)는 **일부러 뺐다** — 어떤 필터가 은근히 의존하는지 doc/xls/ppt 전체
-# 회귀 없이는 확신할 수 없어 더 큰 위험이다(T9.11 백로그로 남겨둠). 여기 목록은
-# 문서·클립아트·매크로 예제뿐이라 변환 필터 자체와 무관하다는 확신이 높다.
 _LIBREOFFICE_UNUSED_ASSETS = (
     "App/libreoffice/help",
     "App/libreoffice/readmes",
@@ -119,11 +115,32 @@ _LIBREOFFICE_UNUSED_ASSETS = (
     "App/libreoffice/share/basic",
     "App/libreoffice/share/autotext",
     "App/libreoffice/share/Scripts",
+    # UI 로케일 리소스 — 123개 언어 폴더, 271MB. 헤드리스(`--headless`)라
+    # UI 자체를 안 띄우므로 어떤 언어로도 그릴 필요가 없다. `program/resource/`
+    # 바로 아래에 로케일 폴더 말고 다른 파일은 없다(실측 확인) — 폴더째
+    # 지워도 안전하다.
+    "App/libreoffice/program/resource",
+)
+
+# 사전(맞춤법 검사) 확장 — 91개 언어 폴더가 `dict-<언어코드>` 이름 규칙을 쓴다
+# (예: dict-af, dict-ko). `soffice --convert-to`는 맞춤법 검사를 전혀 하지
+# 않으므로 전부 제거 대상이다. `share/extensions/`에는 이 외에 `nlpsolver`·
+# `wiki-publisher`도 있는데, 이 둘은 이름 패턴이 달라(prefix "dict-" 아님)
+# 이 글롭에 안 걸린다 — 변환 필터와의 연관성을 따로 확인한 적이 없어 의도적으로
+# 건드리지 않는다.
+_LIBREOFFICE_UNUSED_GLOBS = (
+    "App/libreoffice/share/extensions/dict-*",
 )
 
 
 def _strip_libreoffice_unused_assets(libreoffice_dir: Path) -> None:
-    """도움말·매뉴얼·클립아트·마법사·매크로 예제를 뺀다 (T9.11, ~57MB 절감)."""
+    """도움말·매뉴얼·클립아트·마법사·매크로 예제·UI 로케일·사전을 뺀다 (T9.11).
+
+    실측(2026-09-01): dict-* 91개 폴더(467MB) + `program/resource/`(271MB)
+    제거 후 exdoc 코퍼스의 legacy(.doc/.xls) 전수를 다시 변환해 회귀 없음을
+    확인했다 — 청크 수·본문 글자 수·상태 전부 제거 전과 동일. 코퍼스에 .ppt
+    표본이 없어 pptx 변환 경로는 이번 검증에 포함되지 않았다.
+    """
     for relative in _LIBREOFFICE_UNUSED_ASSETS:
         target = libreoffice_dir / Path(*relative.split("/"))
         if target.is_dir():
@@ -132,6 +149,17 @@ def _strip_libreoffice_unused_assets(libreoffice_dir: Path) -> None:
         elif target.is_file():
             target.unlink()
             print(f"  미사용 LibreOffice 자산 제거: {target}")
+
+    for pattern in _LIBREOFFICE_UNUSED_GLOBS:
+        parts = pattern.split("/")
+        matches = sorted(libreoffice_dir.glob("/".join(parts)))
+        for target in matches:
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
+        if matches:
+            print(f"  미사용 LibreOffice 자산 제거: {pattern} ({len(matches)}건)")
 
 
 def assemble(*, skip_libreoffice: bool) -> None:
