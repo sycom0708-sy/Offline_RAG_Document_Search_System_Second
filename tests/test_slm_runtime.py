@@ -286,6 +286,63 @@ class TestClientAbort:
         assert issubclass(LlamaClientAborted, LlamaClientError)
 
 
+# --- 프로세스 메모리: 워킹셋 vs private bytes (T10.58) --------------------
+
+
+class TestProcessMemoryDetail:
+    """`process_memory_detail_mb()`가 워킹셋 리팩터링 후에도 값을 정확히 돌려주는지.
+
+    `process_memory_mb()`와 이 함수는 이제 같은 내부 헬퍼
+    (`_query_process_memory_counters`)를 공유한다 — 리팩터링으로 기존
+    반환값(워킹셋 튜플)이 달라지지 않았는지, 그리고 새 필드(private bytes)가
+    실제로 채워지는지 둘 다 확인한다.
+    """
+
+    def test_detail_matches_working_set_from_process_memory_mb(self, monkeypatch):
+        """같은 카운터 스냅샷에서 두 함수가 일관된 값을 뽑아내는지.
+
+        🔴 두 함수를 실제 PID로 **따로** 호출해 비교하면 그 사이 이 테스트
+        프로세스 자신의 메모리가 미세하게 바뀌어 플레이키해진다(실측: 4KB
+        차이로 실패) — 카운터를 고정해 순수하게 필드 매핑만 검증한다.
+        """
+
+        class _FakeCounters:
+            WorkingSetSize = 100_000_000
+            PeakWorkingSetSize = 150_000_000
+            PagefileUsage = 300_000_000
+            PeakPagefileUsage = 320_000_000
+
+        monkeypatch.setattr(runtime, "_query_process_memory_counters", lambda pid: _FakeCounters())
+
+        simple = runtime.process_memory_mb(1234)
+        detail = runtime.process_memory_detail_mb(1234)
+
+        assert simple == (100.0, 150.0)
+        assert detail.working_set_mb == pytest.approx(simple[0])
+        assert detail.peak_working_set_mb == pytest.approx(simple[1])
+        # private bytes(커밋)는 워킹셋과 다른 지표다 — 2026-08-21 사고의
+        # "+8.35GB"가 워킹셋이 아니라 이 값 기준이었다.
+        assert detail.private_bytes_mb == pytest.approx(300.0)
+        assert detail.peak_private_bytes_mb == pytest.approx(320.0)
+
+    @pytest.mark.skipif(os.name != "nt", reason="이 측정 자체가 Windows 전용")
+    def test_detail_reports_positive_private_bytes_for_live_process(self):
+        """가짜가 아니라 실제로 살아 있는 이 테스트 프로세스를 재도 0이 아닌
+        값이 나오는지 — 필드 매핑뿐 아니라 실제 Windows API 호출 자체가
+        동작하는지 확인한다."""
+        detail = runtime.process_memory_detail_mb(os.getpid())
+
+        assert detail is not None
+        assert detail.private_bytes_mb > 0
+        assert detail.peak_private_bytes_mb >= detail.private_bytes_mb
+
+    def test_detail_returns_none_when_counters_unavailable(self, monkeypatch):
+        monkeypatch.setattr(runtime, "_query_process_memory_counters", lambda pid: None)
+
+        assert runtime.process_memory_detail_mb(12345) is None
+        assert runtime.process_memory_mb(12345) is None
+
+
 # --- 고아 프로세스 방지 (T10.36) -----------------------------------------
 
 

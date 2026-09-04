@@ -578,3 +578,36 @@ def test_pruning_a_document_removes_its_asset_folder(tmp_path, monkeypatch, samp
     index_folder(conn, new_folder, embed=False)  # old_folder는 이제 스캔 대상이 아니다
 
     assert not (assets_dir / doc_id).exists()
+
+
+def test_memory_note_reports_committed_bytes_not_just_working_set(monkeypatch):
+    """T10.58 — 로그에 워킹셋뿐 아니라 private bytes(커밋)도 실리는지.
+
+    워킹셋만 로그에 남기면 OS 트리밍으로 실제 증가 없이도 떨어져 보일 수
+    있어(2026-08-21 사고 재현 실험에서 실측), 다음 사고 조사 때 커밋 수치가
+    로그에 없으면 T10.58과 똑같이 원인을 못 좁힌다.
+    """
+    from indexer import pipeline as pipeline_module
+    from slm.runtime import ProcessMemoryDetail
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "current_process_memory_detail",
+        lambda: ProcessMemoryDetail(
+            working_set_mb=100.0, peak_working_set_mb=120.0,
+            private_bytes_mb=999.9, peak_private_bytes_mb=1000.0,
+        ),
+    )
+
+    note = pipeline_module._memory_note()
+
+    assert "999.9" in note
+    assert "100.0" in note
+
+
+def test_memory_note_is_empty_when_measurement_unavailable(monkeypatch):
+    from indexer import pipeline as pipeline_module
+
+    monkeypatch.setattr(pipeline_module, "current_process_memory_detail", lambda: None)
+
+    assert pipeline_module._memory_note() == ""
