@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from indexer.scanner import count_supported, scan_folder
+from indexer.scanner import count_supported, is_network_path, scan_folder
 
 
 def test_scan_finds_all_supported_samples(samples):
@@ -115,3 +117,54 @@ def test_scan_skips_office_lock_files(tmp_path, sample_txt):
 
     names = [p.name for p in scan_folder(tmp_path)]
     assert names == ["보고서.txt"]
+
+
+class TestIsNetworkPath:
+    """공유 폴더 선택 차단(T9.9)의 기반이 되는 판별 함수.
+
+    `GetDriveTypeW`를 직접 모킹한다 — 실제 UNC 서버나 매핑된 드라이브 없이도
+    "UNC 경로"와 "매핑된 네트워크 드라이브" 둘 다 같은 API 하나로 잡힌다는
+    걸 검증할 수 있다. `Path.resolve()`는 존재하지 않는 UNC·드라이브 경로도
+    (파일시스템에 접근하지 않고) 문자열만으로 정규화하므로 따로 모킹할
+    필요가 없다.
+    """
+
+    @pytest.mark.skipif(os.name != "nt", reason="ctypes.windll은 Windows 전용")
+    def test_unc_path_is_detected_as_network(self, monkeypatch):
+        import ctypes
+
+        seen_roots = []
+
+        def fake_get_drive_type(root):
+            seen_roots.append(root)
+            return 4  # DRIVE_REMOTE
+
+        monkeypatch.setattr(ctypes.windll.kernel32, "GetDriveTypeW", fake_get_drive_type, raising=False)
+
+        assert is_network_path(r"\\fileserver\shared\문서") is True
+        assert seen_roots == ["\\\\fileserver\\shared\\"]
+
+    @pytest.mark.skipif(os.name != "nt", reason="ctypes.windll은 Windows 전용")
+    def test_mapped_network_drive_is_detected(self, monkeypatch):
+        """UNC 문자열이 아니라 `Z:\\...`처럼 매핑된 드라이브도 잡아야 한다 —
+        사용자는 그게 네트워크 드라이브인 줄 모를 수 있다."""
+        import ctypes
+
+        monkeypatch.setattr(ctypes.windll.kernel32, "GetDriveTypeW", lambda root: 4, raising=False)
+
+        assert is_network_path(r"Z:\shared\문서") is True
+
+    @pytest.mark.skipif(os.name != "nt", reason="ctypes.windll은 Windows 전용")
+    def test_local_drive_is_not_network(self, monkeypatch, tmp_path):
+        import ctypes
+
+        monkeypatch.setattr(ctypes.windll.kernel32, "GetDriveTypeW", lambda root: 3, raising=False)  # DRIVE_FIXED
+
+        assert is_network_path(tmp_path) is False
+
+    def test_non_windows_always_returns_false(self, monkeypatch):
+        import indexer.scanner as scanner_module
+
+        monkeypatch.setattr(scanner_module.os, "name", "posix")
+
+        assert is_network_path("/mnt/whatever") is False

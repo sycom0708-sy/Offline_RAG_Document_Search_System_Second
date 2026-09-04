@@ -175,6 +175,55 @@ class TestFolderDialogWatchToggle:
         assert received == [True]
 
 
+class TestFolderDialogNetworkPathBlocked:
+    """공유(네트워크) 폴더는 대상으로 지정할 수 없다 (T9.9, 사용자 확정).
+
+    실제 UNC 서버·매핑된 드라이브는 `indexer.scanner.is_network_path()`가
+    이미 단위 테스트로 검증한다 — 여기서는 그 판정 결과에 따라 다이얼로그가
+    선택을 실제로 거부하는지(폴더가 안 바뀌고 안내 팝업이 뜨는지)만 본다.
+    """
+
+    def test_network_folder_is_rejected_and_shows_info(self, qtbot, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: r"\\fileserver\shared")
+        monkeypatch.setattr("ui.widgets.folder_dialog.is_network_path", lambda folder: True)
+        shown = []
+        monkeypatch.setattr(
+            "ui.widgets.folder_dialog.show_info",
+            lambda title, message, parent=None: shown.append((title, message)),
+        )
+
+        dialog = FolderDialog(current_folder=None)
+        qtbot.addWidget(dialog)
+
+        dialog._select_folder()
+
+        assert dialog._folder is None  # 선택이 반영되지 않았다
+        assert dialog.reindex_button.isEnabled() is False
+        assert dialog.watch_toggle.isEnabled() is False
+        assert len(shown) == 1
+
+    def test_local_folder_is_accepted_without_info(self, qtbot, monkeypatch):
+        from PySide6.QtWidgets import QFileDialog
+
+        monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: r"D:\로컬 폴더")
+        monkeypatch.setattr("ui.widgets.folder_dialog.is_network_path", lambda folder: False)
+        shown = []
+        monkeypatch.setattr(
+            "ui.widgets.folder_dialog.show_info",
+            lambda title, message, parent=None: shown.append((title, message)),
+        )
+
+        dialog = FolderDialog(current_folder=None)
+        qtbot.addWidget(dialog)
+
+        dialog._select_folder()
+
+        assert dialog._folder == r"D:\로컬 폴더"
+        assert shown == []
+
+
 class TestIndexingProgressDialog:
     """T10.4: 비모달 인덱싱 진행률 팝업 — TECH 4.6("메인 UI가 멈추지 않도록")을
     지키면서 취소 버튼을 추가한다."""
