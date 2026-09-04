@@ -88,13 +88,12 @@ def find_free_port() -> int:
         return sock.getsockname()[1]
 
 
-def process_memory_mb(pid: int) -> tuple[float, float] | None:
-    """다른 프로세스의 (현재, 최대) 워킹셋 MB. 측정 못 하면 None.
+def _query_process_memory_counters(pid: int):
+    """`PROCESS_MEMORY_COUNTERS` 구조체를 통째로 읽는다. 실패하면 None.
 
-    T6.6의 메모리 지표는 **llama-server 쪽**을 재야 한다 — 파이썬 프로세스는
-    HTTP 요청만 보내므로 자기 자신을 재면 모델 크기가 전혀 안 잡힌다.
-    `scripts/benchmark_search.py`의 `_memory_mb()`가 자기 프로세스용이라
-    여기서는 PID를 열어서 같은 구조체를 읽는다.
+    `process_memory_mb()`·`process_memory_detail_mb()`가 이 구조체에서
+    서로 다른 필드를 뽑아 쓰므로 OpenProcess/GetProcessMemoryInfo 보일러
+    플레이트를 여기 한 곳에만 둔다.
     """
     if os.name != "nt":
         return None
@@ -136,11 +135,64 @@ def process_memory_mb(pid: int) -> tuple[float, float] | None:
                 handle, ctypes.byref(counters), counters.cb
             ):
                 return None
-            return counters.WorkingSetSize / 1e6, counters.PeakWorkingSetSize / 1e6
+            return counters
         finally:
             ctypes.windll.kernel32.CloseHandle(handle)
     except Exception:
         return None
+
+
+def process_memory_mb(pid: int) -> tuple[float, float] | None:
+    """다른 프로세스의 (현재, 최대) 워킹셋 MB. 측정 못 하면 None.
+
+    T6.6의 메모리 지표는 **llama-server 쪽**을 재야 한다 — 파이썬 프로세스는
+    HTTP 요청만 보내므로 자기 자신을 재면 모델 크기가 전혀 안 잡힌다.
+    `scripts/benchmark_search.py`의 `_memory_mb()`가 자기 프로세스용이라
+    여기서는 PID를 열어서 같은 구조체를 읽는다.
+
+    🔴 **워킹셋은 "지금 얼마나 쓰고 있는가"의 근사치일 뿐이다** — Windows가
+    당분간 안 건드린 페이지를 대기 목록(standby list)으로 옮기면 이 값이
+    실제 커밋 여부와 무관하게 뚝 떨어진다(T10.58 재현 실험에서 실측: ONNX
+    세션을 한 번 올린 뒤 한동안 안 건드리자 워킹셋이 1.0GB → 220MB로 계단식
+    하락, 그런데도 `PeakWorkingSetSize`는 그대로였다). 진짜 누수 여부를
+    가리려면 `process_memory_detail_mb()`의 private bytes(커밋 메모리)를
+    같이 봐야 한다 — 그건 OS가 트리밍한다고 줄지 않는다.
+    """
+    counters = _query_process_memory_counters(pid)
+    if counters is None:
+        return None
+    return counters.WorkingSetSize / 1e6, counters.PeakWorkingSetSize / 1e6
+
+
+@dataclass
+class ProcessMemoryDetail:
+    """워킹셋(트리밍될 수 있음) + private bytes(커밋, 트리밍 안 됨) 전부."""
+
+    working_set_mb: float
+    peak_working_set_mb: float
+    private_bytes_mb: float
+    peak_private_bytes_mb: float
+
+
+def process_memory_detail_mb(pid: int) -> ProcessMemoryDetail | None:
+    """워킹셋·private bytes를 모두 담아 돌려준다 (T10.58).
+
+    2026-08-21 사고를 나중에 Windows 이벤트 로그로 되짚을 때 쓴 "인덱싱
+    python이 2.98GB→11.26GB로 부풀었다"는 수치는 Resource-Exhaustion-
+    Detector가 보고한 **커밋(private bytes)** 기준이었다 — `process_memory_mb()`가
+    재는 워킹셋과 다른 지표다. 워킹셋은 OS 트리밍으로 실제 누수 없이도
+    떨어질 수 있어(위 docstring 참고) 재현 실험 때 이 값만 보면 "괜찮다"고
+    오판할 수 있다.
+    """
+    counters = _query_process_memory_counters(pid)
+    if counters is None:
+        return None
+    return ProcessMemoryDetail(
+        working_set_mb=counters.WorkingSetSize / 1e6,
+        peak_working_set_mb=counters.PeakWorkingSetSize / 1e6,
+        private_bytes_mb=counters.PagefileUsage / 1e6,
+        peak_private_bytes_mb=counters.PeakPagefileUsage / 1e6,
+    )
 
 
 def available_ram_gb() -> float | None:

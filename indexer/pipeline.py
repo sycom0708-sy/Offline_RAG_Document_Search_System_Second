@@ -13,7 +13,7 @@ from typing import Callable
 from config.settings import ASSETS_DIR, ModelProfile
 from indexer.fts5.store import store_document
 from indexer.incremental import FileChange, classify_file
-from indexer.index_log import count_soffice_processes, get_logger
+from indexer.index_log import count_soffice_processes, current_process_memory_detail, get_logger
 from indexer.scanner import scan_folder
 from indexer.vector.store import embed_missing
 from parser import ParseStatus, parse_file
@@ -31,6 +31,20 @@ STAGE_EMBEDDING = "임베딩"
 STAGE_DONE = "완료"
 
 StageCallback = Callable[[str, int, int], None]  # (단계, done, total)
+
+
+def _memory_note() -> str:
+    """로그 한 줄에 붙일 "워킹셋 X MB, 커밋 Y MB" 조각 (T10.58).
+
+    워킹셋만 보면 OS 트리밍 때문에 실제로는 안 새는데도 줄어든 것처럼
+    보일 수 있어(`slm.runtime.process_memory_mb` docstring) 커밋(private
+    bytes)을 항상 같이 남긴다 — 2026-08-21 사고를 이벤트 로그로 되짚을 때
+    쓴 "+8.35GB"도 커밋 기준이었다.
+    """
+    detail = current_process_memory_detail()
+    if detail is None:
+        return ""
+    return f", 워킹셋 {detail.working_set_mb:.1f}MB · 커밋 {detail.private_bytes_mb:.1f}MB"
 
 
 @dataclass
@@ -262,7 +276,7 @@ def _run_index(
     # 지금 원인을 고치는 게 아니라, 다음번엔 로그 마지막 줄만 봐도 범인
     # 파일을 알 수 있도록 파일마다 시작·종료를 남긴다.
     log = get_logger()
-    log.info("인덱싱 시작: 대상 %d개 파일", total)
+    log.info("인덱싱 시작: 대상 %d개 파일%s", total, _memory_note())
 
     for done, path in enumerate(files, start=1):
         if stop_event is not None and stop_event.is_set():
@@ -312,32 +326,39 @@ def _run_index(
                 # 보인다 — 실사용 보고로 발견.
                 on_stage(STAGE_PARSING, done, total)
 
-        # 50개마다 soffice.bin 잔존 개수를 남긴다 — 정상이면 매 파일 처리
-        # 후 곧 0으로 떨어져야 한다. 계속 쌓인다면 좀비 프로세스 누적이
-        # 유력한 원인이라는 근거가 된다. (매 파일마다 재면 tasklist 호출
-        # 자체가 비용이라 주기적으로만 잰다.)
+        # 50개마다 soffice.bin 잔존 개수 + 이 프로세스 자신의 메모리를 남긴다
+        # — 정상이면 soffice.bin은 곧 0으로 떨어져야 한다. 계속 쌓인다면
+        # 좀비 프로세스 누적이 유력한 원인이라는 근거가 되고, 프로세스
+        # 메모리가 파일 수에 비례해 계속 오르면 그건 soffice와 무관한 별개
+        # 누수라는 근거가 된다(T10.58 — 2026-08-21 사고에서 llama-server
+        # 고아(T10.36)와 별개로 이 프로세스 자체가 +8.35GB 부푼 것이 나중에
+        # 발견됐는데, 당시엔 이 수치를 안 재서 원인을 못 좁혔다). (매 파일마다
+        # 재면 tasklist 호출 자체가 비용이라 주기적으로만 잰다.)
         if done % 50 == 0:
             soffice_count = count_soffice_processes()
-            if soffice_count is not None:
-                log.info("진행 체크포인트 %d/%d — soffice.bin 잔존 %d개", done, total, soffice_count)
+            soffice_note = f" — soffice.bin 잔존 {soffice_count}개" if soffice_count is not None else ""
+            log.info("진행 체크포인트 %d/%d%s%s", done, total, soffice_note, _memory_note())
 
-    log.info("파싱 단계 종료: 색인 %d · 스킵 %d · 실패 %d", report.indexed, report.skipped, len(report.failures))
+    log.info(
+        "파싱 단계 종료: 색인 %d · 스킵 %d · 실패 %d%s",
+        report.indexed, report.skipped, len(report.failures), _memory_note(),
+    )
 
     if embedder is not None and not (stop_event is not None and stop_event.is_set()):
-        log.info("임베딩 단계 시작")
+        log.info("임베딩 단계 시작%s", _memory_note())
         try:
             def _embed_progress(done: int, pending_total: int) -> None:
                 if on_stage is not None:
                     on_stage(STAGE_EMBEDDING, done, pending_total)
                 if done % 500 == 0:
-                    log.info("임베딩 진행 %d/%d", done, pending_total)
+                    log.info("임베딩 진행 %d/%d%s", done, pending_total, _memory_note())
 
             if on_stage is not None:
                 on_stage(STAGE_EMBEDDING, 0, 0)
             report.embedded = embed_missing(
                 conn, embedder, on_progress=_embed_progress, stop_event=stop_event
             )
-            log.info("임베딩 단계 종료: %d개 청크", report.embedded)
+            log.info("임베딩 단계 종료: %d개 청크%s", report.embedded, _memory_note())
         except Exception as exc:
             report.warnings.append(f"임베딩 계산 실패 (키워드 검색은 정상): {exc}")
             log.exception("임베딩 단계 실패")
