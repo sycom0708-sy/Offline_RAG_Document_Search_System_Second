@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterator
 
@@ -56,3 +57,34 @@ def scan_folder(root: str | Path) -> Iterator[Path]:
 def count_supported(root: str | Path) -> int:
     """진행 바 초기값(전체 파일 수) 계산용."""
     return sum(1 for _ in scan_folder(root))
+
+
+_DRIVE_REMOTE = 4  # Windows GetDriveType()의 "네트워크 드라이브" 값
+
+
+def is_network_path(path: str | Path) -> bool:
+    """이 경로가 네트워크 위치(UNC 경로 또는 매핑된 네트워크 드라이브)인가 (T9.9).
+
+    공유 폴더는 지원하지 않기로 확정했다[사용자 확정, 2026-09-04] — `doc_id`가
+    절대경로 해시 기반이라 각 PC가 독립적으로 인덱싱해야 하고(Phase 3 "인덱스는
+    이식할 수 없다"), 네트워크 경로는 Phase 8 증분 판정(mtime 우선 비교)·폴더
+    감시(T8.5)가 로컬과 동일하게 동작하는지 검증된 적이 없다 — 조용히 스캔에서
+    빼는 대신(`_DATA_DIR_RESOLVED`처럼) **선택 시점에 명시적으로 막는다**.
+
+    `GetDriveTypeW()` 하나로 UNC 경로(`\\\\server\\share\\...`)와 매핑된
+    네트워크 드라이브(`Z:\\...`, 사용자가 네트워크 드라이브인 줄 모르고 고를
+    수 있다) 둘 다 잡는다 — UNC만 문자열로 검사하면 매핑된 드라이브를 놓친다.
+    판정 못 하면(비-Windows, API 실패) False — 과탐지로 정상 로컬 폴더를
+    막는 것보다는 낫다는 판단.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+
+        drive, _ = os.path.splitdrive(str(Path(path).resolve()))
+        if not drive:
+            return False
+        return ctypes.windll.kernel32.GetDriveTypeW(drive + "\\") == _DRIVE_REMOTE
+    except Exception:
+        return False

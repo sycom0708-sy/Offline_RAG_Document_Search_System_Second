@@ -14,11 +14,18 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QDialog, QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from indexer.scanner import is_network_path
+from ui.widgets.info_dialog import show_info
 from ui.widgets.toggle_switch import ToggleSwitch
 
 NO_FOLDER_TEXT = "대상 폴더가 지정되지 않았습니다."
 WATCH_TOGGLE_LABEL = "실시간 감시"
 FOLDER_EYEBROW_TEXT = "대상 폴더"
+NETWORK_FOLDER_TITLE = "지원하지 않는 폴더"
+NETWORK_FOLDER_MESSAGE = (
+    "공유(네트워크) 폴더는 대상으로 지정할 수 없습니다. "
+    "이 PC의 로컬 폴더를 선택해 주세요."
+)
 
 
 class FolderDialog(QDialog):
@@ -90,11 +97,19 @@ class FolderDialog(QDialog):
 
     def _select_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "인덱싱할 폴더 선택", self._folder or "")
-        if folder:
-            self._folder = folder
-            self._refresh_label()
-            self.reindex_button.setEnabled(True)
-            self.watch_toggle.setEnabled(True)
+        if not folder:
+            return
+        if is_network_path(folder):
+            # T9.9 — 공유 폴더는 지원하지 않기로 확정[사용자 확정, 2026-09-04].
+            # 조용히 스캔에서 빼는 대신(scanner.py의 앱 자신의 data/ 폴더처럼)
+            # 선택 시점에 바로 알려준다 — 몰랐다가 나중에 증분·감시가 왜
+            # 이상하게 동작하는지 겪게 하는 것보다 낫다.
+            show_info(NETWORK_FOLDER_TITLE, NETWORK_FOLDER_MESSAGE, self)
+            return
+        self._folder = folder
+        self._refresh_label()
+        self.reindex_button.setEnabled(True)
+        self.watch_toggle.setEnabled(True)
 
     def _start_reindex(self) -> None:
         if self._folder:
