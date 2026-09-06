@@ -122,11 +122,26 @@ def create_app() -> QApplication:
     return app
 
 
+def _close_splash() -> None:
+    """PyInstaller 스플래시 화면을 닫는다 (deploy/app.spec의 `Splash`).
+
+    `pyi_splash`는 얼린 exe로 실행할 때만 존재하는 모듈이라(`python -m
+    ui.app`처럼 개발 중 직접 실행하면 없다), 임포트 실패를 그냥 넘긴다 —
+    개발 모드는 애초에 스플래시가 없으니 닫을 것도 없다.
+    """
+    try:
+        import pyi_splash
+    except ImportError:
+        return
+    pyi_splash.close()
+
+
 def main() -> int:
     app = create_app()
 
     guard = _acquire_single_instance_guard()
     if guard is None:
+        _close_splash()
         show_info(
             "이미 실행 중입니다",
             "ATEC DocsAI가 이미 실행되고 있습니다. 작업 표시줄에서 확인해주세요.",
@@ -137,6 +152,11 @@ def main() -> int:
     window = MainWindow()
     window.setWindowTitle("ATEC DocsAI")
     window.resize(1100, 720)
+    # 메인 창을 화면에 띄우기 *전*에 스플래시를 닫는다 — 반대 순서(show() 후
+    # 닫기)로 하면 always_on_top 스플래시와 막 활성화된 메인 창이 topmost
+    # 자리를 두고 잠깐 겹치면서, Windows가 스플래시 창을 축소된 유령
+    # 썸네일로 남기는 시각적 결함이 실측으로 재현됐다(2026-09-06).
+    _close_splash()
     window.show()
 
     return app.exec()

@@ -53,19 +53,75 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# exe 시작부터 Per-Monitor-V2 DPI 인식을 명시한다 — 이게 없으면 exe는 DPI
+# 비인식(unaware) 상태로 시작해 Windows가 스플래시 창을 배율만큼 확대해
+# 그린다(이 PC 125%). 뒤이어 PySide6가 QApplication 생성 시 자체적으로
+# Per-Monitor-V2로 전환하면 Windows가 이미 떠 있던 스플래시 창을 실제
+# 픽셀 크기로 다시 계산해, 화면 중앙의 큰 스플래시가 갑자기 작아지며
+# 위치까지 옮겨가는 것으로 보였다(실측 재현, 2026-09-06). 매니페스트로
+# 처음부터 같은 인식 모드를 강제하면 이 전환 자체가 없어져 크기·위치가
+# 고정된다 — PyInstaller 기본 매니페스트(winmanifest._DEFAULT_MANIFEST_XML)
+# 에 dpiAwareness만 추가한 것이다.
+_MANIFEST_XML = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"></requestedExecutionLevel>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{e2011457-1546-43c5-a5fe-008deee3d3f0}"></supportedOS>
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"></supportedOS>
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"></supportedOS>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"></supportedOS>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"></supportedOS>
+    </application>
+  </compatibility>
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"></assemblyIdentity>
+    </dependentAssembly>
+  </dependency>
+</assembly>
+"""
+
+# exe 실행 직후~메인 창이 뜨기 전까지(모듈 임포트·임베더 워밍업 구간) 보여줄
+# 정적 이미지. `python -m deploy.make_splash`로 생성(`ui/icons/splash.png`).
+# `ui/app.py`의 `main()`이 `pyi_splash.close()`로 명시적으로 닫는다 — 안 닫으면
+# 메인 창 뒤에 계속 떠 있는다. Windows/Linux 전용(macOS 미지원, 이 프로젝트와
+# 무관), tkinter가 필요해 PyInstaller가 자동으로 함께 번들한다.
+splash = Splash(
+    str(PROJECT_ROOT / "ui" / "icons" / "splash.png"),
+    binaries=a.binaries,
+    datas=a.datas,
+    always_on_top=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
     [],
     exclude_binaries=True,
     name="OfflineRAGSearch",
     console=False,  # PySide6 GUI 앱 — 콘솔 창을 띄우지 않는다
     # 문서+돋보기 아이콘(시안 1번, 20% 확대) — `python -m deploy.make_icon`으로 생성
     icon=str(PROJECT_ROOT / "ui" / "icons" / "app.ico"),
+    manifest=_MANIFEST_XML,
 )
 
 coll = COLLECT(
     exe,
+    splash.binaries,
     a.binaries,
     a.datas,
     name="OfflineRAGSearch",
